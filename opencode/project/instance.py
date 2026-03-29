@@ -1,0 +1,111 @@
+"""Project instance context management.
+
+Manages the current project context, providing directory/worktree/project info
+to all services via contextvars.
+Equivalent to src/project/instance.ts.
+"""
+
+from __future__ import annotations
+
+import os
+from contextvars import ContextVar, Token
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, AsyncGenerator, Callable, Coroutine, TypeVar
+
+T = TypeVar("T")
+
+
+@dataclass
+class ProjectInfo:
+    """Minimal project info held in the instance context."""
+
+    id: str
+    worktree: str
+    vcs: str | None = None  # "git" or None
+    name: str | None = None
+
+
+@dataclass
+class InstanceContext:
+    """Holds all per-project state. Set via contextvar during request processing."""
+
+    directory: str
+    worktree: str
+    project: ProjectInfo
+    _state: dict[str, Any] = field(default_factory=dict)
+
+    def contains_path(self, p: str) -> bool:
+        """Check if a path is within the project worktree."""
+        try:
+            resolved = str(Path(p).resolve())
+            wt = str(Path(self.worktree).resolve())
+            return resolved.startswith(wt)
+        except (ValueError, OSError):
+            return False
+
+
+_instance_var: ContextVar[InstanceContext | None] = ContextVar("instance", default=None)
+
+
+def current() -> InstanceContext:
+    """Get the current instance context. Raises if not set."""
+    ctx = _instance_var.get()
+    if ctx is None:
+        raise RuntimeError("No instance context is active. Call within Instance.provide().")
+    return ctx
+
+
+def current_or_none() -> InstanceContext | None:
+    """Get the current instance context, or None."""
+    return _instance_var.get()
+
+
+class _InstanceToken:
+    """RAII token for instance context."""
+
+    def __init__(self, token: Token[InstanceContext | None]):
+        self._token = token
+
+    def reset(self) -> None:
+        _instance_var.reset(self._token)
+
+
+def set_context(ctx: InstanceContext) -> _InstanceToken:
+    """Set the instance context, returning a token for reset."""
+    token = _instance_var.set(ctx)
+    return _InstanceToken(token)
+
+
+async def provide(
+    directory: str,
+    fn: Callable[[], Coroutine[Any, Any, T]],
+    project: ProjectInfo | None = None,
+) -> T:
+    """Run an async function within a project instance context.
+
+    This is the primary way to establish context, equivalent to
+    the original Instance.provide({ directory, init, fn }).
+    """
+    resolved = str(Path(directory).resolve())
+
+    if project is None:
+        # Create a minimal "global" project for now
+        # Real project discovery will be in project/project.py
+        project = ProjectInfo(
+            id="global",
+            worktree=resolved,
+            vcs=None,
+        )
+
+    ctx = InstanceContext(
+        directory=resolved,
+        worktree=project.worktree,
+        project=project,
+    )
+
+    token = set_context(ctx)
+    try:
+        return await fn()
+    finally:
+        token.reset()
