@@ -96,7 +96,7 @@ class ConfigValidationError(Exception):
 
 # --- Cached config state ---
 
-_cached: Config | None = None
+_cache: dict[str, Config] = {}  # key: directory path or "__global__"
 
 
 def get(directory: str | None = None, worktree: str | None = None) -> Config:
@@ -109,9 +109,9 @@ def get(directory: str | None = None, worktree: str | None = None) -> Config:
     4. .opencode directory configs
     5. OPENCODE_CONFIG_CONTENT env
     """
-    global _cached
-    if _cached is not None:
-        return _cached
+    cache_key = directory or "__global__"
+    if cache_key in _cache:
+        return _cache[cache_key]
 
     merged: dict[str, Any] = {}
 
@@ -155,14 +155,13 @@ def get(directory: str | None = None, worktree: str | None = None) -> Config:
             merged["username"] = "user"
 
     config = _validate(merged)
-    _cached = config
+    _cache[cache_key] = config
     return config
 
 
 def invalidate() -> None:
     """Clear the cached config so it will be reloaded on next access."""
-    global _cached
-    _cached = None
+    _cache.clear()
 
 
 async def get_async(directory: str | None = None, worktree: str | None = None) -> Config:

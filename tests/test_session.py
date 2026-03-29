@@ -21,11 +21,21 @@ def test_create_assistant_message():
 def test_system_prompt():
     parts = build()
     assert len(parts) >= 1
-    assert "AI coding assistant" in parts[0]
+    # Without model, should use fallback
+    assert any("AI coding assistant" in p or "Working directory" in p for p in parts)
 
 def test_system_prompt_with_agent():
     parts = build(agent_prompt="You are a code reviewer.")
     assert any("code reviewer" in p for p in parts)
+
+def test_system_prompt_with_model():
+    from opencode.provider.schema import Model, ModelApi
+    model = Model(id="claude-sonnet-4", providerID="anthropic", api=ModelApi(id="claude-sonnet-4-20250514"), name="Sonnet")
+    parts = build(model=model, agent_prompt="You are helpful.")
+    # Should contain the Anthropic prompt (OpenCode)
+    assert any("OpenCode" in p or "coding" in p.lower() for p in parts)
+    # Should contain environment info
+    assert any("Working directory" in p for p in parts)
 
 def test_build_tool_results_messages():
     tp = ToolPart(id="p1", session_id="s1", message_id="m1", tool="bash",
