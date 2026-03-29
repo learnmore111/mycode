@@ -15,6 +15,7 @@ class McpServer:
         self.status: str = "disabled"  # connected | disabled | failed | needs_auth
         self.tools: list[dict[str, Any]] = []
         self._client: Any = None
+        self._context_stack: list[Any] = []  # Keep context managers alive
 
     async def connect(self) -> None:
         """Connect to the MCP server."""
@@ -44,16 +45,22 @@ class McpServer:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
             server_params = StdioServerParameters(command=command[0], args=command[1:], env=env)
-            # Use the mcp SDK's stdio_client context manager
-            # For long-lived connections, we'd store the context; for now test connectivity
-            async with stdio_client(server_params) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    self.tools = [{"name": t.name, "description": t.description or "",
-                                   "inputSchema": t.inputSchema} for t in tools_result.tools]
-                    self._client = session
-                    logger.info("MCP local connected", name=self.name, tools=len(self.tools))
+
+            # Enter context managers manually and keep them alive
+            stdio_ctx = stdio_client(server_params)
+            read_stream, write_stream = await stdio_ctx.__aenter__()
+            self._context_stack.append(stdio_ctx)
+
+            session_ctx = ClientSession(read_stream, write_stream)
+            session = await session_ctx.__aenter__()
+            self._context_stack.append(session_ctx)
+
+            await session.initialize()
+            tools_result = await session.list_tools()
+            self.tools = [{"name": t.name, "description": t.description or "",
+                           "inputSchema": t.inputSchema} for t in tools_result.tools]
+            self._client = session
+            logger.info("MCP local connected", name=self.name, tools=len(self.tools))
         except ImportError:
             logger.warn("mcp SDK not available, using stub", name=self.name)
         except Exception as e:
@@ -67,22 +74,44 @@ class McpServer:
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamablehttp_client
-            async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    self.tools = [{"name": t.name, "description": t.description or "",
-                                   "inputSchema": t.inputSchema} for t in tools_result.tools]
-                    self._client = session
-                    logger.info("MCP remote connected", name=self.name, tools=len(self.tools))
+
+            http_ctx = streamablehttp_client(url, headers=headers)
+            read_stream, write_stream, _ = await http_ctx.__aenter__()
+            self._context_stack.append(http_ctx)
+
+            session_ctx = ClientSession(read_stream, write_stream)
+            session = await session_ctx.__aenter__()
+            self._context_stack.append(session_ctx)
+
+            await session.initialize()
+            tools_result = await session.list_tools()
+            self.tools = [{"name": t.name, "description": t.description or "",
+                           "inputSchema": t.inputSchema} for t in tools_result.tools]
+            self._client = session
+            logger.info("MCP remote connected", name=self.name, tools=len(self.tools))
         except ImportError:
             logger.warn("mcp SDK streamable_http not available, using stub", name=self.name)
         except Exception as e:
             raise ConnectionError(f"MCP remote connection failed: {e}") from e
 
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        """Call a tool on this MCP server."""
+        if not self._client:
+            raise RuntimeError(f"MCP server {self.name} not connected")
+        result = await self._client.call_tool(tool_name, arguments)
+        return result
+
     async def disconnect(self) -> None:
-        self.status = "disabled"
+        """Disconnect — tear down context managers in reverse order."""
         self._client = None
+        for ctx in reversed(self._context_stack):
+            try:
+                await ctx.__aexit__(None, None, None)
+            except Exception:
+                pass
+        self._context_stack.clear()
+        self.tools.clear()
+        self.status = "disabled"
 
 
 class McpManager:
@@ -110,8 +139,15 @@ class McpManager:
                 continue
             for tool in server.tools:
                 key = f"{name}_{tool.get('name', '')}"
-                result[key] = tool
+                result[key] = {**tool, "_server": name}
         return result
+
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+        """Call a tool on a specific MCP server."""
+        server = self._servers.get(server_name)
+        if not server:
+            raise RuntimeError(f"MCP server {server_name} not found")
+        return await server.call_tool(tool_name, arguments)
 
     async def connect(self, name: str) -> None:
         server = self._servers.get(name)

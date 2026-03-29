@@ -11,6 +11,7 @@ from opencode.agent import agent as agentmod
 from opencode.bus.bus import Bus
 from opencode.bus.events import SESSION_UPDATED, SESSION_ERROR
 from opencode.provider import provider as providermod
+from opencode.provider.schema import ProviderInfo
 from opencode.session import llm as llmmod
 from opencode.session import processor as proc
 from opencode.session.message import (
@@ -18,7 +19,7 @@ from opencode.session.message import (
     create_user_message, create_assistant_message, create_text_part,
 )
 from opencode.session.session import SessionInfo, BusyError, get as get_session, touch
-from opencode.session.system import build as build_system
+from opencode.session.system import build as build_system, PROMPT_PLAN, PROMPT_BUILD_SWITCH
 from opencode.tool import registry as tool_registry
 from opencode.util import log as logmod
 
@@ -83,7 +84,7 @@ async def prompt(
             return
 
         # 4. Build system prompt
-        system = build_system(agent_prompt=agent.prompt, instructions=None)
+        system = build_system(model=model, agent_prompt=agent.prompt, instructions=None)
         if input.system:
             system.append(input.system)
 
@@ -123,8 +124,10 @@ async def prompt(
 
         all_parts: list[Part] = []
         max_iterations = agent.steps or 50
+        iterations_done = 0
 
         for iteration in range(max_iterations):
+            iterations_done = iteration + 1
             stream_input = llmmod.StreamInput(
                 model=model,
                 messages=messages,
@@ -132,7 +135,7 @@ async def prompt(
                 tools=tools if model.capabilities.toolcall else None,
                 temperature=agent.temperature,
                 top_p=agent.top_p,
-                api_key=providermod._state[provider_id].key if providermod._state and provider_id in providermod._state else None,
+                api_key=(providermod._state or {}).get(provider_id, ProviderInfo(id=provider_id, name=provider_id, source="env")).key,
             )
 
             result, parts = await proc.process(ctx, stream_input)
@@ -172,7 +175,7 @@ async def prompt(
                 "input": assistant_msg.tokens_input,
                 "output": assistant_msg.tokens_output,
             },
-            "iterations": min(iteration + 1, max_iterations) if 'iteration' in dir() else 1,
+            "iterations": iterations_done,
             "parts": len(all_parts),
         })
 

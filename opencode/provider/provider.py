@@ -80,35 +80,109 @@ async def _init_state() -> dict[str, ProviderInfo]:
     providers: dict[str, ProviderInfo] = {}
     cfg = configmod.get()
 
-    # Load from env vars
+    # Step 0: Load models.dev database and seed providers with models
+    from opencode.provider import models_dev
+    models_db = await models_dev.fetch()
+    for pid, pdata in models_db.items():
+        if not isinstance(pdata, dict):
+            continue
+        models_dict: dict[str, Model] = {}
+        raw_models = pdata.get("models", {})
+        if isinstance(raw_models, dict):
+            for mid, mdata in raw_models.items():
+                if not isinstance(mdata, dict):
+                    continue
+                status = mdata.get("status", "active")
+                if status == "deprecated":
+                    continue
+                limit = mdata.get("limit", {})
+                cost = mdata.get("cost", {})
+                modalities = mdata.get("modalities", {})
+                inp_mod = modalities.get("input", []) if isinstance(modalities, dict) else []
+                out_mod = modalities.get("output", []) if isinstance(modalities, dict) else []
+                provider_info = mdata.get("provider", {}) or {}
+                models_dict[mid] = Model(
+                    id=mid,
+                    providerID=pid,
+                    api=ModelApi(
+                        id=mdata.get("id", mid),
+                        url=provider_info.get("api", pdata.get("api", "")),
+                        npm=provider_info.get("npm", pdata.get("npm", "@ai-sdk/openai-compatible")),
+                    ),
+                    name=mdata.get("name", mid),
+                    family=mdata.get("family", ""),
+                    capabilities=ModelCapabilities(
+                        temperature=mdata.get("temperature", False),
+                        reasoning=mdata.get("reasoning", False),
+                        attachment=mdata.get("attachment", False),
+                        toolcall=mdata.get("tool_call", True),
+                        input=ModelInputCapabilities(
+                            text="text" in inp_mod, audio="audio" in inp_mod,
+                            image="image" in inp_mod, video="video" in inp_mod, pdf="pdf" in inp_mod,
+                        ),
+                        output=ModelOutputCapabilities(
+                            text="text" in out_mod, audio="audio" in out_mod,
+                            image="image" in out_mod, video="video" in out_mod, pdf="pdf" in out_mod,
+                        ),
+                    ),
+                    cost=ModelCost(
+                        input=cost.get("input", 0) if isinstance(cost, dict) else 0,
+                        output=cost.get("output", 0) if isinstance(cost, dict) else 0,
+                        cache=CacheCost(
+                            read=cost.get("cache_read", 0) if isinstance(cost, dict) else 0,
+                            write=cost.get("cache_write", 0) if isinstance(cost, dict) else 0,
+                        ),
+                    ),
+                    limit=ModelLimit(
+                        context=limit.get("context", 0) if isinstance(limit, dict) else 0,
+                        output=limit.get("output", 0) if isinstance(limit, dict) else 0,
+                    ),
+                    status=status if status in ("active", "alpha", "beta") else "active",
+                    options=mdata.get("options", {}),
+                    headers=mdata.get("headers", {}),
+                )
+        if models_dict:
+            providers[pid] = ProviderInfo(
+                id=pid,
+                name=pdata.get("name", pid),
+                source="custom",
+                env=pdata.get("env", []),
+                models=models_dict,
+            )
+
+    # Step 1: Load from env vars — activates providers with API keys
     for provider_id, env_keys in PROVIDER_ENV.items():
         for key in env_keys:
             val = os.environ.get(key)
             if val:
-                providers[provider_id] = ProviderInfo(
-                    id=provider_id,
-                    name=provider_id.replace("-", " ").title(),
-                    source="env",
-                    env=env_keys,
-                    key=val if len(env_keys) == 1 else None,
-                )
+                if provider_id in providers:
+                    providers[provider_id].source = "env"
+                    providers[provider_id].key = val if len(env_keys) == 1 else None
+                else:
+                    providers[provider_id] = ProviderInfo(
+                        id=provider_id,
+                        name=provider_id.replace("-", " ").title(),
+                        source="env",
+                        env=env_keys,
+                        key=val if len(env_keys) == 1 else None,
+                    )
                 break
 
-    # Load from stored auth
+    # Step 2: Load from stored auth
     for provider_id, info in (await authmod.all_()).items():
         if hasattr(info, "key"):
-            if provider_id not in providers:
+            if provider_id in providers:
+                providers[provider_id].source = "api"
+                providers[provider_id].key = info.key
+            else:
                 providers[provider_id] = ProviderInfo(
                     id=provider_id,
                     name=provider_id.replace("-", " ").title(),
                     source="api",
                     key=info.key,
                 )
-            else:
-                providers[provider_id].source = "api"
-                providers[provider_id].key = info.key
 
-    # Load from config
+    # Step 3: Load from config
     if cfg.provider:
         for provider_id, pcfg in cfg.provider.items():
             if provider_id in providers:
@@ -168,8 +242,23 @@ async def _init_state() -> dict[str, ProviderInfo]:
     disabled = set(cfg.disabled_providers or [])
     enabled = set(cfg.enabled_providers) if cfg.enabled_providers else None
 
+    # Only keep providers that have an API key or were explicitly configured
+    activated_sources = {"env", "api", "config"}
     for pid in list(providers.keys()):
         if pid in disabled or (enabled and pid not in enabled):
+            del providers[pid]
+            continue
+        p = providers[pid]
+        # Remove providers from models.dev that have no API key
+        if p.source == "custom" and not p.key and not p.models:
+            del providers[pid]
+            continue
+        # Remove models from providers that were only loaded from models.dev but have no key
+        if p.source == "custom" and not p.key:
+            del providers[pid]
+            continue
+        # Remove empty providers
+        if not p.models:
             del providers[pid]
 
     logger.info("providers initialized", count=len(providers), ids=list(providers.keys()))

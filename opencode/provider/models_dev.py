@@ -13,7 +13,7 @@ from opencode.util.paths import GlobalPaths
 
 logger = logmod.create(service="models_dev")
 
-MODELS_DEV_URL = "https://models.dev/models.json"
+MODELS_DEV_URL = "https://models.dev/api.json"
 CACHE_TTL = 3600 * 6  # 6 hours
 
 

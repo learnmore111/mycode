@@ -76,6 +76,16 @@ class LspJsonRpcClient:
         body = json.dumps(msg)
         header = f"Content-Length: {len(body.encode())}\r\n\r\n"
         self.process.stdin.write((header + body).encode())
+        # Ensure data is flushed to the subprocess
+        asyncio.ensure_future(self._drain())
+
+    async def _drain(self) -> None:
+        """Flush stdin buffer to ensure messages are sent."""
+        if self.process.stdin:
+            try:
+                await self.process.stdin.drain()
+            except (ConnectionError, BrokenPipeError):
+                pass
 
     async def _read_loop(self) -> None:
         """Read JSON-RPC messages from stdout."""
@@ -109,8 +119,8 @@ class LspJsonRpcClient:
             logger.error("LSP read error", server=self.server_id, error=str(e))
 
     def _handle_message(self, msg: dict[str, Any]) -> None:
-        # Response
-        if "id" in msg and "id" in msg:
+        # Response (has "id" and either "result" or "error", but no "method")
+        if "id" in msg and "method" not in msg:
             msg_id = msg["id"]
             future = self._pending.pop(msg_id, None)
             if future and not future.done():
