@@ -16,11 +16,9 @@ uv sync
 uv run opencode --help
 
 # Headless 模式
-# 设置任意一个 AI 提供商的 API Key（litellm 内置各 provider 默认 endpoint，无需额外配置）
-export OPENAI_API_KEY=sk-xxx          # OpenAI
-# export ANTHROPIC_API_KEY=sk-xxx     # 或 Anthropic
-# export GEMINI_API_KEY=xxx           # 或 Google Gemini
-# export DEEPSEEK_API_KEY=xxx         # 或 DeepSeek
+# 配置 LLM 代理（OpenAI 兼容接口）
+export OPENAI_API_KEY="your token"
+export OPENAI_API_BASE="http://v2.open.venus.oa.com/llmproxy"
 uv run opencode run --message "列出当前目录的文件"
 
 # 如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM 等），

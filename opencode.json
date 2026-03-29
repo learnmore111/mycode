@@ -1,0 +1,15 @@
+{
+  "provider": {
+    "openai": {
+      "api": "http://v2.open.venus.oa.com/llmproxy",
+      "models": {
+        "qwen-14b-chat": {
+          "id": "qwen-14b-chat",
+          "name": "Qwen 14B Chat",
+          "tool_call": true
+        }
+      }
+    }
+  },
+  "model": "openai/qwen-14b-chat"
+}
