@@ -1,6 +1,12 @@
 """Shell utilities — process management and shell detection. Equivalent to src/shell/shell.ts."""
 from __future__ import annotations
-import asyncio, os, platform, shutil, signal
+
+import asyncio
+import contextlib
+import os
+import platform
+import shutil
+import signal
 from pathlib import Path
 
 SIGKILL_TIMEOUT = 0.2
@@ -18,10 +24,8 @@ async def kill_tree(pid: int) -> None:
     try:
         os.killpg(pid, signal.SIGTERM)
         await asyncio.sleep(SIGKILL_TIMEOUT)
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     except (ProcessLookupError, PermissionError):
         try:
             os.kill(pid, signal.SIGTERM)

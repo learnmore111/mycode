@@ -1,10 +1,13 @@
 """Write file tool. Equivalent to src/tool/write.ts."""
 from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
 from opencode.project.instance import current_or_none
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+
 
 class WriteTool(ToolInfo):
     id = "write"

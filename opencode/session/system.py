@@ -3,10 +3,17 @@
 Selects model-specific system prompts and builds environment info.
 """
 from __future__ import annotations
-import os, platform, time
+
+import os
+import platform
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 from opencode.project.instance import current_or_none
-from opencode.provider.schema import Model
+
+if TYPE_CHECKING:
+    from opencode.provider.schema import Model
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 

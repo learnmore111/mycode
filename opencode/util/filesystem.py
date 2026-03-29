@@ -5,6 +5,7 @@ Provides async and sync file operations, mirroring src/util/filesystem.ts.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import mimetypes
 import os
@@ -44,7 +45,7 @@ def stat(p: str) -> os.stat_result | None:
 
 async def read_text(p: str, encoding: str = "utf-8") -> str:
     """Read a text file asynchronously."""
-    async with aiofiles.open(p, "r", encoding=encoding) as f:
+    async with aiofiles.open(p, encoding=encoding) as f:
         return await f.read()
 
 
@@ -109,7 +110,5 @@ async def ensure_dir(p: str) -> None:
 
 async def remove(p: str) -> None:
     """Remove a file, ignoring errors."""
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(p)
-    except OSError:
-        pass

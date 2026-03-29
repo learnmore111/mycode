@@ -1,18 +1,21 @@
 """Session processor — the core agentic loop. Equivalent to src/session/processor.ts."""
 from __future__ import annotations
-import json, time
+
+import json
+import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+from opencode.bus.events import PART_DELTA, PART_UPDATED
 from opencode.session import llm as llmmod
-from opencode.session.message import (
-    AssistantMessage, TextPart, ToolPart, create_text_part, create_tool_part, Part
-)
-from opencode.tool.base import ToolContext, ToolResult
+from opencode.session.message import AssistantMessage, Part, TextPart, ToolPart, create_text_part, create_tool_part
 from opencode.tool import registry as tool_registry
-from opencode.provider.schema import Model
-from opencode.bus.bus import Bus
-from opencode.bus.events import PART_UPDATED, PART_DELTA
+from opencode.tool.base import ToolContext
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from opencode.bus.bus import Bus
+    from opencode.provider.schema import Model
 
 logger = logmod.create(service="session.processor")
 
@@ -120,7 +123,7 @@ async def process(
             # Permission check
             if ctx.permission_manager:
                 try:
-                    from opencode.permission.schema import RejectedError, DeniedError
+                    from opencode.permission.schema import DeniedError, RejectedError
                     await ctx.permission_manager.ask(
                         session_id=ctx.session_id,
                         permission=tp.tool,

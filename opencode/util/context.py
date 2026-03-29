@@ -7,7 +7,7 @@ Each request/instance gets its own context with lazily-initialized services.
 from __future__ import annotations
 
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from opencode.project.instance import InstanceContext

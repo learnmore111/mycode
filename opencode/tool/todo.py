@@ -1,8 +1,9 @@
 """Todo tool — manage a task list. Equivalent to src/tool/todo.ts."""
 from __future__ import annotations
-import json
+
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
 
 # In-memory todo storage per session
 _todos: dict[str, list[dict[str, Any]]] = {}

@@ -4,24 +4,34 @@ This is the core orchestrator equivalent to src/session/prompt.ts.
 Flow: validate → create messages → build system prompt → load tools → run agentic loop
 """
 from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any
+
 from opencode.agent import agent as agentmod
-from opencode.bus.bus import Bus
-from opencode.bus.events import SESSION_UPDATED, SESSION_ERROR
+from opencode.bus.events import SESSION_ERROR
 from opencode.provider import provider as providermod
-from opencode.provider.schema import ProviderInfo
+from opencode.session import compaction
 from opencode.session import llm as llmmod
 from opencode.session import processor as proc
 from opencode.session.message import (
-    AssistantMessage, UserMessage, Part, TextPart, WithParts,
-    create_user_message, create_assistant_message, create_text_part,
+    Part,
+    TextPart,
+    create_assistant_message,
+    create_user_message,
+    save_message,
+    save_parts,
 )
-from opencode.session.session import SessionInfo, BusyError, get as get_session, touch
-from opencode.session.system import build as build_system, PROMPT_PLAN, PROMPT_BUILD_SWITCH
+from opencode.session.session import touch
+from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from opencode.bus.bus import Bus
 
 logger = logmod.create(service="session.prompt")
 
@@ -45,7 +55,7 @@ class PromptEvent:
 
 
 async def prompt(
-    input: PromptInput,
+    prompt_input: PromptInput,
     bus: Bus,
     *,
     history: list[dict[str, Any]] | None = None,
@@ -55,7 +65,7 @@ async def prompt(
     This is the main entry point for the agentic loop.
     Yields PromptEvent as the model generates responses and executes tools.
     """
-    session_id = input.session_id
+    session_id = prompt_input.session_id
 
     # 1. Check busy
     if _busy.get(session_id):
@@ -65,8 +75,8 @@ async def prompt(
     _busy[session_id] = True
     try:
         # 2. Resolve model
-        if input.model:
-            provider_id, model_id = providermod.parse_model(input.model)
+        if prompt_input.model:
+            provider_id, model_id = providermod.parse_model(prompt_input.model)
         else:
             provider_id, model_id = await providermod.default_model()
 
@@ -77,7 +87,7 @@ async def prompt(
             return
 
         # 3. Resolve agent
-        agent_name = input.agent or await agentmod.default_agent()
+        agent_name = prompt_input.agent or await agentmod.default_agent()
         agent = await agentmod.get(agent_name)
         if not agent:
             yield PromptEvent(type="error", data={"message": f"Agent not found: {agent_name}"})
@@ -85,8 +95,8 @@ async def prompt(
 
         # 4. Build system prompt
         system = build_system(model=model, agent_prompt=agent.prompt, instructions=None)
-        if input.system:
-            system.append(input.system)
+        if prompt_input.system:
+            system.append(prompt_input.system)
 
         # 5. Load tools
         tool_registry.register_builtins()
@@ -94,7 +104,7 @@ async def prompt(
 
         # 6. Build user message content
         user_text = ""
-        for part in input.parts:
+        for part in prompt_input.parts:
             if part.get("type") == "text":
                 user_text += part.get("content", "")
 
@@ -103,7 +113,7 @@ async def prompt(
         messages.append({"role": "user", "content": user_text})
 
         # 8. Create assistant message
-        user_msg = create_user_message(session_id, input.message_id)
+        user_msg = create_user_message(session_id, prompt_input.message_id)
         assistant_msg = create_assistant_message(
             session_id, user_msg.id, provider_id, model_id, agent_name,
         )
@@ -128,6 +138,20 @@ async def prompt(
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
+
+            # Check if context needs compaction before sending to LLM
+            context_limit = model.limit.context if model.limit.context > 0 else 0
+            if context_limit > 0 and compaction.should_compact(
+                messages=messages, model_context=context_limit
+            ):
+                logger.info("context overflow detected, compacting")
+                api_key = await providermod.get_api_key(provider_id)
+                model_name = providermod.litellm_model_name(model)
+                messages = await compaction.compact(
+                    messages, model_name=model_name, api_key=api_key,
+                )
+                yield PromptEvent(type="compact", data={"session_id": session_id})
+
             stream_input = llmmod.StreamInput(
                 model=model,
                 messages=messages,
@@ -135,7 +159,7 @@ async def prompt(
                 tools=tools if model.capabilities.toolcall else None,
                 temperature=agent.temperature,
                 top_p=agent.top_p,
-                api_key=(providermod._state or {}).get(provider_id, ProviderInfo(id=provider_id, name=provider_id, source="env")).key,
+                api_key=await providermod.get_api_key(provider_id),
             )
 
             result, parts = await proc.process(ctx, stream_input)
@@ -162,11 +186,19 @@ async def prompt(
                 continue
 
             if result == "compact":
-                logger.info("compaction requested")
-                break
+                logger.info("compaction requested by processor")
+                api_key = await providermod.get_api_key(provider_id)
+                model_name = providermod.litellm_model_name(model)
+                messages = await compaction.compact(
+                    messages, model_name=model_name, api_key=api_key,
+                )
+                yield PromptEvent(type="compact", data={"session_id": session_id})
+                continue
 
-        # 10. Finalize
+        # 10. Finalize — persist assistant message and parts
         assistant_msg.time_completed = int(time.time() * 1000)
+        save_message(assistant_msg)
+        save_parts(all_parts)
         touch(session_id)
 
         yield PromptEvent(type="done", data={

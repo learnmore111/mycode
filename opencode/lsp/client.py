@@ -1,7 +1,12 @@
 """LSP client — JSON-RPC communication with language servers. Equivalent to src/lsp/client.ts."""
 from __future__ import annotations
-import asyncio, json, os
+
+import asyncio
+import contextlib
+import json
+import os
 from typing import Any
+
 from opencode.util import log as logmod
 
 logger = logmod.create(service="lsp.client")
@@ -60,7 +65,7 @@ class LspJsonRpcClient:
         self._send(msg)
         try:
             return await asyncio.wait_for(future, timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(msg_id, None)
             logger.warn("LSP request timeout", method=method, server=self.server_id)
             return None
@@ -82,10 +87,8 @@ class LspJsonRpcClient:
     async def _drain(self) -> None:
         """Flush stdin buffer to ensure messages are sent."""
         if self.process.stdin:
-            try:
+            with contextlib.suppress(ConnectionError, BrokenPipeError):
                 await self.process.stdin.drain()
-            except (ConnectionError, BrokenPipeError):
-                pass
 
     async def _read_loop(self) -> None:
         """Read JSON-RPC messages from stdout."""
@@ -141,7 +144,7 @@ class LspJsonRpcClient:
     async def open_file(self, path: str) -> None:
         """Notify the server about an opened file."""
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except Exception:
             return
@@ -194,7 +197,7 @@ class LspJsonRpcClient:
             self.process.terminate()
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.process.kill()
         if self._reader_task:
             self._reader_task.cancel()

@@ -1,7 +1,10 @@
 """File operations. Equivalent to src/file/index.ts."""
 from __future__ import annotations
-import base64, os
+
+import base64
+import os
 from pathlib import Path
+
 from opencode.file import ripgrep
 from opencode.project.instance import current_or_none
 
@@ -30,7 +33,7 @@ async def read(file_path: str) -> dict:
         return {"type": "binary", "content": ""}
 
 
-async def search(query: str, *, limit: int = 100, type: str = "all") -> list[str]:
+async def search(query: str, *, limit: int = 100, file_type: str = "all") -> list[str]:
     """Fuzzy search files in the project."""
     inst = current_or_none()
     cwd = inst.directory if inst else os.getcwd()

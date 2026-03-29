@@ -1,9 +1,14 @@
 """Grep tool using ripgrep. Equivalent to src/tool/grep.ts."""
 from __future__ import annotations
-import asyncio, os, shutil
+
+import asyncio
+import os
+import shutil
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
 from opencode.project.instance import current_or_none
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+
 
 class GrepTool(ToolInfo):
     id = "grep"

@@ -3,10 +3,13 @@
 Uses a simple approach: fetches search results via DuckDuckGo HTML (no API key needed).
 """
 from __future__ import annotations
+
 import re
 from typing import Any
+
 import httpx
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
 
 
 class WebSearchTool(ToolInfo):

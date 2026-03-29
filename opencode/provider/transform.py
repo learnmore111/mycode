@@ -4,9 +4,13 @@ Handles provider-specific options like max output tokens, reasoning settings,
 cache control, and tool choice adjustments.
 """
 from __future__ import annotations
-from typing import Any
-from opencode.provider.schema import Model
+
+from typing import TYPE_CHECKING, Any
+
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from opencode.provider.schema import Model
 
 logger = logmod.create(service="provider.transform")
 
@@ -93,7 +97,6 @@ def reasoning_params(model: Model, variant: str | None = None) -> dict[str, Any]
 
 def provider_options(model: Model, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build provider-specific options for a model call."""
-    npm = model.api.npm
     opts: dict[str, Any] = {}
 
     # Max tokens

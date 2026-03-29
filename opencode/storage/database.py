@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from opencode.storage.models import Base
 from opencode.util import log as logmod
 from opencode.util.paths import GlobalPaths
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
 
 logger = logmod.create(service="db")
 

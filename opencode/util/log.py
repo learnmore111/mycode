@@ -7,14 +7,14 @@ Equivalent to the original src/util/log.ts.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import time
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Timer:

@@ -1,7 +1,12 @@
 """Ripgrep integration for fast file listing and content search. Equivalent to src/file/ripgrep.ts."""
 from __future__ import annotations
-import asyncio, shutil
-from typing import AsyncGenerator
+
+import asyncio
+import shutil
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 async def files(*, cwd: str) -> AsyncGenerator[str, None]:

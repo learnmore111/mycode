@@ -1,7 +1,10 @@
 """MCP (Model Context Protocol) support. Equivalent to src/mcp/index.ts."""
 from __future__ import annotations
-import asyncio, os
+
+import contextlib
+import os
 from typing import Any
+
 from opencode.util import log as logmod
 
 logger = logmod.create(service="mcp")
@@ -105,10 +108,8 @@ class McpServer:
         """Disconnect — tear down context managers in reverse order."""
         self._client = None
         for ctx in reversed(self._context_stack):
-            try:
+            with contextlib.suppress(Exception):
                 await ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
         self._context_stack.clear()
         self.tools.clear()
         self.status = "disabled"

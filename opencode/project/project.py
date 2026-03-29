@@ -1,7 +1,11 @@
 """Project discovery — find project root via git. Equivalent to src/project/project.ts."""
 from __future__ import annotations
-import asyncio, os, shutil
+
+import asyncio
+import os
+import shutil
 from pathlib import Path
+
 from opencode.project.instance import ProjectInfo
 from opencode.util import log as logmod
 

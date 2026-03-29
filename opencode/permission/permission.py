@@ -12,9 +12,8 @@ Equivalent to src/permission/index.ts.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from opencode.bus.bus import Bus
 from opencode.bus.events import PERMISSION_ASKED, PERMISSION_REPLIED
 from opencode.permission.evaluate import evaluate as eval_rule
 from opencode.permission.schema import (
@@ -26,8 +25,12 @@ from opencode.permission.schema import (
     Rule,
     Ruleset,
 )
-from opencode.util import ids, log as logmod
+from opencode.util import ids
+from opencode.util import log as logmod
 from opencode.util.wildcard import match
+
+if TYPE_CHECKING:
+    from opencode.bus.bus import Bus
 
 logger = logmod.create(service="permission")
 
@@ -158,7 +161,7 @@ class PermissionManager:
 
             # Auto-resolve other pending that now match
             to_resolve = []
-            for rid, (req, fut) in list(self._pending.items()):
+            for rid, (req, _fut) in list(self._pending.items()):
                 if req.session_id != request.session_id:
                     continue
                 all_ok = all(

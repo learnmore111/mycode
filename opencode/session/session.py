@@ -1,12 +1,17 @@
 """Session CRUD with SQLite persistence. Equivalent to src/session/index.ts."""
 from __future__ import annotations
-import json, time
-from dataclasses import dataclass, field
+
+import contextlib
+import json
+import time
+from dataclasses import dataclass
 from typing import Any
+
 from opencode.project.instance import current, current_or_none
 from opencode.storage.database import get_session as get_db_session
 from opencode.storage.models import SessionTable
-from opencode.util import ids, slug as slugmod
+from opencode.util import ids
+from opencode.util import slug as slugmod
 
 
 @dataclass
@@ -44,10 +49,8 @@ def _from_row(row: SessionTable) -> SessionInfo:
             "files": row.summary_files or 0,
         }
         if row.summary_diffs:
-            try:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 summary["diffs"] = json.loads(row.summary_diffs)
-            except (json.JSONDecodeError, TypeError):
-                pass
     return SessionInfo(
         id=row.id, slug=row.slug, project_id=row.project_id, directory=row.directory,
         title=row.title, version=row.version, parent_id=row.parent_id,

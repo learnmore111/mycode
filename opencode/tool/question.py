@@ -1,7 +1,9 @@
 """Question tool — ask the user a question. Equivalent to src/tool/question.ts."""
 from __future__ import annotations
+
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
 
 
 class QuestionTool(ToolInfo):

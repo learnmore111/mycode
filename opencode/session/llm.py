@@ -7,13 +7,17 @@ Equivalent to src/session/llm.ts.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any
 
 import litellm
 
 from opencode.provider.provider import litellm_model_name
-from opencode.provider.schema import Model
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from opencode.provider.schema import Model
 
 logger = logmod.create(service="llm")
 
@@ -83,28 +87,28 @@ class ErrorEvent:
 StreamEvent = TextDelta | ToolCallDelta | ToolCallPartial | ToolCallArgsPartial | FinishEvent | ErrorEvent
 
 
-def _build_messages(input: StreamInput) -> list[dict[str, Any]]:
+def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
     """Build the messages list with system prompts prepended."""
     messages: list[dict[str, Any]] = []
 
     # Add system prompts
-    if input.system:
-        system_content = "\n\n".join(input.system)
+    if stream_input.system:
+        system_content = "\n\n".join(stream_input.system)
         messages.append({"role": "system", "content": system_content})
 
     # Add conversation messages
-    messages.extend(input.messages)
+    messages.extend(stream_input.messages)
     return messages
 
 
-def _build_tools(input: StreamInput) -> list[dict[str, Any]] | None:
+def _build_tools(stream_input: StreamInput) -> list[dict[str, Any]] | None:
     """Convert tool definitions to litellm format."""
-    if not input.tools:
+    if not stream_input.tools:
         return None
-    return input.tools
+    return stream_input.tools
 
 
-async def stream(input: StreamInput) -> AsyncGenerator[StreamEvent, None]:
+async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]:
     """Stream LLM responses using litellm.
 
     Yields StreamEvent objects as the model generates tokens.
@@ -129,25 +133,25 @@ async def stream(input: StreamInput) -> AsyncGenerator[StreamEvent, None]:
 
     # Apply provider-specific transforms
     from opencode.provider.transform import build_litellm_kwargs
-    provider_kwargs = build_litellm_kwargs(input.model)
+    provider_kwargs = build_litellm_kwargs(stream_input.model)
     kwargs.update(provider_kwargs)
 
     if tools:
         kwargs["tools"] = tools
-    if input.tool_choice:
-        kwargs["tool_choice"] = input.tool_choice
-    if input.temperature is not None:
-        kwargs["temperature"] = input.temperature
-    if input.top_p is not None:
-        kwargs["top_p"] = input.top_p
-    if input.max_tokens is not None:
-        kwargs["max_tokens"] = input.max_tokens
-    if input.stop:
-        kwargs["stop"] = input.stop
-    if input.api_key:
-        kwargs["api_key"] = input.api_key
-    if input.api_base:
-        kwargs["api_base"] = input.api_base
+    if stream_input.tool_choice:
+        kwargs["tool_choice"] = stream_input.tool_choice
+    if stream_input.temperature is not None:
+        kwargs["temperature"] = stream_input.temperature
+    if stream_input.top_p is not None:
+        kwargs["top_p"] = stream_input.top_p
+    if stream_input.max_tokens is not None:
+        kwargs["max_tokens"] = stream_input.max_tokens
+    if stream_input.stop:
+        kwargs["stop"] = stream_input.stop
+    if stream_input.api_key:
+        kwargs["api_key"] = stream_input.api_key
+    if stream_input.api_base:
+        kwargs["api_base"] = stream_input.api_base
 
     # Track tool calls being built across chunks
     tool_calls_in_progress: dict[int, dict[str, Any]] = {}

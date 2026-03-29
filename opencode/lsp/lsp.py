@@ -1,36 +1,23 @@
 """LSP integration manager. Equivalent to src/lsp/index.ts."""
 from __future__ import annotations
-import asyncio, shutil
-from typing import Any
+
+import asyncio
+import shutil
+from typing import TYPE_CHECKING, Any
+
 from opencode.lsp.servers import SERVERS, LspServerDef
 from opencode.project.instance import current_or_none
 from opencode.util import log as logmod
 
+if TYPE_CHECKING:
+    from opencode.lsp.client import LspJsonRpcClient
+
 logger = logmod.create(service="lsp")
-
-
-class LspClient:
-    """Represents a running LSP server connection."""
-    def __init__(self, server_id: str, root: str):
-        self.server_id = server_id
-        self.root = root
-        self.status = "connected"
-        self._process: asyncio.subprocess.Process | None = None
-
-    async def shutdown(self) -> None:
-        if self._process and self._process.returncode is None:
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._process.kill()
-        self.status = "stopped"
 
 
 class LspManager:
     """Manages LSP server connections for the project."""
     def __init__(self) -> None:
-        from opencode.lsp.client import LspJsonRpcClient
         self._clients: list[LspJsonRpcClient] = []
         self._servers: dict[str, LspServerDef] = dict(SERVERS)
         self._broken: set[str] = set()
@@ -50,6 +37,7 @@ class LspManager:
     async def touch_file(self, file_path: str) -> None:
         """Notify LSP servers about a file (spawn server if needed)."""
         import os
+
         from opencode.lsp.client import LspJsonRpcClient
         ext = os.path.splitext(file_path)[1]
         inst = current_or_none()
@@ -91,9 +79,14 @@ class LspManager:
     def status(self) -> list[dict[str, str]]:
         return [{"id": c.server_id, "root": c.root, "status": c.status} for c in self._clients]
 
-    async def diagnostics(self) -> dict[str, list[dict]]:
-        # TODO: Collect diagnostics from running LSP servers
-        return {}
+    async def diagnostics(self) -> dict[str, list[dict[str, Any]]]:
+        """Collect diagnostics from all running LSP servers."""
+        result: dict[str, list[dict[str, Any]]] = {}
+        for client in self._clients:
+            for uri, diags in client.diagnostics.items():
+                if diags:
+                    result[uri] = diags
+        return result
 
     async def close(self) -> None:
         for client in self._clients:

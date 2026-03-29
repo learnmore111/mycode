@@ -7,10 +7,14 @@ Equivalent to src/bus/index.ts (Effect PubSub → asyncio.Queue).
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncGenerator, Callable, Coroutine
+import contextlib
+from typing import TYPE_CHECKING, Any
 
 from opencode.bus.events import Event, EventDef
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
 
 logger = logmod.create(service="bus")
 
@@ -41,10 +45,8 @@ class Bus:
 
         # Wildcard subscribers
         for q in self._wildcard:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
 
         # Callbacks
         for cb in self._callbacks.get(event_def.type, []):
@@ -74,7 +76,7 @@ class Bus:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=1.0)
                     yield event
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
         finally:
             subs.remove(q)
@@ -90,7 +92,7 @@ class Bus:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=1.0)
                     yield event
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
         finally:
             self._wildcard.remove(q)
@@ -127,9 +129,7 @@ class Bus:
                 q.put_nowait(sentinel)
 
 
-# Convenience: import sentinel
 from opencode.bus.events import INSTANCE_DISPOSED  # noqa: E402
-
 
 # --- Global bus (cross-instance, for server-level events) ---
 
@@ -139,10 +139,8 @@ _global_callbacks: list[Callable[[Event], Any]] = []
 def global_emit(event: Event) -> None:
     """Emit an event on the global bus (sync, non-blocking)."""
     for cb in _global_callbacks:
-        try:
+        with contextlib.suppress(Exception):
             cb(event)
-        except Exception:
-            pass
 
 
 def global_on(callback: Callable[[Event], Any]) -> Callable[[], None]:

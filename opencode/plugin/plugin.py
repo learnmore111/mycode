@@ -1,7 +1,10 @@
 """Plugin system. Equivalent to src/plugin/index.ts."""
 from __future__ import annotations
+
 import importlib
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
 from opencode.util import log as logmod
 
 logger = logmod.create(service="plugin")
@@ -39,10 +42,10 @@ class PluginManager:
             if callable(fn):
                 self._hooks.setdefault(name, []).append(fn)
 
-    async def trigger(self, hook_name: str, input: Any, output: Any) -> Any:
+    async def trigger(self, hook_name: str, hook_input: Any, output: Any) -> Any:
         for fn in self._hooks.get(hook_name, []):
             try:
-                await fn(input, output)
+                await fn(hook_input, output)
             except Exception as e:
                 logger.error("hook failed", hook=hook_name, error=str(e))
         return output

@@ -1,13 +1,15 @@
 """Task tool — spawn a sub-agent for complex multi-step work. Equivalent to src/tool/task.ts."""
 from __future__ import annotations
+
 import json
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
-from opencode.session import llm as llmmod
-from opencode.provider import provider as providermod
+
 from opencode.agent import agent as agentmod
+from opencode.provider import provider as providermod
+from opencode.session import llm as llmmod
 from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
 
 
 class TaskTool(ToolInfo):

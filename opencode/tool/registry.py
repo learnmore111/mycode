@@ -1,8 +1,12 @@
 """Tool registry — manages available tools. Equivalent to src/tool/registry.ts."""
 from __future__ import annotations
-from typing import Any
-from opencode.tool.base import ToolInfo
+
+from typing import TYPE_CHECKING, Any
+
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from opencode.tool.base import ToolInfo
 
 logger = logmod.create(service="tool.registry")
 
@@ -24,7 +28,7 @@ def to_llm_tools() -> list[dict[str, Any]]:
 
 def register_builtins() -> None:
     """Register all built-in tools."""
-    from opencode.tool import bash, read, edit, write, glob_tool, grep, task, webfetch, websearch, question, todo, skill
+    from opencode.tool import bash, edit, glob_tool, grep, question, read, skill, task, todo, webfetch, websearch, write
     for mod in [bash, read, edit, write, glob_tool, grep, task, webfetch, websearch, question, todo, skill]:
         if hasattr(mod, "tool"):
             register(mod.tool)

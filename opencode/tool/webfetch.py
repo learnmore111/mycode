@@ -1,9 +1,12 @@
 """WebFetch tool — fetch and extract content from URLs. Equivalent to src/tool/webfetch.ts."""
 from __future__ import annotations
+
 import re
 from typing import Any
+
 import httpx
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
 
 
 def _html_to_text(html: str) -> str:
@@ -45,10 +48,7 @@ class WebFetchTool(ToolInfo):
                 resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")
-            if "text/html" in content_type:
-                text = _html_to_text(resp.text)
-            else:
-                text = resp.text
+            text = _html_to_text(resp.text) if "text/html" in content_type else resp.text
 
             # Truncate very long pages
             if len(text) > 50_000:

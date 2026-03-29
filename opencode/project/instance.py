@@ -7,11 +7,13 @@ Equivalent to src/project/instance.ts.
 
 from __future__ import annotations
 
-import os
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Coroutine, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
 
 T = TypeVar("T")
 
@@ -77,7 +79,7 @@ def set_context(ctx: InstanceContext) -> _InstanceToken:
     return _InstanceToken(token)
 
 
-async def provide(
+async def provide[T](
     directory: str,
     fn: Callable[[], Coroutine[Any, Any, T]],
     project: ProjectInfo | None = None,

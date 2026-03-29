@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import Column, Float, Integer, String, Text, event
+from sqlalchemy import Column, Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase
 
 

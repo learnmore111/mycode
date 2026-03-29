@@ -1,9 +1,13 @@
 """Glob file search tool. Equivalent to src/tool/glob.ts."""
 from __future__ import annotations
-import glob as globmod, os
+
+import glob as globmod
+import os
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
 from opencode.project.instance import current_or_none
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+
 
 class GlobTool(ToolInfo):
     id = "glob"

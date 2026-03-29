@@ -1,9 +1,14 @@
 """Bash tool — execute shell commands. Equivalent to src/tool/bash.ts."""
 from __future__ import annotations
-import asyncio, os, shutil
+
+import asyncio
+import os
+import shutil
 from typing import Any
-from opencode.tool.base import ToolInfo, ToolResult, ToolContext
+
 from opencode.project.instance import current_or_none
+from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+
 
 class BashTool(ToolInfo):
     id = "bash"
@@ -52,7 +57,7 @@ class BashTool(ToolInfo):
                 output=f"Exit code: {code}\n{output}" if code != 0 else output,
                 metadata={"exit_code": code},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult(title=command[:80], output="Command timed out.", metadata={"exit_code": -1, "timeout": True})
         except Exception as e:
             return ToolResult(title=command[:80], output=f"Error: {e}", metadata={"exit_code": -1})

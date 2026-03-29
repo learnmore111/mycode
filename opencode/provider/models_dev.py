@@ -4,12 +4,19 @@ Equivalent to src/provider/models.ts. Provides the model catalog that maps
 provider IDs to their available models with capabilities, costs, and limits.
 """
 from __future__ import annotations
-import json, os, time
-from pathlib import Path
-from typing import Any
+
+import contextlib
+import json
+import time
+from typing import TYPE_CHECKING, Any
+
 import httpx
+
 from opencode.util import log as logmod
 from opencode.util.paths import GlobalPaths
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logmod.create(service="models_dev")
 
@@ -37,10 +44,8 @@ def _load_cache() -> dict[str, Any] | None:
 def _save_cache(providers: dict[str, Any]) -> None:
     p = _cache_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    try:
+    with contextlib.suppress(Exception):
         p.write_text(json.dumps({"_ts": time.time(), "providers": providers}), encoding="utf-8")
-    except Exception:
-        pass
 
 
 async def fetch() -> dict[str, Any]:

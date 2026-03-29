@@ -8,7 +8,6 @@ Equivalent to src/provider/provider.ts.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from opencode.auth import auth as authmod
 from opencode.config import config as configmod
@@ -243,7 +242,6 @@ async def _init_state() -> dict[str, ProviderInfo]:
     enabled = set(cfg.enabled_providers) if cfg.enabled_providers else None
 
     # Only keep providers that have an API key or were explicitly configured
-    activated_sources = {"env", "api", "config"}
     for pid in list(providers.keys()):
         if pid in disabled or (enabled and pid not in enabled):
             del providers[pid]
@@ -331,3 +329,10 @@ def invalidate() -> None:
     """Clear cached provider state."""
     global _state
     _state = None
+
+
+async def get_api_key(provider_id: ProviderID) -> str | None:
+    """Get the API key for a provider."""
+    providers = await _init_state()
+    provider = providers.get(provider_id)
+    return provider.key if provider else None

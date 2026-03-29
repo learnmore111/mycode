@@ -6,13 +6,14 @@ Equivalent to src/storage/storage.ts.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from opencode.util import filesystem as fs
 from opencode.util import log as logmod
 from opencode.util.paths import GlobalPaths
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logmod.create(service="storage")
 

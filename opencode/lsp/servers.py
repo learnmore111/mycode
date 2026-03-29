@@ -1,6 +1,8 @@
 """Predefined LSP server configurations. Equivalent to src/lsp/server.ts."""
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 
 @dataclass
 class LspServerDef:

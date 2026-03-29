@@ -81,8 +81,8 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
-    from opencode.session.session import create as create_session
     from opencode.session.prompt import PromptInput, prompt
+    from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
 
     register_builtins()
@@ -118,6 +118,7 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
 def providers() -> None:
     """List available AI providers and models."""
     import asyncio
+
     from opencode.provider.provider import list_providers
 
     async def _list() -> None:
@@ -139,12 +140,13 @@ def providers() -> None:
 def models() -> None:
     """List available models."""
     import asyncio
+
     from opencode.provider.provider import list_providers
 
     async def _list() -> None:
         provs = await list_providers()
         for pid, p in provs.items():
-            for mid, m in p.models.items():
+            for mid, _m in p.models.items():
                 click.echo(f"  {pid}/{mid}")
 
     asyncio.run(_list())
