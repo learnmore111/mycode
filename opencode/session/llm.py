@@ -113,14 +113,14 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
 
     Yields StreamEvent objects as the model generates tokens.
     """
-    model_name = litellm_model_name(input.model)
-    messages = _build_messages(input)
-    tools = _build_tools(input)
+    model_name = litellm_model_name(stream_input.model)
+    messages = _build_messages(stream_input)
+    tools = _build_tools(stream_input)
 
     logger.info(
         "stream",
         model=model_name,
-        provider=input.model.provider_id,
+        provider=stream_input.model.provider_id,
         message_count=len(messages),
         tool_count=len(tools) if tools else 0,
     )

@@ -9,3 +9,5 @@ build/
 .ruff_cache/
 *.db
 .env
+opencode.json
+opencode.jsonc
