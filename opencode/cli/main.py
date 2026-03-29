@@ -77,11 +77,21 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
 
 
 async def _interactive(directory: str, model: str | None, agent: str | None) -> None:
-    """Run the interactive CLI REPL."""
+    """Run the interactive CLI REPL with Rich-powered UI."""
+    import time
+
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.styles import Style
+    from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit.styles import Style as PtStyle
+    from rich.console import Console
+    from rich.live import Live
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.spinner import Spinner
+    from rich.table import Table
+    from rich.text import Text
 
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
@@ -90,23 +100,55 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
 
+    console = Console(highlight=False)
     register_builtins()
     project = await from_directory(directory)
 
-    style = Style.from_dict({
-        "prompt": "#00aa00 bold",
-        "info": "#888888",
-        "tool": "#aa8800",
-        "error": "#ff0000 bold",
+    # --- Welcome Panel ---
+    blue = "dodger_blue1"
+    logo = Text.from_markup(f"[{blue} bold]▐█▛█▛█▌\n▐█████▌[/{blue} bold]")
+    head = Text.from_markup(f"[bold]Welcome to OpenCode v{__version__}![/bold]")
+    help_text = Text.from_markup("[grey50]Type /help for commands, Ctrl+D to exit.[/grey50]")
+    header_table = Table(show_header=False, show_edge=False, box=None, padding=(0, 1), expand=False)
+    header_table.add_column(justify="left")
+    header_table.add_column(justify="left")
+    header_table.add_row(logo, Text.assemble(head, "\n", help_text))
+
+    info_items = [
+        ("Directory", directory, "grey50"),
+        ("Model", model or "default", "grey50"),
+        ("Agent", agent or "build", "grey50"),
+    ]
+    info_lines = [header_table, Text("")]
+    for name, value, color in info_items:
+        info_lines.append(Text(f"{name}: {value}", style=color))
+    info_lines.append(Text(""))
+    tips = [
+        ("Ctrl+J", "newline"),
+        ("Ctrl+D", "exit"),
+        ("/clear", "reset"),
+    ]
+    tip_text = "  ".join(f"{k}: {v}" for k, v in tips)
+    info_lines.append(Text(tip_text, style="grey50"))
+
+    from rich.console import Group
+    console.print(Panel(
+        Group(*info_lines),
+        border_style=blue,
+        expand=False,
+        padding=(1, 2),
+    ))
+    console.print()
+
+    # --- Prompt setup ---
+    pt_style = PtStyle.from_dict({
+        "bottom-toolbar": "noreverse",
     })
-
-    click.echo(f"\n  OpenCode v{__version__}")
-    click.echo(f"  Model: {model or 'default'} | Agent: {agent or 'build'}")
-    click.echo(f"  Directory: {directory}")
-    click.echo("  Type /help for commands, Ctrl+D to exit\n")
-
     history = InMemoryHistory()
-    ps = PromptSession(history=history)
+    ps = PromptSession(
+        history=history,
+        style=pt_style,
+    )
 
     session_info = None
     bus = Bus()
@@ -116,32 +158,33 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         nonlocal session_info, conversation_history
 
         while True:
+            # Prompt symbol
+            prompt_symbol = "✨ " if not (agent and agent == "plan") else "📋 "
+
             try:
-                user_input = await ps.prompt_async(
-                    HTML("<prompt>❯ </prompt>"),
-                    style=style,
-                    multiline=False,
-                )
+                with patch_stdout(raw=True):
+                    user_input = await ps.prompt_async(
+                        HTML(f"<b>{prompt_symbol}</b>"),
+                        multiline=False,
+                    )
             except (EOFError, KeyboardInterrupt):
-                click.echo("\nBye!")
+                console.print("\n[grey50]Bye![/grey50]")
                 break
 
             text = user_input.strip()
             if not text:
                 continue
 
-            # Handle slash commands
             if text.startswith("/"):
-                handled = _handle_command(text, conversation_history)
+                handled = _handle_command(text, conversation_history, console)
                 if handled == "quit":
-                    click.echo("Bye!")
+                    console.print("[grey50]Bye![/grey50]")
                     break
                 if handled == "clear":
                     session_info = None
                     conversation_history = []
                 continue
 
-            # Create session on first message
             if session_info is None:
                 session_info = create_session(title=text[:60])
 
@@ -152,31 +195,79 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 agent=agent,
             )
 
-            click.echo()
+            # --- Stream AI response with Rich Live ---
+            console.print()
             full_text = ""
-            async for event in prompt(inp, bus, history=conversation_history):
-                if event.type == "text":
-                    content = event.data.get("content", "")
-                    full_text += content
-                    click.echo(content, nl=False)
-                elif event.type == "tool":
-                    tool_name = event.data.get("tool", "?")
-                    status = event.data.get("status", "?")
-                    output = event.data.get("output", "")
-                    click.echo(f"\n  ⚙ [{tool_name}] {status}", err=True)
-                    if output and status == "completed":
-                        preview = output[:200].replace("\n", "\n    ")
-                        click.echo(f"    {preview}", err=True)
-                elif event.type == "error":
-                    click.echo(f"\n  ✗ Error: {event.data.get('message', 'unknown')}", err=True)
-                elif event.type == "compact":
-                    click.echo("\n  ↻ Context compacted", err=True)
-                elif event.type == "done":
-                    tokens = event.data.get("tokens", {})
-                    iters = event.data.get("iterations", 0)
-                    click.echo(f"\n  ─ tokens in:{tokens.get('input',0)} out:{tokens.get('output',0)} | iterations:{iters}", err=True)
+            start_time = time.monotonic()
+            spinner = Spinner("dots", "")
 
-            click.echo()
+            with Live(spinner, console=console, refresh_per_second=10, transient=True) as live:
+                def elapsed_fn(_st=start_time):  # noqa: B023
+                    e = time.monotonic() - _st
+                    return f"{e:.0f}s" if e >= 1 else "<1s"
+
+                async for event in prompt(inp, bus, history=conversation_history):
+                    if event.type == "started":
+                        model_name = event.data.get("model", "?")
+                        spinner.text = Text.assemble(
+                            ("Composing... ", ""),
+                            ("<1s", "grey50"),
+                            (f" · {model_name}", "grey50"),
+                        )
+
+                    elif event.type == "text":
+                        content = event.data.get("content", "")
+                        full_text += content
+                        spinner.text = Text.assemble(
+                            ("Composing... ", ""),
+                            (f"{elapsed_fn()}", "grey50"),
+                        )
+
+                    elif event.type == "tool":
+                        tool_name = event.data.get("tool", "?")
+                        status = event.data.get("status", "?")
+                        output = event.data.get("output", "")
+                        if status == "completed":
+                            # Print tool result permanently
+                            live.update(Text(""))
+                            console.print(Text.assemble(
+                                ("• ", "green"),
+                                ("Used ", ""),
+                                (tool_name, "blue"),
+                            ))
+                            if output:
+                                preview = output[:300].strip()
+                                if preview:
+                                    console.print(Text(f"  {preview[:150]}", style="grey50"))
+                        else:
+                            tool_spinner = Spinner("dots", "")
+                            tool_spinner.text = Text.assemble(
+                                ("Using ", ""),
+                                (tool_name, "blue"),
+                            )
+                            live.update(tool_spinner)
+
+                    elif event.type == "error":
+                        live.update(Text(""))
+                        console.print(Text(f"✗ Error: {event.data.get('message', 'unknown')}", style="red bold"))
+
+                    elif event.type == "compact":
+                        spinner.text = Text("↻ Compacting context...", style="yellow")
+
+                    elif event.type == "done":
+                        live.update(Text(""))
+
+            # Render the full AI response as Markdown
+            if full_text.strip():
+                console.print(Markdown(full_text.strip()))
+
+            # Status line
+            elapsed = time.monotonic() - start_time
+            console.print(Text(
+                f"  ─ {elapsed:.1f}s",
+                style="grey50",
+            ))
+            console.print()
 
             # Keep conversation history
             conversation_history.append({"role": "user", "content": text})
@@ -188,36 +279,48 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     await provide(directory, _run_loop, project)
 
 
-def _handle_command(text: str, history: list) -> str | None:
+def _handle_command(text: str, history: list, console=None) -> str | None:
     """Handle slash commands. Returns 'quit', 'clear', or None."""
+    if console is None:
+        from rich.console import Console
+        console = Console(highlight=False)
+
     cmd = text.lower().split()[0]
 
     if cmd in ("/quit", "/exit", "/q"):
         return "quit"
 
     if cmd in ("/clear", "/reset"):
-        click.echo("  ↻ Conversation cleared")
+        console.print("  [yellow]↻ Conversation cleared[/yellow]")
         return "clear"
 
     if cmd == "/help":
-        click.echo("  Commands:")
-        click.echo("    /help          Show this help")
-        click.echo("    /clear         Clear conversation history")
-        click.echo("    /history       Show conversation turns")
-        click.echo("    /quit          Exit")
+        from rich.table import Table
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column(style="cyan")
+        table.add_column(style="grey50")
+        table.add_row("/help", "Show this help")
+        table.add_row("/clear", "Clear conversation history")
+        table.add_row("/history", "Show conversation turns")
+        table.add_row("/quit", "Exit")
+        table.add_row("", "")
+        table.add_row("Ctrl+J", "Insert newline")
+        table.add_row("Ctrl+D", "Exit")
+        console.print(table)
         return ""
 
     if cmd == "/history":
         if not history:
-            click.echo("  (empty)")
+            console.print("  [grey50](empty)[/grey50]")
         else:
             for i, msg in enumerate(history):
                 role = msg["role"]
                 content = msg.get("content", "")[:80]
-                click.echo(f"  [{i}] {role}: {content}")
+                style = "green" if role == "user" else "blue"
+                console.print(f"  [{style}][{i}] {role}:[/{style}] {content}")
         return ""
 
-    click.echo(f"  Unknown command: {cmd}. Type /help")
+    console.print(f"  [red]Unknown command: {cmd}. Type /help[/red]")
     return ""
 
 

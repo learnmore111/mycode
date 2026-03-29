@@ -39,6 +39,7 @@ dependencies = [
     # Diff
     "unidiff>=0.7.0",
     "prompt-toolkit>=3.0.52",
+    "rich>=14.3.3",
 ]
 
 [project.optional-dependencies]
