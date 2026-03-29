@@ -73,7 +73,152 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
     if message:
         asyncio.run(_headless(directory, model, agent, message))
     else:
-        click.echo("Interactive TUI mode not yet implemented. Use --message for headless mode.")
+        asyncio.run(_interactive(directory, model, agent))
+
+
+async def _interactive(directory: str, model: str | None, agent: str | None) -> None:
+    """Run the interactive CLI REPL."""
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.styles import Style
+
+    from opencode.bus.bus import Bus
+    from opencode.project.instance import provide
+    from opencode.project.project import from_directory
+    from opencode.session.prompt import PromptInput, prompt
+    from opencode.session.session import create as create_session
+    from opencode.tool.registry import register_builtins
+
+    register_builtins()
+    project = await from_directory(directory)
+
+    style = Style.from_dict({
+        "prompt": "#00aa00 bold",
+        "info": "#888888",
+        "tool": "#aa8800",
+        "error": "#ff0000 bold",
+    })
+
+    click.echo(f"\n  OpenCode v{__version__}")
+    click.echo(f"  Model: {model or 'default'} | Agent: {agent or 'build'}")
+    click.echo(f"  Directory: {directory}")
+    click.echo("  Type /help for commands, Ctrl+D to exit\n")
+
+    history = InMemoryHistory()
+    ps = PromptSession(history=history)
+
+    session_info = None
+    bus = Bus()
+    conversation_history: list[dict] = []
+
+    async def _run_loop() -> None:
+        nonlocal session_info, conversation_history
+
+        while True:
+            try:
+                user_input = await ps.prompt_async(
+                    HTML("<prompt>❯ </prompt>"),
+                    style=style,
+                    multiline=False,
+                )
+            except (EOFError, KeyboardInterrupt):
+                click.echo("\nBye!")
+                break
+
+            text = user_input.strip()
+            if not text:
+                continue
+
+            # Handle slash commands
+            if text.startswith("/"):
+                handled = _handle_command(text, conversation_history)
+                if handled == "quit":
+                    click.echo("Bye!")
+                    break
+                if handled == "clear":
+                    session_info = None
+                    conversation_history = []
+                continue
+
+            # Create session on first message
+            if session_info is None:
+                session_info = create_session(title=text[:60])
+
+            inp = PromptInput(
+                session_id=session_info.id,
+                parts=[{"type": "text", "content": text}],
+                model=model,
+                agent=agent,
+            )
+
+            click.echo()
+            full_text = ""
+            async for event in prompt(inp, bus, history=conversation_history):
+                if event.type == "text":
+                    content = event.data.get("content", "")
+                    full_text += content
+                    click.echo(content, nl=False)
+                elif event.type == "tool":
+                    tool_name = event.data.get("tool", "?")
+                    status = event.data.get("status", "?")
+                    output = event.data.get("output", "")
+                    click.echo(f"\n  ⚙ [{tool_name}] {status}", err=True)
+                    if output and status == "completed":
+                        preview = output[:200].replace("\n", "\n    ")
+                        click.echo(f"    {preview}", err=True)
+                elif event.type == "error":
+                    click.echo(f"\n  ✗ Error: {event.data.get('message', 'unknown')}", err=True)
+                elif event.type == "compact":
+                    click.echo("\n  ↻ Context compacted", err=True)
+                elif event.type == "done":
+                    tokens = event.data.get("tokens", {})
+                    iters = event.data.get("iterations", 0)
+                    click.echo(f"\n  ─ tokens in:{tokens.get('input',0)} out:{tokens.get('output',0)} | iterations:{iters}", err=True)
+
+            click.echo()
+
+            # Keep conversation history
+            conversation_history.append({"role": "user", "content": text})
+            if full_text:
+                conversation_history.append({"role": "assistant", "content": full_text})
+
+        await bus.close()
+
+    await provide(directory, _run_loop, project)
+
+
+def _handle_command(text: str, history: list) -> str | None:
+    """Handle slash commands. Returns 'quit', 'clear', or None."""
+    cmd = text.lower().split()[0]
+
+    if cmd in ("/quit", "/exit", "/q"):
+        return "quit"
+
+    if cmd in ("/clear", "/reset"):
+        click.echo("  ↻ Conversation cleared")
+        return "clear"
+
+    if cmd == "/help":
+        click.echo("  Commands:")
+        click.echo("    /help          Show this help")
+        click.echo("    /clear         Clear conversation history")
+        click.echo("    /history       Show conversation turns")
+        click.echo("    /quit          Exit")
+        return ""
+
+    if cmd == "/history":
+        if not history:
+            click.echo("  (empty)")
+        else:
+            for i, msg in enumerate(history):
+                role = msg["role"]
+                content = msg.get("content", "")[:80]
+                click.echo(f"  [{i}] {role}: {content}")
+        return ""
+
+    click.echo(f"  Unknown command: {cmd}. Type /help")
+    return ""
 
 
 async def _headless(directory: str, model: str | None, agent: str | None, message: str) -> None:
