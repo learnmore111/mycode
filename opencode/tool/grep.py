@@ -30,16 +30,20 @@ class GrepTool(ToolInfo):
         cwd = os.path.join(base, path) if not os.path.isabs(path) else path
 
         rg = shutil.which("rg")
-        cmd = [rg or "grep", "-rn", "--no-heading", "-m", "100"]
-        if rg and include:
-            cmd += ["-g", include]
-        cmd.append(pattern)
-        if not rg:
-            cmd.append(cwd)
+        if rg:
+            cmd = [rg, "-rn", "--no-heading", "-m", "100"]
+            if include:
+                cmd += ["-g", include]
+            cmd.append(pattern)
+            cmd.append(".")
+            exec_cwd = cwd
+        else:
+            cmd = ["grep", "-rn", "-m", "100", pattern, cwd]
+            exec_cwd = None
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd if rg else None)
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=exec_cwd)
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
             output = stdout.decode("utf-8", errors="replace").strip()
             lines = output.count("\n") + 1 if output else 0
