@@ -24,7 +24,7 @@ def to_llm_tools() -> list[dict[str, Any]]:
 
 def register_builtins() -> None:
     """Register all built-in tools."""
-    from opencode.tool import bash, read, edit, write, glob_tool, grep
-    for mod in [bash, read, edit, write, glob_tool, grep]:
+    from opencode.tool import bash, read, edit, write, glob_tool, grep, task, webfetch, websearch, question, todo, skill
+    for mod in [bash, read, edit, write, glob_tool, grep, task, webfetch, websearch, question, todo, skill]:
         if hasattr(mod, "tool"):
             register(mod.tool)
