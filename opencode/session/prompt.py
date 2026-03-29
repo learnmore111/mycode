@@ -211,6 +211,10 @@ async def prompt(
                 "cache_write": assistant_msg.tokens_cache_write,
             },
             "cost": assistant_msg.cost,
+            "context": {
+                "used": assistant_msg.tokens_input + assistant_msg.tokens_output,
+                "limit": model.limit.context,
+            },
             "iterations": iterations_done,
             "parts": len(all_parts),
         })

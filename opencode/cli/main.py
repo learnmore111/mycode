@@ -153,9 +153,11 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     session_info = None
     bus = Bus()
     conversation_history: list[dict] = []
+    total_tokens_used = 0
+    context_limit = 0
 
     async def _run_loop() -> None:
-        nonlocal session_info, conversation_history
+        nonlocal session_info, conversation_history, total_tokens_used, context_limit
 
         while True:
             # Prompt symbol
@@ -183,6 +185,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 if handled == "clear":
                     session_info = None
                     conversation_history = []
+                    total_tokens_used = 0
                 continue
 
             if session_info is None:
@@ -263,14 +266,20 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             if full_text.strip():
                 console.print(Markdown(full_text.strip()))
 
-            # Status line with tokens and cost
+            # Status line with tokens, cost, and context progress bar
             elapsed = time.monotonic() - start_time
             tokens = done_data.get("tokens", {}) if done_data else {}
             cost = done_data.get("cost", 0.0) if done_data else 0.0
+            ctx_info = done_data.get("context", {}) if done_data else {}
             t_in = tokens.get("input", 0)
             t_out = tokens.get("output", 0)
             t_reason = tokens.get("reasoning", 0)
             t_cache_r = tokens.get("cache_read", 0)
+
+            # Accumulate total tokens for context bar
+            total_tokens_used += t_in + t_out
+            if ctx_info.get("limit", 0) > 0:
+                context_limit = ctx_info["limit"]
 
             parts_list = [f"{elapsed:.1f}s"]
             if t_in or t_out:
@@ -286,6 +295,10 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 f"  ─ {' · '.join(parts_list)}",
                 style="grey50",
             ))
+
+            # Context window progress bar
+            if context_limit > 0:
+                _print_context_bar(console, total_tokens_used, context_limit)
             console.print()
 
             # Keep conversation history
@@ -296,6 +309,45 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         await bus.close()
 
     await provide(directory, _run_loop, project)
+
+
+def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> None:
+    """Print a context window usage progress bar."""
+    from rich.text import Text
+
+    ratio = min(used / limit, 1.0) if limit > 0 else 0
+    filled = int(bar_width * ratio)
+    empty = bar_width - filled
+    pct = ratio * 100
+
+    # Color based on usage level
+    if pct < 50:
+        bar_color = "green"
+    elif pct < 75:
+        bar_color = "yellow"
+    elif pct < 85:
+        bar_color = "dark_orange"
+    else:
+        bar_color = "red"
+
+    # Format token counts: 1234 → 1.2K, 123456 → 123K
+    def _fmt(n: int) -> str:
+        if n >= 100_000:
+            return f"{n // 1000}K"
+        if n >= 1000:
+            return f"{n / 1000:.1f}K"
+        return str(n)
+
+    bar = Text.assemble(
+        ("  Context ", "grey50"),
+        ("▐", "grey30"),
+        ("█" * filled, bar_color),
+        ("░" * empty, "grey23"),
+        ("▌", "grey30"),
+        (f" {_fmt(used)}/{_fmt(limit)} ", "grey50"),
+        (f"({pct:.0f}%)", bar_color),
+    )
+    console.print(bar)
 
 
 def _handle_command(text: str, history: list, console=None) -> str | None:
