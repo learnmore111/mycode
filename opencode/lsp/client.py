@@ -96,19 +96,17 @@ class LspJsonRpcClient:
             return
         try:
             while True:
-                # Read headers
-                header_data = b""
-                while b"\r\n\r\n" not in header_data:
-                    chunk = await self.process.stdout.read(1)
-                    if not chunk:
-                        return
-                    header_data += chunk
-
-                headers = header_data.decode(errors="replace")
+                # Read headers line-by-line (much faster than read(1))
                 content_length = 0
-                for line in headers.split("\r\n"):
-                    if line.lower().startswith("content-length:"):
-                        content_length = int(line.split(":", 1)[1].strip())
+                while True:
+                    line = await self.process.stdout.readline()
+                    if not line:
+                        return  # EOF
+                    line_str = line.decode(errors="replace").strip()
+                    if not line_str:
+                        break  # Empty line = end of headers
+                    if line_str.lower().startswith("content-length:"):
+                        content_length = int(line_str.split(":", 1)[1].strip())
 
                 if content_length <= 0:
                     continue

@@ -1,6 +1,7 @@
 """MCP (Model Context Protocol) support. Equivalent to src/mcp/index.ts."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 from typing import Any
@@ -9,16 +10,21 @@ from opencode.util import log as logmod
 
 logger = logmod.create(service="mcp")
 
+_MAX_RECONNECT_ATTEMPTS = 3
+_RECONNECT_DELAY = 2.0  # seconds
+
 
 class McpServer:
     """A connected MCP server."""
+
     def __init__(self, name: str, config: dict[str, Any]):
         self.name = name
         self.config = config
         self.status: str = "disabled"  # connected | disabled | failed | needs_auth
         self.tools: list[dict[str, Any]] = []
         self._client: Any = None
-        self._context_stack: list[Any] = []  # Keep context managers alive
+        self._context_stack: list[Any] = []
+        self._reconnect_attempts = 0
 
     async def connect(self) -> None:
         """Connect to the MCP server."""
@@ -34,6 +40,7 @@ class McpServer:
             elif server_type == "remote":
                 await self._connect_remote()
             self.status = "connected"
+            self._reconnect_attempts = 0
             logger.info("connected", name=self.name, type=server_type)
         except Exception as e:
             self.status = "failed"
@@ -47,9 +54,8 @@ class McpServer:
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
-            server_params = StdioServerParameters(command=command[0], args=command[1:], env=env)
 
-            # Enter context managers manually and keep them alive
+            server_params = StdioServerParameters(command=command[0], args=command[1:], env=env)
             stdio_ctx = stdio_client(server_params)
             read_stream, write_stream = await stdio_ctx.__aenter__()
             self._context_stack.append(stdio_ctx)
@@ -59,9 +65,7 @@ class McpServer:
             self._context_stack.append(session_ctx)
 
             await session.initialize()
-            tools_result = await session.list_tools()
-            self.tools = [{"name": t.name, "description": t.description or "",
-                           "inputSchema": t.inputSchema} for t in tools_result.tools]
+            await self._refresh_tools(session)
             self._client = session
             logger.info("MCP local connected", name=self.name, tools=len(self.tools))
         except ImportError:
@@ -87,9 +91,7 @@ class McpServer:
             self._context_stack.append(session_ctx)
 
             await session.initialize()
-            tools_result = await session.list_tools()
-            self.tools = [{"name": t.name, "description": t.description or "",
-                           "inputSchema": t.inputSchema} for t in tools_result.tools]
+            await self._refresh_tools(session)
             self._client = session
             logger.info("MCP remote connected", name=self.name, tools=len(self.tools))
         except ImportError:
@@ -97,12 +99,50 @@ class McpServer:
         except Exception as e:
             raise ConnectionError(f"MCP remote connection failed: {e}") from e
 
+    async def _refresh_tools(self, session: Any = None) -> None:
+        """Refresh the tool list from the server."""
+        client = session or self._client
+        if not client:
+            return
+        tools_result = await client.list_tools()
+        self.tools = [
+            {"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
+            for t in tools_result.tools
+        ]
+
+    async def refresh_tools(self) -> None:
+        """Public method to refresh tools from a connected server."""
+        if self.status != "connected" or not self._client:
+            return
+        try:
+            await self._refresh_tools()
+            logger.info("tools refreshed", name=self.name, count=len(self.tools))
+        except Exception as e:
+            logger.warn("tool refresh failed", name=self.name, error=str(e))
+
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        """Call a tool on this MCP server."""
+        """Call a tool on this MCP server. Auto-reconnects on failure."""
         if not self._client:
             raise RuntimeError(f"MCP server {self.name} not connected")
-        result = await self._client.call_tool(tool_name, arguments)
-        return result
+        try:
+            return await self._client.call_tool(tool_name, arguments)
+        except Exception as e:
+            logger.warn("tool call failed, attempting reconnect", name=self.name, error=str(e))
+            if await self._try_reconnect():
+                return await self._client.call_tool(tool_name, arguments)
+            raise
+
+    async def _try_reconnect(self) -> bool:
+        """Attempt to reconnect to the server."""
+        if self._reconnect_attempts >= _MAX_RECONNECT_ATTEMPTS:
+            logger.error("max reconnect attempts reached", name=self.name)
+            return False
+        self._reconnect_attempts += 1
+        logger.info("reconnecting", name=self.name, attempt=self._reconnect_attempts)
+        await self.disconnect()
+        await asyncio.sleep(_RECONNECT_DELAY)
+        await self.connect()
+        return self.status == "connected"
 
     async def disconnect(self) -> None:
         """Disconnect — tear down context managers in reverse order."""
@@ -117,6 +157,7 @@ class McpServer:
 
 class McpManager:
     """Manages all MCP server connections."""
+
     def __init__(self) -> None:
         self._servers: dict[str, McpServer] = {}
 
@@ -142,6 +183,16 @@ class McpManager:
                 key = f"{name}_{tool.get('name', '')}"
                 result[key] = {**tool, "_server": name}
         return result
+
+    async def refresh_tools(self, name: str | None = None) -> None:
+        """Refresh tool lists. If name is given, refresh just that server."""
+        if name:
+            server = self._servers.get(name)
+            if server:
+                await server.refresh_tools()
+        else:
+            for server in self._servers.values():
+                await server.refresh_tools()
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
         """Call a tool on a specific MCP server."""

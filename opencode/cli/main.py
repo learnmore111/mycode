@@ -150,3 +150,159 @@ def models() -> None:
                 click.echo(f"  {pid}/{mid}")
 
     asyncio.run(_list())
+
+
+# --- Config commands ---
+
+@cli.group()
+def config() -> None:
+    """Manage configuration."""
+
+
+@config.command("show")
+@click.argument("directory", default=".")
+def config_show(directory: str) -> None:
+    """Show the merged configuration for a directory."""
+    from opencode.config.config import get as get_config
+    cfg = get_config(directory)
+    data = cfg.model_dump(exclude_none=True)
+    import json
+    click.echo(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+@config.command("path")
+def config_path() -> None:
+    """Show the global config file path."""
+    from opencode.config.paths import global_config_file
+    click.echo(str(global_config_file()))
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str) -> None:
+    """Set a global config value (e.g. 'model anthropic/claude-sonnet-4')."""
+    import json as jsonmod
+
+    from opencode.config.config import update_global
+    try:
+        parsed = jsonmod.loads(value)
+    except (jsonmod.JSONDecodeError, ValueError):
+        parsed = value
+    update_global({key: parsed})
+    click.echo(f"Set {key} = {parsed}")
+
+
+# --- Session commands ---
+
+@cli.group()
+def session() -> None:
+    """Manage sessions."""
+
+
+@session.command("list")
+@click.option("--limit", "-n", default=20, help="Max sessions to show")
+def session_list(limit: int) -> None:
+    """List recent sessions."""
+    import asyncio
+
+    from opencode.project.instance import provide
+
+    async def _list() -> None:
+        from opencode.session.session import list_sessions
+        sessions = list_sessions(limit=limit)
+        if not sessions:
+            click.echo("No sessions found.")
+            return
+        for s in sessions:
+            click.echo(f"  {s.id[:12]}  {s.title[:60]}")
+
+    asyncio.run(provide(".", _list))
+
+
+@session.command("delete")
+@click.argument("session_id")
+def session_delete(session_id: str) -> None:
+    """Delete a session by ID."""
+    import asyncio
+
+    from opencode.project.instance import provide
+
+    async def _del() -> None:
+        from opencode.session.session import remove
+        remove(session_id)
+        click.echo(f"Deleted session {session_id}")
+
+    asyncio.run(provide(".", _del))
+
+
+# --- MCP commands ---
+
+@cli.group()
+def mcp() -> None:
+    """Manage MCP servers."""
+
+
+@mcp.command("list")
+def mcp_list() -> None:
+    """List configured MCP servers."""
+    from opencode.config.config import get as get_config
+    cfg = get_config()
+    if not cfg.mcp:
+        click.echo("No MCP servers configured.")
+        return
+    for name, mcfg in cfg.mcp.items():
+        stype = mcfg.get("type", "?") if isinstance(mcfg, dict) else "?"
+        enabled = mcfg.get("enabled", True) if isinstance(mcfg, dict) else True
+        status = "enabled" if enabled else "disabled"
+        click.echo(f"  {name} ({stype}) — {status}")
+
+
+# --- Snapshot commands ---
+
+@cli.group()
+def snapshot() -> None:
+    """Manage snapshots (undo/redo)."""
+
+
+@snapshot.command("track")
+@click.argument("directory", default=".")
+def snapshot_track(directory: str) -> None:
+    """Take a snapshot of the current working directory."""
+    import asyncio
+
+    from opencode.project.project import from_directory
+    from opencode.snapshot.snapshot import Snapshot
+
+    async def _track() -> None:
+        project = await from_directory(directory)
+        snap = Snapshot(project.id, project.worktree)
+        tree_hash = await snap.track()
+        if tree_hash:
+            click.echo(f"Snapshot: {tree_hash}")
+        else:
+            click.echo("Failed to create snapshot.", err=True)
+
+    asyncio.run(_track())
+
+
+@snapshot.command("diff")
+@click.argument("tree_hash")
+@click.argument("directory", default=".")
+def snapshot_diff(tree_hash: str, directory: str) -> None:
+    """Show diff between current state and a snapshot."""
+    import asyncio
+
+    from opencode.project.project import from_directory
+    from opencode.snapshot.snapshot import Snapshot
+
+    async def _diff() -> None:
+        project = await from_directory(directory)
+        snap = Snapshot(project.id, project.worktree)
+        diff = await snap.diff(tree_hash)
+        if diff:
+            click.echo(diff)
+        else:
+            click.echo("No differences.")
+
+    asyncio.run(_diff())
