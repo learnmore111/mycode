@@ -1,6 +1,6 @@
 """MCP (Model Context Protocol) support. Equivalent to src/mcp/index.ts."""
 from __future__ import annotations
-import asyncio
+import asyncio, os
 from typing import Any
 from opencode.util import log as logmod
 
@@ -39,15 +39,46 @@ class McpServer:
         command = self.config.get("command", [])
         if not command:
             raise ValueError("MCP local server requires 'command'")
-        # TODO: Full stdio MCP client implementation using `mcp` Python SDK
-        logger.info("local MCP server configured (stub)", name=self.name, command=command)
+        env = {**os.environ, **(self.config.get("environment") or {})}
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            server_params = StdioServerParameters(command=command[0], args=command[1:], env=env)
+            # Use the mcp SDK's stdio_client context manager
+            # For long-lived connections, we'd store the context; for now test connectivity
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools_result = await session.list_tools()
+                    self.tools = [{"name": t.name, "description": t.description or "",
+                                   "inputSchema": t.inputSchema} for t in tools_result.tools]
+                    self._client = session
+                    logger.info("MCP local connected", name=self.name, tools=len(self.tools))
+        except ImportError:
+            logger.warn("mcp SDK not available, using stub", name=self.name)
+        except Exception as e:
+            raise ConnectionError(f"MCP local connection failed: {e}") from e
 
     async def _connect_remote(self) -> None:
         url = self.config.get("url", "")
         if not url:
             raise ValueError("MCP remote server requires 'url'")
-        # TODO: Full HTTP/SSE MCP client implementation
-        logger.info("remote MCP server configured (stub)", name=self.name, url=url)
+        headers = self.config.get("headers") or {}
+        try:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamablehttp_client
+            async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools_result = await session.list_tools()
+                    self.tools = [{"name": t.name, "description": t.description or "",
+                                   "inputSchema": t.inputSchema} for t in tools_result.tools]
+                    self._client = session
+                    logger.info("MCP remote connected", name=self.name, tools=len(self.tools))
+        except ImportError:
+            logger.warn("mcp SDK streamable_http not available, using stub", name=self.name)
+        except Exception as e:
+            raise ConnectionError(f"MCP remote connection failed: {e}") from e
 
     async def disconnect(self) -> None:
         self.status = "disabled"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio, shutil
 from typing import Any
 from opencode.lsp.servers import SERVERS, LspServerDef
+from opencode.project.instance import current_or_none
 from opencode.util import log as logmod
 
 logger = logmod.create(service="lsp")
@@ -29,7 +30,8 @@ class LspClient:
 class LspManager:
     """Manages LSP server connections for the project."""
     def __init__(self) -> None:
-        self._clients: list[LspClient] = []
+        from opencode.lsp.client import LspJsonRpcClient
+        self._clients: list[LspJsonRpcClient] = []
         self._servers: dict[str, LspServerDef] = dict(SERVERS)
         self._broken: set[str] = set()
 
@@ -48,7 +50,11 @@ class LspManager:
     async def touch_file(self, file_path: str) -> None:
         """Notify LSP servers about a file (spawn server if needed)."""
         import os
+        from opencode.lsp.client import LspJsonRpcClient
         ext = os.path.splitext(file_path)[1]
+        inst = current_or_none()
+        root = inst.directory if inst else os.getcwd()
+
         for sid, server in self._servers.items():
             if server.extensions and ext not in server.extensions:
                 continue
@@ -57,8 +63,30 @@ class LspManager:
             if not shutil.which(server.command[0]):
                 self._broken.add(sid)
                 continue
-            # TODO: Actually spawn and communicate via JSON-RPC
-            logger.debug("touch", server=sid, file=file_path)
+
+            # Check if we already have a client for this server+root
+            existing = next((c for c in self._clients if c.server_id == sid and c.root == root), None)
+            if existing:
+                await existing.open_file(file_path)
+                continue
+
+            # Spawn new LSP server
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *server.command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=root,
+                )
+                client = LspJsonRpcClient(proc, sid, root)
+                await asyncio.wait_for(client.start(), timeout=15.0)
+                self._clients.append(client)
+                await client.open_file(file_path)
+                logger.info("LSP server spawned", server=sid, root=root)
+            except Exception as e:
+                self._broken.add(sid)
+                logger.warn("LSP spawn failed", server=sid, error=str(e))
 
     def status(self) -> list[dict[str, str]]:
         return [{"id": c.server_id, "root": c.root, "status": c.status} for c in self._clients]
