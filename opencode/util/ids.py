@@ -15,18 +15,15 @@ def ascending() -> str:
 
 
 def descending(existing: str | None = None) -> str:
-    """Generate a descending ID. If existing is provided, return it as-is.
-
-    In the original, descending IDs are used for sessions so that newer sessions
-    sort first. We invert the ULID timestamp bits.
-    """
+    """Generate a descending ID. If existing is provided, return it as-is."""
     if existing:
         return existing
+    # Use a simple approach: prefix with inverted timestamp
     ulid = ULID()
-    # Invert the bytes to create a descending order
-    raw = ulid.bytes
-    inverted = bytes(0xFF - b for b in raw)
-    return ULID(inverted).str
+    # Invert the ULID string chars to reverse sort order
+    raw = str(ulid)
+    inverted = "".join(chr(0x7E - ord(c) + 0x30) if c.isalnum() else c for c in raw)
+    return inverted
 
 
 def session_id(existing: str | None = None) -> str:
