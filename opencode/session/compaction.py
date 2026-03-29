@@ -14,6 +14,7 @@ logger = logmod.create(service="session.compaction")
 PRUNE_MINIMUM = 20_000  # tokens
 PRUNE_PROTECT = 40_000  # tokens
 OVERFLOW_RATIO = 0.85  # trigger at 85% of context window
+COMPACT_KEEP_TURNS = 3  # number of recent user turns to preserve verbatim
 
 
 def estimate_tokens(text: str) -> int:
@@ -100,35 +101,70 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return messages, pruned
 
 
+def _split_by_turns(
+    messages: list[dict[str, Any]],
+    keep_turns: int = COMPACT_KEEP_TURNS,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split messages into (old, recent) by user turns.
+
+    A "turn" starts at each ``role=user`` message and includes the
+    assistant reply plus any tool call / tool result messages that follow.
+    The most recent *keep_turns* turns (and all messages after them) are
+    placed in *recent*; everything before goes into *old*.
+
+    Returns ``(old_messages, recent_messages)``.
+    """
+    # Find indices where user turns start
+    turn_starts: list[int] = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "user":
+            turn_starts.append(i)
+
+    if len(turn_starts) <= keep_turns:
+        # Not enough turns to split – keep everything
+        return [], list(messages)
+
+    split_idx = turn_starts[-keep_turns]
+    return list(messages[:split_idx]), list(messages[split_idx:])
+
+
 async def compact(
     messages: list[dict[str, Any]],
     *,
     model_name: str,
     api_key: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Compact conversation history by generating a summary.
+    """Compact conversation history using sliding-window + summary strategy.
 
-    Replaces the full conversation with a system summary + last user message.
+    1. Prune old tool outputs first — may be enough on its own.
+    2. Split messages into old turns and recent turns (keep last N turns verbatim).
+    3. Summarise the old turns via an LLM call.
+    4. Return: [summary_system_msg] + recent turns.
     """
     import litellm
 
-    # First try pruning tool outputs
+    # Step 1: prune tool outputs
     messages, freed = prune_tool_outputs(messages)
     if freed > PRUNE_MINIMUM:
         logger.info("pruning freed enough tokens, skipping full compaction", freed=freed)
         return messages
 
-    # Generate a summary of the conversation
-    summary_messages = list(messages)
-    summary_messages.append({
-        "role": "user",
-        "content": COMPACTION_PROMPT,
-    })
+    # Step 2: split into old / recent
+    old, recent = _split_by_turns(messages, keep_turns=COMPACT_KEEP_TURNS)
+
+    if not old:
+        # Nothing old enough to summarise
+        logger.info("no old turns to compact, returning as-is")
+        return messages
+
+    # Step 3: ask LLM to summarise the old turns
+    summary_input: list[dict[str, Any]] = list(old)
+    summary_input.append({"role": "user", "content": COMPACTION_PROMPT})
 
     try:
         kwargs: dict[str, Any] = {
             "model": model_name,
-            "messages": summary_messages,
+            "messages": summary_input,
             "max_tokens": 4096,
             "temperature": 0.0,
         }
@@ -137,23 +173,16 @@ async def compact(
 
         response = await litellm.acompletion(**kwargs)
         summary = response.choices[0].message.content or ""
-        logger.info("compaction complete", summary_length=len(summary))
+        logger.info("compaction complete", summary_len=len(summary), old_msgs=len(old), kept_msgs=len(recent))
     except Exception as e:
         logger.error("compaction LLM call failed", error=str(e))
-        # Fallback: just prune and keep going
-        return messages
+        return messages  # fallback: return pruned but unsummarised
 
-    # Replace messages with compacted version:
-    # system summary + last user message
+    # Step 4: assemble compacted conversation
     compacted: list[dict[str, Any]] = [
         {"role": "system", "content": f"[Previous conversation summary]\n\n{summary}"},
     ]
-    # Keep the last user message if any
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            compacted.append(msg)
-            break
-
+    compacted.extend(recent)
     return compacted
 
 
