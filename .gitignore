@@ -11,3 +11,4 @@ build/
 .env
 opencode.json
 opencode.jsonc
+kimi-cli
