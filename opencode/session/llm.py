@@ -80,6 +80,7 @@ class FinishEvent:
     type: str = "finish"
     reason: str = "stop"  # "stop" | "tool-calls" | "length"
     usage: dict[str, int] = field(default_factory=dict)
+    cost: float = 0.0
 
 
 @dataclass
@@ -134,6 +135,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         "model": model_name,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
 
     # Apply provider-specific transforms
@@ -160,13 +162,43 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
 
     # Track tool calls being built across chunks
     tool_calls_in_progress: dict[int, dict[str, Any]] = {}
+    # Accumulate usage across chunks (some providers send usage in a separate final chunk)
+    accumulated_usage: dict[str, int] = {}
 
     try:
         response = await litellm.acompletion(**kwargs)
 
         async for chunk in response:
+            # Some providers send a final chunk with usage but no choices
+            if hasattr(chunk, "usage") and chunk.usage:
+                u = chunk.usage
+                accumulated_usage = {
+                    "input_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(u, "completion_tokens", 0) or 0,
+                    "total_tokens": getattr(u, "total_tokens", 0) or 0,
+                    "reasoning_tokens": _get_reasoning_tokens(u),
+                    "cache_read_tokens": _get_cache_read_tokens(u),
+                    "cache_write_tokens": _get_cache_write_tokens(u),
+                }
+
             delta = chunk.choices[0].delta if chunk.choices else None
             if not delta:
+                # Check for finish_reason without delta (usage-only final chunk)
+                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+                if finish_reason:
+                    for entry in tool_calls_in_progress.values():
+                        if entry["name"]:
+                            yield ToolCallDelta(
+                                tool_call_id=entry["id"],
+                                tool_name=entry["name"],
+                                args=entry["args"],
+                            )
+                    cost = _calc_cost(model_name, accumulated_usage)
+                    yield FinishEvent(
+                        reason=_map_finish_reason(finish_reason),
+                        usage=accumulated_usage,
+                        cost=cost,
+                    )
                 continue
 
             # Text content
@@ -213,22 +245,66 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                             args=entry["args"],
                         )
 
-                usage = {}
-                if hasattr(chunk, "usage") and chunk.usage:
-                    usage = {
-                        "input_tokens": getattr(chunk.usage, "prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(chunk.usage, "completion_tokens", 0) or 0,
-                        "total_tokens": getattr(chunk.usage, "total_tokens", 0) or 0,
-                    }
+                cost = _calc_cost(model_name, accumulated_usage)
 
-                reason = "stop"
-                if finish_reason == "tool_calls":
-                    reason = "tool-calls"
-                elif finish_reason == "length":
-                    reason = "length"
-
-                yield FinishEvent(reason=reason, usage=usage)
+                yield FinishEvent(
+                    reason=_map_finish_reason(finish_reason),
+                    usage=accumulated_usage,
+                    cost=cost,
+                )
 
     except Exception as e:
         logger.error("stream error", error=str(e), model=model_name)
         yield ErrorEvent(error=str(e))
+
+
+def _get_reasoning_tokens(usage: Any) -> int:
+    """Extract reasoning tokens from various provider formats."""
+    # OpenAI: usage.completion_tokens_details.reasoning_tokens
+    details = getattr(usage, "completion_tokens_details", None)
+    if details:
+        return getattr(details, "reasoning_tokens", 0) or 0
+    # Some providers use prompt_tokens_details
+    return 0
+
+
+def _get_cache_read_tokens(usage: Any) -> int:
+    """Extract cache read tokens."""
+    # Anthropic: usage.cache_read_input_tokens
+    val = getattr(usage, "cache_read_input_tokens", 0)
+    if val:
+        return val
+    # OpenAI: usage.prompt_tokens_details.cached_tokens
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details:
+        return getattr(details, "cached_tokens", 0) or 0
+    return 0
+
+
+def _get_cache_write_tokens(usage: Any) -> int:
+    """Extract cache write tokens."""
+    return getattr(usage, "cache_creation_input_tokens", 0) or 0
+
+
+def _calc_cost(model_name: str, usage: dict[str, int]) -> float:
+    """Calculate cost using litellm's pricing data."""
+    if not usage or not usage.get("input_tokens"):
+        return 0.0
+    try:
+        cost = litellm.completion_cost(
+            model=model_name,
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+        )
+        return float(cost)
+    except Exception:
+        return 0.0
+
+
+def _map_finish_reason(reason: str) -> str:
+    """Map provider finish reasons to our standard format."""
+    if reason == "tool_calls":
+        return "tool-calls"
+    if reason == "length":
+        return "length"
+    return "stop"

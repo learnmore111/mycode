@@ -198,6 +198,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # --- Stream AI response with Rich Live ---
             console.print()
             full_text = ""
+            done_data: dict = {}
             start_time = time.monotonic()
             spinner = Spinner("dots", "")
 
@@ -255,16 +256,34 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         spinner.text = Text("↻ Compacting context...", style="yellow")
 
                     elif event.type == "done":
+                        done_data = event.data
                         live.update(Text(""))
 
             # Render the full AI response as Markdown
             if full_text.strip():
                 console.print(Markdown(full_text.strip()))
 
-            # Status line
+            # Status line with tokens and cost
             elapsed = time.monotonic() - start_time
+            tokens = done_data.get("tokens", {}) if done_data else {}
+            cost = done_data.get("cost", 0.0) if done_data else 0.0
+            t_in = tokens.get("input", 0)
+            t_out = tokens.get("output", 0)
+            t_reason = tokens.get("reasoning", 0)
+            t_cache_r = tokens.get("cache_read", 0)
+
+            parts_list = [f"{elapsed:.1f}s"]
+            if t_in or t_out:
+                parts_list.append(f"in:{t_in} out:{t_out}")
+            if t_reason:
+                parts_list.append(f"reasoning:{t_reason}")
+            if t_cache_r:
+                parts_list.append(f"cached:{t_cache_r}")
+            if cost > 0:
+                parts_list.append(f"${cost:.4f}")
+
             console.print(Text(
-                f"  ─ {elapsed:.1f}s",
+                f"  ─ {' · '.join(parts_list)}",
                 style="grey50",
             ))
             console.print()
@@ -356,7 +375,15 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
                 click.echo(f"\nError: {event.data.get('message', 'unknown')}", err=True)
             elif event.type == "done":
                 tokens = event.data.get("tokens", {})
-                click.echo(f"\n\n--- Done (in:{tokens.get('input',0)} out:{tokens.get('output',0)}) ---", err=True)
+                cost = event.data.get("cost", 0.0)
+                t_in = tokens.get("input", 0)
+                t_out = tokens.get("output", 0)
+                parts_list = [f"in:{t_in}", f"out:{t_out}"]
+                if tokens.get("reasoning", 0):
+                    parts_list.append(f"reasoning:{tokens['reasoning']}")
+                if cost > 0:
+                    parts_list.append(f"${cost:.4f}")
+                click.echo(f"\n\n--- Done ({' · '.join(parts_list)}) ---", err=True)
         await bus.close()
 
     await provide(directory, _run, project)

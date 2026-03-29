@@ -93,6 +93,10 @@ async def process(
         elif isinstance(event, llmmod.FinishEvent):
             ctx.assistant_message.tokens_input += event.usage.get("input_tokens", 0)
             ctx.assistant_message.tokens_output += event.usage.get("output_tokens", 0)
+            ctx.assistant_message.tokens_reasoning += event.usage.get("reasoning_tokens", 0)
+            ctx.assistant_message.tokens_cache_read += event.usage.get("cache_read_tokens", 0)
+            ctx.assistant_message.tokens_cache_write += event.usage.get("cache_write_tokens", 0)
+            ctx.assistant_message.cost += event.cost
 
         elif isinstance(event, llmmod.ErrorEvent):
             logger.error("LLM error", error=event.error)

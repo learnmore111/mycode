@@ -206,7 +206,11 @@ async def prompt(
             "tokens": {
                 "input": assistant_msg.tokens_input,
                 "output": assistant_msg.tokens_output,
+                "reasoning": assistant_msg.tokens_reasoning,
+                "cache_read": assistant_msg.tokens_cache_read,
+                "cache_write": assistant_msg.tokens_cache_write,
             },
+            "cost": assistant_msg.cost,
             "iterations": iterations_done,
             "parts": len(all_parts),
         })
