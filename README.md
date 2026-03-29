@@ -12,7 +12,7 @@ Python 重写版 [OpenCode](https://github.com/anomalyco/opencode)，一个不�
 # 安装
 uv sync
 
-# 运行 CLI
+# 查看帮助
 uv run opencode --help
 
 # Headless 模式（需要设置 API Key）
@@ -24,6 +24,9 @@ uv run opencode serve --port 4096
 
 # 运行测试
 uv run pytest tests/ -v
+
+# Lint 检查
+uv run ruff check opencode/
 ```
 
 ## 架构总览
@@ -51,8 +54,12 @@ uv run pytest tests/ -v
 │              │     │              │                     │
 │              │  Permission 检查   │                     │
 │              │     │              │                     │
+│              │  Compaction 检测 ──┤                     │
+│              │     │              │                     │
 │              │  continue/stop ◄──┘                     │
 │              └────────────────────┘                     │
+│                      │                                  │
+│              Message 持久化 (SQLite)                     │
 └──────┬──────────────────┬───────────────────┬──────────┘
        │                  │                   │
 ┌──────▼──────┐  ┌────────▼────────┐  ┌──────▼──────────┐
@@ -66,52 +73,54 @@ uv run pytest tests/ -v
 
 ### 核心 (Core)
 
-| 模块 | 文件数 | 说明 |
-|------|--------|------|
-| **`session/`** | 6 | **核心 agentic loop**。`prompt.py` 为消息入口，`processor.py` 驱动 LLM→Tool 循环，`llm.py` 封装 litellm 流式调用 |
-| **`provider/`** | 4 | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，通过 litellm 统一调用 14+ 种 LLM |
-| **`agent/`** | 1+4txt | Agent 系统。内置 7 个 agent：`build`(默认)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
-| **`tool/`** | 13 | 工具系统。12 个内置工具 + 注册表：bash、read、edit、write、glob、grep、task、webfetch、websearch、question、todo、skill |
+| 模块 | 说明 |
+|------|------|
+| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`llm.py` litellm 流式调用 |
+| **`provider/`** | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，`transform.py` 按模型类型调整参数（temperature/reasoning/max_tokens），通过 litellm 统一调用 14+ 种 LLM |
+| **`agent/`** | Agent 系统。内置 7 个 agent：`build`(默认全权限)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
+| **`tool/`** | 工具系统。12 个内置工具 + 注册表：bash、read、edit、write、glob、grep、task、webfetch、websearch、question、todo、skill |
 
 ### 基础设施 (Infrastructure)
 
-| 模块 | 文件数 | 说明 |
-|------|--------|------|
-| **`config/`** | 3 | JSONC 配置解析 + Pydantic 模型 + 多层合并（全局→环境→项目→.opencode） |
-| **`storage/`** | 3 | SQLAlchemy 表定义（5 表：Project/Session/Message/Part/Permission）+ SQLite + JSON 文件存储 |
-| **`bus/`** | 2 | asyncio pub/sub 事件总线，支持类型化订阅和全局广播 |
-| **`permission/`** | 3 | 权限系统。Wildcard 规则评估 + ask/reply 阻塞流（allow/deny/ask） |
-| **`project/`** | 2 | 项目发现（git root commit → ID）+ contextvars 实例管理 |
-| **`auth/`** | 1 | API Key / OAuth 认证持久化 |
+| 模块 | 说明 |
+|------|------|
+| **`config/`** | JSONC 配置解析 + Pydantic v2 模型 + 多层合并（全局→环境→项目→.opencode）|
+| **`storage/`** | SQLAlchemy 表定义（5 表：Project/Session/Message/Part/Permission）+ SQLite + JSON 文件存储 |
+| **`bus/`** | asyncio pub/sub 事件总线，17 种事件类型，支持类型化订阅、通配符订阅和全局广播 |
+| **`permission/`** | 权限系统。Wildcard 规则评估 + ask/reply 阻塞流（allow/deny/ask），集成到 processor 的 tool 执行中 |
+| **`project/`** | 项目发现（git root commit → ID）+ contextvars 实例管理 |
+| **`auth/`** | API Key / OAuth / WellKnown 认证持久化 |
+| **`snapshot/`** | Shadow git repo，支持 track/diff/patch/restore + commit 历史追踪 |
 
 ### 集成 (Integrations)
 
-| 模块 | 文件数 | 说明 |
-|------|--------|------|
-| **`lsp/`** | 3 | LSP 集成。JSON-RPC 客户端 + 6 种预定义语言服务器 + 自动 spawn |
-| **`mcp/`** | 1 | MCP 协议。支持 stdio/HTTP 传输，通过 Python `mcp` SDK 连接 |
-| **`plugin/`** | 1 | 插件系统。Python 模块加载 + hook 注册/触发 |
+| 模块 | 说明 |
+|------|------|
+| **`lsp/`** | LSP 集成。JSON-RPC 客户端 + 26 种预定义语言服务器（TypeScript/Python/Go/Rust/C++/Java/C#/Ruby/PHP/Kotlin/Swift 等）+ 自动 spawn + diagnostics 收集 |
+| **`mcp/`** | MCP 协议。支持 stdio/HTTP 传输，自动重连（最多 3 次），工具缓存刷新 |
+| **`plugin/`** | 插件系统。Python 模块动态加载 + 7 种 hook 类型（before/after_tool、before/after_prompt 等）+ 链式传递 |
 
 ### 应用层 (Application)
 
-| 模块 | 文件数 | 说明 |
-|------|--------|------|
-| **`server/`** | 2 | FastAPI 应用。27 个 API 端点 + SSE 流式消息响应 |
-| **`cli/`** | 1 | Click CLI。`serve`/`run --message`/`providers`/`models` 命令 |
-| **`shell/`** | 1 | Shell 检测（排除 fish/nu）+ 进程树 kill |
-| **`file/`** | 2 | 文件读取/搜索/列目录 + ripgrep 集成 |
-| **`snapshot/`** | 1 | Shadow git repo，支持 track/diff/patch/restore |
-| **`util/`** | 9 | 通用工具：log、filesystem、error、hash、ids、wildcard、context、paths、slug |
+| 模块 | 说明 |
+|------|------|
+| **`server/`** | FastAPI 应用。8 个路由模块（session/provider/config/file/permission/mcp/event/project），26 个 API 端点 + SSE 流式消息 + SSE 全局事件订阅 |
+| **`cli/`** | Click CLI。`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
+| **`shell/`** | Shell 检测（排除 fish/nu）+ 进程树 kill |
+| **`file/`** | 文件读取/模糊搜索/列目录 + ripgrep 集成 |
+| **`util/`** | 通用工具：log (structlog)、filesystem (aiofiles)、error、hash、ids (ULID)、wildcard、context、paths (XDG)、slug |
 
 ## 项目统计
 
 ```
-Python 文件:     89
-代码行数:       6,137
-单元测试:        42 (全部通过)
-内置工具:        12
-API 路由:        27
-Git 提交:         9
+Python 文件:      91
+代码行数:       7,178
+单元测试:        165 (全部通过)
+内置工具:         12
+API 路由:         26
+LSP 语言:         26
+CLI 命令:         13
+Lint 错误:         0
 ```
 
 ## 技术栈
@@ -119,122 +128,114 @@ Git 提交:         9
 | 用途 | 选择 |
 |------|------|
 | LLM 调用 | **litellm** (支持 100+ provider) |
-| HTTP API | **FastAPI** + SSE |
+| HTTP API | **FastAPI** + **SSE** (sse-starlette) |
 | 数据库 | **SQLAlchemy** + SQLite |
 | Schema | **Pydantic v2** |
 | CLI | **Click** |
 | 日志 | **structlog** |
 | 包管理 | **uv** |
-| 文件搜索 | **ripgrep** |
+| 文件搜索 | **ripgrep** (subprocess) |
 | ID 生成 | **python-ulid** |
 | MCP | **mcp** (Python SDK) |
+| 配置解析 | **json5** |
+| 模糊搜索 | **rapidfuzz** |
+
+## CLI 命令
+
+```bash
+opencode --help                     # 查看所有命令
+opencode serve [--port 4096]        # 启动 API 服务器
+opencode run [DIR] -p "message"     # Headless 模式运行
+opencode providers                  # 列出可用 AI 提供商
+opencode models                     # 列出可用模型
+opencode config show [DIR]          # 查看合并后配置
+opencode config path                # 查看全局配置路径
+opencode config set KEY VALUE       # 设置全局配置项
+opencode session list [-n 20]       # 列出最近会话
+opencode session delete ID          # 删除会话
+opencode mcp list                   # 列出 MCP 服务器
+opencode snapshot track [DIR]       # 创建快照
+opencode snapshot diff HASH [DIR]   # 查看快照 diff
+```
 
 ## API 端点
 
 ```
 GET    /                           # 服务信息
 GET    /health                     # 健康检查
+
+# Session
 GET    /session                    # 列出会话
 POST   /session                    # 创建会话
 GET    /session/{id}               # 获取会话
 DELETE /session/{id}               # 删除会话
 PUT    /session/{id}/title         # 设置标题
-POST   /session/{id}/message       # 发送消息 (SSE 流式)
+POST   /session/{id}/message       # 发送消息 (SSE)
 POST   /session/{id}/abort         # 中止会话
+
+# Provider / Agent
 GET    /provider                   # 列出 provider
 GET    /provider/{id}              # 获取 provider
 GET    /agent                      # 列出 agent
+
+# Config
 GET    /config                     # 获取配置
 POST   /config                     # 更新全局配置
+
+# File
 GET    /file?path=...              # 读取文件
 GET    /file/list                  # 列出目录
-GET    /file/search?query=...      # 搜索文件
-GET    /permission                 # 权限请求列表
-POST   /permission/{id}            # 回复权限
-GET    /mcp                        # MCP 状态
+GET    /file/search?query=...      # 模糊搜索文件
+
+# Permission
+GET    /permission                 # 待处理权限列表
+POST   /permission/{id}            # 回复权限请求
+
+# MCP
+GET    /mcp                        # MCP 服务器状态
 POST   /mcp/{name}/connect         # 连接 MCP
 POST   /mcp/{name}/disconnect      # 断开 MCP
+
+# Event / Project / Log
+GET    /event                      # SSE 全局事件订阅
+GET    /project                    # 获取项目信息
+GET    /project/current            # 当前项目上下文
 POST   /log                        # 写日志
 ```
 
----
+## 支持的 AI 提供商
 
-## 已知问题与待优化
+通过环境变量自动发现：
 
-### 🔴 严重 Bug (5)
+| 提供商 | 环境变量 |
+|--------|----------|
+| Anthropic | `ANTHROPIC_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| Google | `GOOGLE_API_KEY` / `GEMINI_API_KEY` |
+| xAI | `XAI_API_KEY` |
+| Groq | `GROQ_API_KEY` |
+| Mistral | `MISTRAL_API_KEY` |
+| DeepInfra | `DEEPINFRA_API_KEY` |
+| Cohere | `COHERE_API_KEY` |
+| Perplexity | `PERPLEXITY_API_KEY` |
+| Together AI | `TOGETHERAI_API_KEY` |
+| AWS Bedrock | `AWS_ACCESS_KEY_ID` |
+| Azure | `AZURE_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| Cerebras | `CEREBRAS_API_KEY` |
 
-| # | 位置 | 问题 |
-|---|------|------|
-| 1 | `provider/provider.py` | **Provider 不加载内置模型目录** — `models_dev.py` 存在但从未被 `_init_state()` 调用。设置 `ANTHROPIC_API_KEY` 后因 `models` 为空无法使用 |
-| 2 | `mcp/mcp.py` | **MCP 连接立即关闭** — `async with` 退出后 session 失效，`self._client` 指向已关闭的连接 |
-| 3 | `lsp/client.py:113` | **LSP 消息路由缺陷** — `if "id" in msg and "id" in msg` 重复条件，无法区分 response 和 server request |
-| 4 | `lsp/client.py:78` | **LSP 消息可能不发送** — `stdin.write()` 后缺少 `await drain()` |
-| 5 | `session/prompt.py:175` | **不可靠的变量检测** — `'iteration' in dir()` 不是检查循环变量是否存在的正确方式 |
+也可通过 `opencode.json` 配置自定义 provider。
 
-### 🟡 功能缺失 (14)
+## 后续路线图
 
-| # | 模块 | 缺失功能 |
-|---|------|----------|
-| 1 | `session/` | **消息不持久化** — `MessageTable`/`PartTable` 已定义但未使用，消息只在内存中 |
-| 2 | `session/` | **无 Compaction** — 返回 `"compact"` 时只 break，无上下文压缩逻辑 |
-| 3 | `session/` | **无 Abort 机制** — LLM 流不可取消 |
-| 4 | `session/` | **无会话恢复** — 无法从数据库加载历史继续对话 |
-| 5 | `session/` | **无 Snapshot 集成** — 文件变更前后不创建快照 |
-| 6 | `session/` | **Permission 未连接** — `PermissionManager` 已实现但从未在 processor 中调用 |
-| 7 | `provider/` | **transform 未应用** — `build_litellm_kwargs()` 从未被调用 (max_tokens/reasoning/headers) |
-| 8 | `provider/` | **litellm 缺少 `stream_options`** — 流式模式下 usage 可能全零 |
-| 9 | `tool/edit.py` | **编辑后无 LSP 通知/Snapshot/事件广播** |
-| 10 | `tool/task.py` | **子 agent 无 agentic loop** — 只运行单次 LLM 调用 |
-| 11 | `tool/question.py` | **不阻塞等待用户回复** — 直接返回问题文本 |
-| 12 | `server/app.py` | **Permission/MCP 路由是 stub** — 返回空数据 |
-| 13 | `agent/prompts/` | **4 个 prompt 模板全是 placeholder** — 需从原版迁移 |
-| 14 | `processor.py` | **工具串行执行** — 原版支持并行 |
-
-### 🟢 设计优化 (5)
-
-| # | 问题 | 建议 |
-|---|------|------|
-| 1 | **同步 SQLAlchemy + 异步 FastAPI** | 迁移到 `create_async_engine` + `aiosqlite` |
-| 2 | **全局可变状态过多** | `_state`/`_cached`/`_cached_agents` 等 — 改为依赖注入 |
-| 3 | **配置缓存不区分 directory** | 不同项目目录会共享同一份缓存配置 |
-| 4 | **`prompt.py` 访问 `providermod._state`** | 通过 provider 公共 API 获取 key |
-| 5 | **`ids.py` descending 算法** | 字符反转不保证正确排序 — 改用时间戳补码 |
-
-### 📊 测试覆盖
-
-| 有测试 | 无测试 |
-|--------|--------|
-| util (hash/wildcard/ids/slug/error) | session/prompt, processor, llm |
-| permission (evaluate/from_config) | provider, agent, config |
-| session (message, session DB CRUD) | server, storage, bus |
-| tool (read/write/edit/glob/question/todo/skill/registry) | lsp, mcp, snapshot, plugin, auth |
-| file (read/list_dir), shell, project | tool/bash, webfetch, websearch, task |
-
-### 📋 TODO 清单
-
-| 文件 | 描述 |
+| 功能 | 状态 |
 |------|------|
-| `server/app.py:102` | 实现 abort（共享 signal） |
-| `server/app.py:167` | 连接 PermissionManager |
-| `server/app.py:173` | 连接 PermissionManager.reply |
-| `lsp/lsp.py:95` | 从运行的 LSP server 收集 diagnostics |
-| `tool/base.py:26` | `ask_permission()` 连接到 PermissionManager |
-| `agent/prompts/*.txt` | 从原版迁移 prompt 模板 |
-
----
-
-## 与原版 TypeScript 的对比
-
-| 功能 | 原版 (TS) | Python 版 | 差距 |
-|------|-----------|-----------|------|
-| Agentic Loop | ✅ 完整 | ✅ 基础可用 | 缺 compaction/abort/snapshot |
-| 工具 | 20+ | 12 | 缺 apply_patch/multiedit/ls/lsp_tool |
-| Provider | 20+ (Vercel AI SDK) | 14 (litellm) | litellm 覆盖更广但无内置模型目录 |
-| 消息持久化 | SQLite (完整) | Session SQLite + 消息内存 | 需补全 Message/Part 持久化 |
-| LSP | 20+ 语言 + 完整通信 | 6 语言 + 基础 JSON-RPC | 需补全 didChange/diagnostics |
-| MCP | 完整 (stdio/HTTP/SSE) | 框架就绪 (连接不持久) | 需修复 async with 生命周期 |
-| TUI | 完整 (opentui/SolidJS) | ❌ 未实现 | 计划用 Textual |
-| 权限 | 完整 (集成到工具执行) | 已实现但未集成 | 需在 processor 中调用 |
+| 交互式 TUI (Textual) | 计划中 |
+| 会话恢复（从 DB 加载历史继续对话） | 待实现 |
+| 工具并行执行 | 待实现 |
+| apply_patch 工具 (GPT-5 格式) | 待实现 |
+| LSP didChange 通知 | 待实现 |
+| Python SDK (`opencode-sdk`) | 待评估 |
 
 ---
 
@@ -247,11 +248,43 @@ uv sync --extra dev
 # 运行测试
 uv run pytest tests/ -v
 
+# 运行测试 (带覆盖率)
+uv run pytest tests/ --cov=opencode --cov-report=term-missing
+
 # Lint
 uv run ruff check opencode/
 
+# 自动修复 Lint
+uv run ruff check opencode/ --fix
+
 # 类型检查
 uv run mypy opencode/
+```
+
+### 项目结构
+
+```
+opencode/
+├── agent/          # Agent 定义 (7 内置 agent)
+├── auth/           # API Key / OAuth 持久化
+├── bus/            # 事件总线 (asyncio pub/sub)
+├── cli/            # CLI 入口 (Click, 13 命令)
+├── config/         # JSONC 配置 + Pydantic 模型
+├── file/           # 文件操作 + ripgrep
+├── lsp/            # LSP 集成 (26 语言)
+├── mcp/            # MCP 协议 (stdio/HTTP, 自动重连)
+├── permission/     # 权限系统 (allow/deny/ask)
+├── plugin/         # 插件系统 (7 hook 类型)
+├── project/        # 项目发现 + contextvars
+├── provider/       # AI Provider (14+ provider, litellm)
+├── server/         # FastAPI (8 路由模块, 26 端点)
+│   └── routes/     # session/provider/config/file/permission/mcp/event/project
+├── session/        # 核心 agentic loop + 消息持久化 + compaction
+├── shell/          # Shell 检测
+├── snapshot/       # Shadow git (track/diff/restore/history)
+├── storage/        # SQLite + JSON 存储
+├── tool/           # 12 内置工具 + 注册表
+└── util/           # 通用工具 (9 模块)
 ```
 
 ## License
