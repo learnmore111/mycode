@@ -164,12 +164,14 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     tool_calls_in_progress: dict[int, dict[str, Any]] = {}
     # Accumulate usage across chunks (some providers send usage in a separate final chunk)
     accumulated_usage: dict[str, int] = {}
+    # Defer FinishEvent until stream ends (usage may arrive after finish_reason)
+    pending_finish_reason: str | None = None
 
     try:
         response = await litellm.acompletion(**kwargs)
 
         async for chunk in response:
-            # Some providers send a final chunk with usage but no choices
+            # Collect usage from any chunk that has it
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage
                 accumulated_usage = {
@@ -181,24 +183,22 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                     "cache_write_tokens": _get_cache_write_tokens(u),
                 }
 
+            # Check for finish_reason (may come with or without delta)
+            finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+            if finish_reason:
+                pending_finish_reason = finish_reason
+                # Emit completed tool calls when finish_reason arrives
+                for entry in tool_calls_in_progress.values():
+                    if entry["name"]:
+                        yield ToolCallDelta(
+                            tool_call_id=entry["id"],
+                            tool_name=entry["name"],
+                            args=entry["args"],
+                        )
+                tool_calls_in_progress.clear()
+
             delta = chunk.choices[0].delta if chunk.choices else None
             if not delta:
-                # Check for finish_reason without delta (usage-only final chunk)
-                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
-                if finish_reason:
-                    for entry in tool_calls_in_progress.values():
-                        if entry["name"]:
-                            yield ToolCallDelta(
-                                tool_call_id=entry["id"],
-                                tool_name=entry["name"],
-                                args=entry["args"],
-                            )
-                    cost = _calc_cost(model_name, accumulated_usage)
-                    yield FinishEvent(
-                        reason=_map_finish_reason(finish_reason),
-                        usage=accumulated_usage,
-                        cost=cost,
-                    )
                 continue
 
             # Text content
@@ -233,25 +233,14 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                             args_delta=tc.function.arguments,
                         )
 
-            # Finish
-            finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
-            if finish_reason:
-                # Emit completed tool calls
-                for entry in tool_calls_in_progress.values():
-                    if entry["name"]:
-                        yield ToolCallDelta(
-                            tool_call_id=entry["id"],
-                            tool_name=entry["name"],
-                            args=entry["args"],
-                        )
-
-                cost = _calc_cost(model_name, accumulated_usage)
-
-                yield FinishEvent(
-                    reason=_map_finish_reason(finish_reason),
-                    usage=accumulated_usage,
-                    cost=cost,
-                )
+        # Stream ended — emit FinishEvent with complete usage data
+        if pending_finish_reason:
+            cost = _calc_cost(model_name, accumulated_usage)
+            yield FinishEvent(
+                reason=_map_finish_reason(pending_finish_reason),
+                usage=accumulated_usage,
+                cost=cost,
+            )
 
     except Exception as e:
         logger.error("stream error", error=str(e), model=model_name)
