@@ -15,23 +15,21 @@ uv sync
 # 查看帮助
 uv run opencode --help
 
-# Headless 模式
-# 配置 LLM 代理（OpenAI 兼容接口）
-export OPENAI_API_KEY="your token"
-export OPENAI_API_BASE="http://v2.open.venus.oa.com/llmproxy"
-uv run opencode run --message "列出当前目录的文件"
+# 设置 API Key（任意 OpenAI 兼容接口）
+export OPENAI_API_KEY="your-token"
+export OPENAI_API_BASE="https://your-endpoint.com/v1"  # 可选，默认 OpenAI 官方
 
-# 如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM 等），
-# 需要在 opencode.json 中配置自定义 endpoint，详见下方「自定义 Provider」章节
+# 交互式模式（Rich UI + Markdown 渲染 + 上下文进度条）
+uv run opencode run
+
+# Headless 模式（单次执行，适合脚本/CI）
+uv run opencode run --message "列出当前目录的文件"
 
 # 启动 API Server
 uv run opencode serve --port 4096
 
 # 运行测试
 uv run pytest tests/ -v
-
-# Lint 检查
-uv run ruff check opencode/
 ```
 
 ## 架构总览
@@ -39,7 +37,7 @@ uv run ruff check opencode/
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                        Clients                          │
-│  CLI (click)  │  HTTP API (FastAPI)  │  Future: TUI     │
+│  CLI (click)  │  HTTP API (FastAPI)  │  Interactive CLI   │
 └──────┬────────┴──────────┬───────────┴──────────────────┘
        │                   │
        ▼                   ▼
@@ -80,7 +78,7 @@ uv run ruff check opencode/
 
 | 模块 | 说明 |
 |------|------|
-| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`llm.py` litellm 流式调用 |
+| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`llm.py` litellm 流式调用 + token 统计（input/output/reasoning/cache）+ cost 计算 |
 | **`provider/`** | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，`transform.py` 按模型类型调整参数（temperature/reasoning/max_tokens），通过 litellm 统一调用 14+ 种 LLM |
 | **`agent/`** | Agent 系统。内置 7 个 agent：`build`(默认全权限)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
 | **`tool/`** | 工具系统。12 个内置工具 + 注册表：bash、read、edit、write、glob、grep、task、webfetch、websearch、question、todo、skill |
@@ -110,7 +108,7 @@ uv run ruff check opencode/
 | 模块 | 说明 |
 |------|------|
 | **`server/`** | FastAPI 应用。8 个路由模块（session/provider/config/file/permission/mcp/event/project），26 个 API 端点 + SSE 流式消息 + SSE 全局事件订阅 |
-| **`cli/`** | Click CLI。`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
+| **`cli/`** | Click CLI + Rich 交互式 REPL。欢迎面板 + Markdown 渲染 + Spinner 动画 + 上下文进度条 + Token/Cost 统计。命令：`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
 | **`shell/`** | Shell 检测（排除 fish/nu）+ 进程树 kill |
 | **`file/`** | 文件读取/模糊搜索/列目录 + ripgrep 集成 |
 | **`util/`** | 通用工具：log (structlog)、filesystem (aiofiles)、error、hash、ids (ULID)、wildcard、context、paths (XDG)、slug |
@@ -119,7 +117,7 @@ uv run ruff check opencode/
 
 ```
 Python 文件:      91
-代码行数:       7,178
+代码行数:       7,593
 单元测试:        165 (全部通过)
 内置工具:         12
 API 路由:         26
@@ -136,7 +134,7 @@ Lint 错误:         0
 | HTTP API | **FastAPI** + **SSE** (sse-starlette) |
 | 数据库 | **SQLAlchemy** + SQLite |
 | Schema | **Pydantic v2** |
-| CLI | **Click** |
+| CLI | **Click** + **Rich** (Markdown/Spinner/Panel) + **prompt_toolkit** |
 | 日志 | **structlog** |
 | 包管理 | **uv** |
 | 文件搜索 | **ripgrep** (subprocess) |
@@ -150,7 +148,9 @@ Lint 错误:         0
 ```bash
 opencode --help                     # 查看所有命令
 opencode serve [--port 4096]        # 启动 API 服务器
+opencode run [DIR]                  # 交互式模式（默认）
 opencode run [DIR] -p "message"     # Headless 模式运行
+opencode run [DIR] -a plan          # 指定 agent 模式
 opencode providers                  # 列出可用 AI 提供商
 opencode models                     # 列出可用模型
 opencode config show [DIR]          # 查看合并后配置
@@ -162,6 +162,31 @@ opencode mcp list                   # 列出 MCP 服务器
 opencode snapshot track [DIR]       # 创建快照
 opencode snapshot diff HASH [DIR]   # 查看快照 diff
 ```
+
+### 交互式模式特性
+
+```
+┌──────────────────────────────────────────────────┐
+│ ▐█▛█▛█▌ Welcome to OpenCode v0.1.0!             │
+│ ▐█████▌ Type /help for commands, Ctrl+D to exit. │
+│                                                  │
+│ Directory: .                                     │
+│ Model: default                                   │
+│ Agent: build                                     │
+└──────────────────────────────────────────────────┘
+
+✨ 你好
+  你好！有什么可以帮你的吗？
+  ─ 2.4s · in:3517 out:24
+  Context ▐██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░▌ 3.5K/96.0K (4%)
+```
+
+- **Rich Markdown 渲染** — AI 回复自动渲染代码高亮、列表、标题
+- **Spinner 动画** — 等待 AI 时显示 dots spinner + 耗时
+- **Token 统计** — 每轮显示 input/output/reasoning/cache token 数
+- **Cost 计算** — 基于 litellm 定价数据自动计算费用
+- **上下文进度条** — 颜色编码显示上下文窗口使用率（绿→黄→橙→红）
+- **斜杠命令** — `/help` `/clear` `/history` `/quit`
 
 ## API 端点
 
@@ -244,7 +269,12 @@ POST   /log                        # 写日志
       "models": {
         "my-model": {
           "id": "gpt-4o",                           // 实际模型 ID
-          "name": "My Custom Model"
+          "name": "My Custom Model",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,                      // 上下文窗口大小（token）
+            "output": 8192                          // 最大输出 token
+          }
         }
       }
     }
@@ -253,6 +283,8 @@ POST   /log                        # 写日志
   "model": "my-provider/my-model"
 }
 ```
+
+> **注意**：自定义模型必须手动设置 `limit.context`，否则上下文进度条和自动 compaction 无法工作。内置 provider（Anthropic/OpenAI/Google 等）会从 models.dev 数据库自动获取。
 
 也可以通过环境变量指定 base URL（litellm 原生支持）：
 
@@ -266,7 +298,8 @@ uv run opencode run --message "hello"
 
 | 功能 | 状态 |
 |------|------|
-| 交互式 TUI (Textual) | 计划中 |
+| 交互式 CLI (Rich + prompt_toolkit) | ✅ 已完成 |
+| Token 统计 + Cost 计算 + 上下文进度条 | ✅ 已完成 |
 | 会话恢复（从 DB 加载历史继续对话） | 待实现 |
 | 工具并行执行 | 待实现 |
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
