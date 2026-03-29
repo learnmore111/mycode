@@ -15,8 +15,8 @@ uv sync
 # 查看帮助
 uv run opencode --help
 
-# Headless 模式（需要设置 API Key）
-export ANTHROPIC_API_KEY=sk-xxx
+# Headless 模式（设置任意一个 API Key 即可）
+export OPENAI_API_KEY=sk-xxx
 uv run opencode run --message "列出当前目录的文件"
 
 # 启动 API Server
