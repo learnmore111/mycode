@@ -127,6 +127,11 @@ async def stream(input: StreamInput) -> AsyncGenerator[StreamEvent, None]:
         "stream": True,
     }
 
+    # Apply provider-specific transforms
+    from opencode.provider.transform import build_litellm_kwargs
+    provider_kwargs = build_litellm_kwargs(input.model)
+    kwargs.update(provider_kwargs)
+
     if tools:
         kwargs["tools"] = tools
     if input.tool_choice:

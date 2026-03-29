@@ -34,6 +34,8 @@ class ProcessorContext:
     parts: list[Part] = field(default_factory=list)
     should_break: bool = False
     doom_count: int = 0
+    permission_manager: Any = None  # PermissionManager instance
+    agent_permission: list[dict[str, Any]] = field(default_factory=list)
 
 
 async def process(
@@ -98,6 +100,7 @@ async def process(
     # Execute tool calls
     if tool_calls_pending:
         has_failure = False
+        blocked = False
         for tp in tool_calls_pending:
             tool = tool_registry.get(tp.tool)
             if not tool:
@@ -114,6 +117,39 @@ async def process(
                 call_id=tp.tool_call_id,
             )
 
+            # Permission check
+            if ctx.permission_manager:
+                try:
+                    from opencode.permission.schema import RejectedError, DeniedError
+                    await ctx.permission_manager.ask(
+                        session_id=ctx.session_id,
+                        permission=tp.tool,
+                        patterns=["*"],
+                        ruleset=ctx.agent_permission,
+                        metadata={"tool": tp.tool, "input": tp.state.get("input", {})},
+                        always=["*"],
+                    )
+                except (RejectedError, DeniedError) as e:
+                    tp.state["status"] = "error"
+                    tp.state["output"] = str(e)
+                    tp.time_completed = int(time.time() * 1000)
+                    blocked = True
+                    continue
+                except Exception:
+                    pass  # Permission manager not connected, allow
+
+            # Doom loop detection: check if same tool+input repeated
+            recent_tool_parts = [p for p in ctx.parts if isinstance(p, ToolPart) and p.tool == tp.tool]
+            if len(recent_tool_parts) >= DOOM_LOOP_THRESHOLD:
+                last_inputs = [json.dumps(p.state.get("input", {}), sort_keys=True) for p in recent_tool_parts[-DOOM_LOOP_THRESHOLD:]]
+                current_input = json.dumps(tp.state.get("input", {}), sort_keys=True)
+                if all(inp == current_input for inp in last_inputs):
+                    logger.warn("doom loop detected", tool=tp.tool)
+                    tp.state["status"] = "error"
+                    tp.state["output"] = "Doom loop detected: same tool with same input called repeatedly"
+                    tp.time_completed = int(time.time() * 1000)
+                    return "stop", parts
+
             try:
                 tp.state["status"] = "running"
                 result = await tool.execute(tp.state.get("input", {}), tool_ctx)
@@ -122,6 +158,7 @@ async def process(
                 tp.state["title"] = result.title
                 tp.state["metadata"] = result.metadata
                 tp.time_completed = int(time.time() * 1000)
+                ctx.parts.append(tp)
                 await ctx.bus.publish(PART_UPDATED, {
                     "session_id": ctx.session_id, "part": {"id": tp.id, "tool": tp.tool, "status": "completed"},
                 })
@@ -132,13 +169,16 @@ async def process(
                 has_failure = True
                 logger.error("tool execution failed", tool=tp.tool, error=str(e))
 
+        if blocked:
+            return "stop", parts
+
         if has_failure:
             ctx.doom_count += 1
         else:
             ctx.doom_count = 0
 
         if ctx.doom_count >= DOOM_LOOP_THRESHOLD:
-            logger.warn("doom loop detected, stopping")
+            logger.warn("doom loop threshold reached, stopping")
             return "stop", parts
 
         return "continue", parts

@@ -10,7 +10,37 @@ from opencode.util import log as logmod
 
 logger = logmod.create(service="provider.transform")
 
-OUTPUT_TOKEN_MAX = 64_000
+OUTPUT_TOKEN_MAX = 32_000
+
+
+def temperature(model: Model) -> float | None:
+    """Get model-specific temperature. Matches original transform.ts temperature()."""
+    mid = model.id.lower()
+    if "qwen" in mid:
+        return 0.55
+    if "claude" in mid:
+        return None  # Anthropic handles temperature differently
+    if "gemini" in mid:
+        return 1.0
+    if "glm-4.6" in mid or "glm-4.7" in mid:
+        return 1.0
+    if "minimax-m2" in mid:
+        return 1.0
+    if "kimi-k2" in mid:
+        if any(s in mid for s in ["thinking", "k2.", "k2p", "k2-5"]):
+            return 1.0
+        return 0.6
+    return None
+
+
+def top_p(model: Model) -> float | None:
+    """Get model-specific top_p. Matches original transform.ts topP()."""
+    mid = model.id.lower()
+    if "qwen" in mid:
+        return 1.0
+    if any(s in mid for s in ["minimax-m2", "gemini", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"]):
+        return 0.95
+    return None
 
 
 def max_tokens(model: Model) -> int | None:
@@ -90,10 +120,19 @@ def build_litellm_kwargs(model: Model, variant: str | None = None) -> dict[str, 
     if mt:
         kwargs["max_tokens"] = mt
 
+    # Model-specific temperature
+    temp = temperature(model)
+    if temp is not None:
+        kwargs["temperature"] = temp
+
+    # Model-specific top_p
+    tp = top_p(model)
+    if tp is not None:
+        kwargs["top_p"] = tp
+
     # Reasoning
     reasoning = reasoning_params(model, variant)
     if reasoning:
-        # litellm passes these through to the provider
         kwargs.update(reasoning)
 
     # Model-level headers
