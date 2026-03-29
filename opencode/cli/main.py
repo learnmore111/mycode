@@ -428,6 +428,7 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
             elif event.type == "done":
                 tokens = event.data.get("tokens", {})
                 cost = event.data.get("cost", 0.0)
+                ctx_info = event.data.get("context", {})
                 t_in = tokens.get("input", 0)
                 t_out = tokens.get("output", 0)
                 parts_list = [f"in:{t_in}", f"out:{t_out}"]
@@ -435,6 +436,11 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
                     parts_list.append(f"reasoning:{tokens['reasoning']}")
                 if cost > 0:
                     parts_list.append(f"${cost:.4f}")
+                ctx_limit = ctx_info.get("limit", 0)
+                ctx_used = ctx_info.get("used", 0)
+                if ctx_limit > 0:
+                    pct = ctx_used / ctx_limit * 100
+                    parts_list.append(f"ctx:{ctx_used}/{ctx_limit}({pct:.0f}%)")
                 click.echo(f"\n\n--- Done ({' · '.join(parts_list)}) ---", err=True)
         await bus.close()
 
