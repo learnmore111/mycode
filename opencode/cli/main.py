@@ -77,19 +77,74 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
 
 
 async def _headless(directory: str, model: str | None, agent: str | None, message: str) -> None:
-    """Run a single message in headless mode."""
-    # Will be implemented in Phase 3
-    click.echo(f"[headless] Processing: {message}")
-    click.echo("[headless] Not yet implemented — completing Phase 3 first.")
+    """Run a single message in headless mode through the full agentic loop."""
+    from opencode.bus.bus import Bus
+    from opencode.project.instance import provide
+    from opencode.project.project import from_directory
+    from opencode.session.session import create as create_session
+    from opencode.session.prompt import PromptInput, prompt
+    from opencode.tool.registry import register_builtins
+
+    register_builtins()
+    project = await from_directory(directory)
+
+    async def _run() -> None:
+        session = create_session(title=message[:60])
+        bus = Bus()
+        inp = PromptInput(
+            session_id=session.id,
+            parts=[{"type": "text", "content": message}],
+            model=model,
+            agent=agent,
+        )
+        async for event in prompt(inp, bus):
+            if event.type == "text":
+                click.echo(event.data.get("content", ""), nl=False)
+            elif event.type == "tool":
+                tool_name = event.data.get("tool", "?")
+                status = event.data.get("status", "?")
+                click.echo(f"\n[tool:{tool_name}] {status}", err=True)
+            elif event.type == "error":
+                click.echo(f"\nError: {event.data.get('message', 'unknown')}", err=True)
+            elif event.type == "done":
+                tokens = event.data.get("tokens", {})
+                click.echo(f"\n\n--- Done (in:{tokens.get('input',0)} out:{tokens.get('output',0)}) ---", err=True)
+        await bus.close()
+
+    await provide(directory, _run, project)
 
 
 @cli.command()
 def providers() -> None:
     """List available AI providers and models."""
-    click.echo("Provider listing not yet implemented.")
+    import asyncio
+    from opencode.provider.provider import list_providers
+
+    async def _list() -> None:
+        provs = await list_providers()
+        if not provs:
+            click.echo("No providers found. Set an API key env var (e.g. ANTHROPIC_API_KEY).")
+            return
+        for pid, p in provs.items():
+            click.echo(f"  {pid} ({p.source}) — {len(p.models)} models")
+            for mid in list(p.models.keys())[:5]:
+                click.echo(f"    • {mid}")
+            if len(p.models) > 5:
+                click.echo(f"    ... and {len(p.models) - 5} more")
+
+    asyncio.run(_list())
 
 
 @cli.command()
 def models() -> None:
     """List available models."""
-    click.echo("Model listing not yet implemented.")
+    import asyncio
+    from opencode.provider.provider import list_providers
+
+    async def _list() -> None:
+        provs = await list_providers()
+        for pid, p in provs.items():
+            for mid, m in p.models.items():
+                click.echo(f"  {pid}/{mid}")
+
+    asyncio.run(_list())
