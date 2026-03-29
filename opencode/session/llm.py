@@ -6,6 +6,7 @@ Equivalent to src/session/llm.ts.
 
 from __future__ import annotations
 
+import logging as _logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,10 @@ logger = logmod.create(service="llm")
 
 # Suppress litellm's verbose logging
 litellm.suppress_debug_info = True
+litellm.set_verbose = False
+_logging.getLogger("LiteLLM").setLevel(_logging.WARNING)
+_logging.getLogger("litellm").setLevel(_logging.WARNING)
+_logging.getLogger("httpx").setLevel(_logging.WARNING)
 
 
 @dataclass
