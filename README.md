@@ -15,9 +15,16 @@ uv sync
 # 查看帮助
 uv run opencode --help
 
-# Headless 模式（设置任意一个 API Key 即可）
-export OPENAI_API_KEY=sk-xxx
+# Headless 模式
+# 设置任意一个 AI 提供商的 API Key（litellm 内置各 provider 默认 endpoint，无需额外配置）
+export OPENAI_API_KEY=sk-xxx          # OpenAI
+# export ANTHROPIC_API_KEY=sk-xxx     # 或 Anthropic
+# export GEMINI_API_KEY=xxx           # 或 Google Gemini
+# export DEEPSEEK_API_KEY=xxx         # 或 DeepSeek
 uv run opencode run --message "列出当前目录的文件"
+
+# 如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM 等），
+# 需要在 opencode.json 中配置自定义 endpoint，详见下方「自定义 Provider」章节
 
 # 启动 API Server
 uv run opencode serve --port 4096
@@ -224,7 +231,38 @@ POST   /log                        # 写日志
 | OpenRouter | `OPENROUTER_API_KEY` |
 | Cerebras | `CEREBRAS_API_KEY` |
 
-也可通过 `opencode.json` 配置自定义 provider。
+对于以上内置提供商，**只需设置对应环境变量即可**，litellm 会自动路由到正确的 API endpoint。
+
+### 自定义 Provider
+
+如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），在项目根目录创建 `opencode.json`：
+
+```jsonc
+{
+  // 使用自定义 endpoint
+  "provider": {
+    "my-provider": {
+      "api": "https://your-api-endpoint.com/v1",   // 自定义 endpoint
+      "models": {
+        "my-model": {
+          "id": "gpt-4o",                           // 实际模型 ID
+          "name": "My Custom Model"
+        }
+      }
+    }
+  },
+  // 设置默认模型
+  "model": "my-provider/my-model"
+}
+```
+
+也可以通过环境变量指定 base URL（litellm 原生支持）：
+
+```bash
+export OPENAI_API_BASE=https://your-proxy.com/v1
+export OPENAI_API_KEY=sk-xxx
+uv run opencode run --message "hello"
+```
 
 ## 后续路线图
 
