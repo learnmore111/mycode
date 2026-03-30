@@ -81,6 +81,7 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
 async def _interactive(directory: str, model: str | None, agent: str | None) -> None:
     """Run the interactive CLI REPL with Rich-powered UI."""
     import shlex
+    import shutil
     import time
     from datetime import datetime
     from pathlib import Path
@@ -306,10 +307,6 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         bottom_toolbar=_bottom_toolbar,
     )
 
-    # Input area border
-    _border_color = "grey50"
-    _border_char = "─"
-    _border_width = 60
 
     session_info = None
     bus = Bus()
@@ -334,31 +331,29 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # Prompt symbol
             prompt_symbol = "✨ " if not (agent and agent == "plan") else "📋 "
 
-            # Upper border of input area
-            console.print(Text(
-                f"┌{'─' * _border_width}",
-                style=_border_color,
-            ))
+            # Upper border of input area (auto-fit terminal width)
+            tw = shutil.get_terminal_size((80, 24)).columns
+            border_inner = tw - 4  # ┌ + ─ padding + ┐ = 4 chars
+            if border_inner < 10:
+                border_inner = 10
+            top_border = f"  \033[38;5;243m┌{'─' * border_inner}┐\033[0m"
+            click.echo(top_border)
 
             try:
                 with patch_stdout(raw=True):
                     user_input = await ps.prompt_async(
-                        HTML(f"<b>│ {prompt_symbol}</b>"),
+                        HTML(f'<style fg="#888888">  │</style> {prompt_symbol}'),
                         multiline=False,
                     )
             except (EOFError, KeyboardInterrupt):
-                console.print(Text(
-                    f"└{'─' * _border_width}",
-                    style=_border_color,
-                ))
+                bot_border = f"  \033[38;5;243m└{'─' * border_inner}┘\033[0m"
+                click.echo(bot_border)
                 console.print("\n[grey50]Bye![/grey50]")
                 break
 
             # Lower border of input area
-            console.print(Text(
-                f"└{'─' * _border_width}",
-                style=_border_color,
-            ))
+            bot_border = f"  \033[38;5;243m└{'─' * border_inner}┘\033[0m"
+            click.echo(bot_border)
 
             text = user_input.strip()
             if not text:
