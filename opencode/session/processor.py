@@ -1,6 +1,7 @@
 """Session processor — the core agentic loop. Equivalent to src/session/processor.ts."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -104,10 +105,14 @@ async def process(
             ctx.should_break = True
             break
 
-    # Execute tool calls
+    # Execute tool calls (parallel when possible)
     if tool_calls_pending:
         has_failure = False
         blocked = False
+        doom_detected = False
+
+        # Phase 1: Pre-flight checks (serial) — permission + doom loop detection
+        executable: list[tuple[ToolPart, Any, ToolContext]] = []  # (tp, tool_impl, tool_ctx)
         for tp in tool_calls_pending:
             tool = tool_registry.get(tp.tool)
             if not tool:
@@ -155,26 +160,44 @@ async def process(
                     tp.state["status"] = "error"
                     tp.state["output"] = "Doom loop detected: same tool with same input called repeatedly"
                     tp.time_completed = int(time.time() * 1000)
-                    return "stop", parts
+                    doom_detected = True
+                    break
 
-            try:
-                tp.state["status"] = "running"
-                result = await tool.execute(tp.state.get("input", {}), tool_ctx)
-                tp.state["status"] = "completed"
-                tp.state["output"] = result.output
-                tp.state["title"] = result.title
-                tp.state["metadata"] = result.metadata
-                tp.time_completed = int(time.time() * 1000)
-                ctx.parts.append(tp)
-                await ctx.bus.publish(PART_UPDATED, {
-                    "session_id": ctx.session_id, "part": {"id": tp.id, "tool": tp.tool, "status": "completed"},
-                })
-            except Exception as e:
-                tp.state["status"] = "error"
-                tp.state["output"] = str(e)
-                tp.time_completed = int(time.time() * 1000)
+            executable.append((tp, tool, tool_ctx))
+
+        if doom_detected:
+            return "stop", parts
+
+        # Phase 2: Execute all tools in parallel via asyncio.gather
+        if executable:
+            async def _run_tool(tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext) -> bool:
+                """Execute a single tool. Returns True on success, False on failure."""
+                try:
+                    tp.state["status"] = "running"
+                    result = await tool_impl.execute(tp.state.get("input", {}), tool_ctx)
+                    tp.state["status"] = "completed"
+                    tp.state["output"] = result.output
+                    tp.state["title"] = result.title
+                    tp.state["metadata"] = result.metadata
+                    tp.time_completed = int(time.time() * 1000)
+                    ctx.parts.append(tp)
+                    await ctx.bus.publish(PART_UPDATED, {
+                        "session_id": ctx.session_id, "part": {"id": tp.id, "tool": tp.tool, "status": "completed"},
+                    })
+                    return True
+                except Exception as e:
+                    tp.state["status"] = "error"
+                    tp.state["output"] = str(e)
+                    tp.time_completed = int(time.time() * 1000)
+                    logger.error("tool execution failed", tool=tp.tool, error=str(e))
+                    return False
+
+            results = await asyncio.gather(
+                *[_run_tool(tp, impl, tctx) for tp, impl, tctx in executable],
+                return_exceptions=False,
+            )
+            if not all(results):
                 has_failure = True
-                logger.error("tool execution failed", tool=tp.tool, error=str(e))
 
         if blocked:
             return "stop", parts

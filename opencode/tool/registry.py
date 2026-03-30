@@ -32,3 +32,15 @@ def register_builtins() -> None:
     for mod in [bash, read, edit, write, glob_tool, grep, task, webfetch, websearch, question, todo, skill]:
         if hasattr(mod, "tool"):
             register(mod.tool)
+
+    # Experimental: batch tool (explicit parallel execution)
+    try:
+        from opencode.config import config as configmod
+        cfg = configmod.get()
+        if cfg.experimental and cfg.experimental.batch_tool:
+            from opencode.tool import batch
+            if hasattr(batch, "tool"):
+                register(batch.tool)
+                logger.debug("batch tool enabled via experimental config")
+    except Exception:
+        pass  # Config not available yet, skip batch registration
