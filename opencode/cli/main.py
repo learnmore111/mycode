@@ -81,6 +81,7 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
 async def _interactive(directory: str, model: str | None, agent: str | None) -> None:
     """Run the interactive CLI REPL with Rich-powered UI."""
     import time
+    from datetime import datetime
 
     from prompt_toolkit import PromptSession
     from prompt_toolkit.formatted_text import HTML
@@ -98,6 +99,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
+    from opencode.session.memory import SessionMemory, save_session_note
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
@@ -164,9 +166,18 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     conversation_history: list[dict] = []
     total_tokens_used = 0
     context_limit = 0
+    session_start_time = datetime.now()  # Track when session started
+
+    # Initialize session memory
+    session_memory = SessionMemory(abs_directory)
+    if session_memory.is_enabled:
+        # Load recent notes for context (optional: can be used for context injection)
+        recent_notes = session_memory.load_recent_notes()
+        if recent_notes:
+            console.print(Text(f"  📝 {len(recent_notes)} recent session notes available", style="grey50"))
 
     async def _run_loop() -> None:
-        nonlocal session_info, conversation_history, total_tokens_used, context_limit
+        nonlocal session_info, conversation_history, total_tokens_used, context_limit, session_start_time
 
         while True:
             # Prompt symbol
@@ -203,7 +214,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 continue
 
             if text.startswith("/"):
-                handled = _handle_command(text, conversation_history, console)
+                handled = _handle_command(text, conversation_history, console, abs_directory)
                 if handled == "quit":
                     console.print("[grey50]Bye![/grey50]")
                     break
@@ -338,6 +349,21 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             if full_text:
                 conversation_history.append({"role": "assistant", "content": full_text})
 
+        # --- Session end: save memory note if enabled ---
+        if session_memory.is_enabled and conversation_history:
+            console.print(Text("  💾 Saving session memory...", style="grey50"))
+            try:
+                note_path = await save_session_note(
+                    project_path=abs_directory,
+                    session_id=session_info.id if session_info else "unknown",
+                    messages=conversation_history,
+                    start_time=session_start_time,
+                )
+                if note_path:
+                    console.print(Text(f"  ✓ Session note saved: {note_path.name}", style="green"))
+            except Exception as e:
+                console.print(Text(f"  ✗ Failed to save session note: {e}", style="red"))
+
         await bus.close()
 
     await provide(directory, _run_loop, project)
@@ -414,13 +440,14 @@ async def _run_shell(console, command: str, cwd: str) -> None:
     console.print()
 
 
-def _handle_command(text: str, history: list, console=None) -> str | None:
+def _handle_command(text: str, history: list, console=None, project_path: str | None = None) -> str | None:
     """Handle slash commands. Returns 'quit', 'clear', or None."""
     if console is None:
         from rich.console import Console
         console = Console(highlight=False)
 
-    cmd = text.lower().split()[0]
+    parts = text.lower().split()
+    cmd = parts[0]
 
     if cmd in ("/quit", "/exit", "/q"):
         return "quit"
@@ -437,6 +464,7 @@ def _handle_command(text: str, history: list, console=None) -> str | None:
         table.add_row("/help", "Show this help")
         table.add_row("/clear", "Clear conversation history")
         table.add_row("/history", "Show conversation turns")
+        table.add_row("/memory", "Show recent session notes")
         table.add_row("/quit", "Exit")
         table.add_row("!<cmd>", "Execute a shell command directly")
         table.add_row("", "")
@@ -456,24 +484,53 @@ def _handle_command(text: str, history: list, console=None) -> str | None:
                 console.print(f"  [{style}][{i}] {role}:[/{style}] {content}")
         return ""
 
+    if cmd == "/memory":
+        from opencode.session.memory import SessionMemory
+        if not project_path:
+            console.print("  [grey50](no project path)[/grey50]")
+            return ""
+        memory = SessionMemory(project_path)
+        if not memory.is_enabled:
+            console.print("  [yellow]Session memory is disabled.[/yellow]")
+            console.print("  [grey50]Enable it in config: sessionMemory.enabled = true[/grey50]")
+            return ""
+        notes = memory.load_recent_notes(limit=5)
+        if not notes:
+            console.print("  [grey50](no session notes found)[/grey50]")
+        else:
+            console.print(f"  [cyan]Recent session notes ({len(notes)}):[/cyan]")
+            for note in notes:
+                date = note.get("date", "?")
+                duration = note.get("duration_minutes", 0)
+                topics = ", ".join(note.get("topics", [])) or "general"
+                console.print(f"    • {date} ({duration}min) - {topics}")
+        return ""
+
     console.print(f"  [red]Unknown command: {cmd}. Type /help[/red]")
     return ""
 
 
 async def _headless(directory: str, model: str | None, agent: str | None, message: str) -> None:
     """Run a single message in headless mode through the full agentic loop."""
+    from datetime import datetime
+
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
+    from opencode.session.memory import SessionMemory, save_session_note
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
 
     register_builtins()
     project = await from_directory(directory)
+    abs_directory = os.path.abspath(directory)
+    session_memory = SessionMemory(abs_directory)
 
     async def _run() -> None:
         session = create_session(title=message[:60])
+        session_start_time = datetime.now()
+        conversation_history: list[dict] = []
         bus = Bus()
         inp = PromptInput(
             session_id=session.id,
@@ -481,9 +538,12 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
             model=model,
             agent=agent,
         )
+        full_response = ""
         async for event in prompt(inp, bus):
             if event.type == "text":
-                click.echo(event.data.get("content", ""), nl=False)
+                content = event.data.get("content", "")
+                full_response += content
+                click.echo(content, nl=False)
             elif event.type == "tool":
                 tool_name = event.data.get("tool", "?")
                 status = event.data.get("status", "?")
@@ -507,6 +567,26 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
                     pct = ctx_used / ctx_limit * 100
                     parts_list.append(f"ctx:{ctx_used}/{ctx_limit}({pct:.0f}%)")
                 click.echo(f"\n\n--- Done ({' · '.join(parts_list)}) ---", err=True)
+
+        # Build conversation history
+        conversation_history.append({"role": "user", "content": message})
+        if full_response:
+            conversation_history.append({"role": "assistant", "content": full_response})
+
+        # Save session memory if enabled
+        if session_memory.is_enabled and conversation_history:
+            try:
+                note_path = await save_session_note(
+                    project_path=abs_directory,
+                    session_id=session.id,
+                    messages=conversation_history,
+                    start_time=session_start_time,
+                )
+                if note_path:
+                    click.echo(f"Session note saved: {note_path.name}", err=True)
+            except Exception as e:
+                click.echo(f"Failed to save session note: {e}", err=True)
+
         await bus.close()
 
     await provide(directory, _run, project)

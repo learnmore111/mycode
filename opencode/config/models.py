@@ -152,6 +152,33 @@ class CompactionConfig(BaseModel):
     reserved: int | None = None
 
 
+# --- Session Memory Config ---
+
+
+class SessionMemoryModelConfig(BaseModel):
+    """Model configuration for session memory summarization."""
+    provider: str | None = None  # "openai" | "anthropic"
+    name: str | None = None  # model name like "gpt-4o-mini"
+    base_url: str | None = Field(None, alias="baseURL")
+    api_key: str | None = Field(None, alias="apiKey")
+    api_key_env: str | None = Field(None, alias="apiKeyEnv")
+
+    model_config = {"populate_by_name": True}
+
+
+class SessionMemoryConfig(BaseModel):
+    """Configuration for auto-saving session memory/notes."""
+    enabled: bool | None = None  # Whether to enable auto-save
+    model: SessionMemoryModelConfig | None = None  # Model for summarization
+    note_language: str | None = Field(None, alias="noteLanguage")  # "zh" | "en"
+    min_duration_minutes: int | None = Field(None, alias="minDurationMinutes")  # Skip short sessions
+    min_user_prompts: int | None = Field(None, alias="minUserPrompts")  # Skip if too few prompts
+    max_notes_per_project: int | None = Field(None, alias="maxNotesPerProject")  # Limit notes
+    max_recent_for_context: int | None = Field(None, alias="maxRecentForContext")  # Recent notes to load
+
+    model_config = {"populate_by_name": True}
+
+
 # --- Experimental Config ---
 
 
@@ -231,6 +258,7 @@ class Config(BaseModel):
     instructions: list[str] | None = None
     permission: PermissionConfig | None = None
     compaction: CompactionConfig | None = None
+    session_memory: SessionMemoryConfig | None = Field(None, alias="sessionMemory")
     experimental: ExperimentalConfig | None = None
     enterprise: EnterpriseConfig | None = None
 
