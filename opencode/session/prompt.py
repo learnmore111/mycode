@@ -174,6 +174,7 @@ async def prompt(
                     yield PromptEvent(type="tool", data={
                         "tool": part.tool, "call_id": part.tool_call_id,
                         "status": part.state.get("status", "unknown"),
+                        "input": part.state.get("input", {}),
                         "output": part.state.get("output", "")[:500],
                     })
 

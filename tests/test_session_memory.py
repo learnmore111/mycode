@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from opencode.session.memory.memory import (
+    InteractionEntry,
+    InteractionLog,
     ParsedConversation,
     SessionMemory,
     SessionNote,
@@ -302,3 +304,234 @@ class TestBuildSummaryPrompt:
         prompt_en = memory._build_summary_prompt(parsed, "en")
         prompt_zh = memory._build_summary_prompt(parsed, "zh")
         assert prompt_en == prompt_zh
+
+
+class TestInteractionLog:
+    """Tests for the InteractionLog (near-lossless per-turn record)."""
+
+    def test_record_tool_call(self, tmp_path: Path):
+        """Test that tool calls are buffered correctly."""
+        log = InteractionLog("/test/project", "test-session")
+        log.interactions_dir = tmp_path / "interactions"
+
+        log.record_tool_call(
+            tool_name="read_file",
+            tool_input={"filePath": "/src/main.py", "offset": 10, "limit": 50},
+            tool_output="def hello(): ...",
+        )
+
+        assert len(log._current_tool_calls) == 1
+        tc = log._current_tool_calls[0]
+        assert tc["tool"] == "read_file"
+        assert tc["file"] == "/src/main.py"
+        assert "offset=10" in tc["input"]
+        assert tc["status"] == "completed"
+
+    def test_record_turn_writes_jsonl(self, tmp_path: Path):
+        """Test that record_turn writes a JSONL line."""
+        log = InteractionLog("/test/project", "test-sess")
+        log.interactions_dir = tmp_path / "interactions"
+
+        log.record_tool_call(
+            tool_name="read_file",
+            tool_input={"filePath": "/src/main.py"},
+            tool_output="def hello(): pass",
+        )
+        log.record_tool_call(
+            tool_name="search_content",
+            tool_input={"pattern": "def hello"},
+            tool_output="Found 3 matches",
+        )
+
+        entry = log.record_turn(
+            user_query="Show me the hello function",
+            assistant_response="Here's the hello function defined in main.py...",
+        )
+
+        assert entry.turn == 1
+        assert len(entry.tool_calls) == 2
+        assert entry.user_query == "Show me the hello function"
+        assert "hello function" in entry.assistant_summary
+
+        # Verify JSONL file exists and has content
+        log_path = log._log_path()
+        assert log_path.exists()
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 1
+        data = json.loads(lines[0])
+        assert data["turn"] == 1
+        assert data["q"] == "Show me the hello function"
+        assert len(data["tools"]) == 2
+
+    def test_record_multiple_turns(self, tmp_path: Path):
+        """Test that multiple turns append to the same JSONL file."""
+        log = InteractionLog("/test/project", "test-sess")
+        log.interactions_dir = tmp_path / "interactions"
+
+        # Turn 1
+        log.record_tool_call("read_file", {"filePath": "/a.py"}, "content a")
+        log.record_turn("Read file a", "Here's file a")
+
+        # Turn 2
+        log.record_tool_call("write_file", {"filePath": "/b.py"}, "ok")
+        log.record_turn("Write file b", "Done writing")
+
+        # Turn 3 — no tool calls
+        log.record_turn("What did I do?", "You read a.py and wrote b.py")
+
+        entries = log.load_log()
+        assert len(entries) == 3
+        assert entries[0]["turn"] == 1
+        assert entries[1]["turn"] == 2
+        assert entries[2]["turn"] == 3
+        assert len(entries[2]["tools"]) == 0
+
+    def test_format_for_context(self, tmp_path: Path):
+        """Test that format_for_context produces structured output."""
+        log = InteractionLog("/test/project", "test-sess")
+        log.interactions_dir = tmp_path / "interactions"
+
+        log.record_tool_call("read_file", {"filePath": "/src/main.py"}, "def foo(): pass")
+        log.record_turn("Show me foo", "Here's foo defined in main.py")
+
+        ctx = log.format_for_context()
+        assert "<interaction_log>" in ctx
+        assert "</interaction_log>" in ctx
+        assert "<turn n=" in ctx
+        assert "read_file" in ctx
+        assert "Show me foo" in ctx
+
+    def test_summarize_input_search(self):
+        """Test input summarization for search tools."""
+        result = InteractionLog._summarize_input("search_content", {"pattern": "def foo"})
+        assert "pattern=" in result
+        assert "def foo" in result
+
+    def test_summarize_input_file(self):
+        """Test input summarization for file tools."""
+        result = InteractionLog._summarize_input("read_file", {"filePath": "/a.py", "offset": 5, "limit": 10})
+        assert "offset=5" in result
+        assert "limit=10" in result
+
+    def test_summarize_input_command(self):
+        """Test input summarization for command tools."""
+        result = InteractionLog._summarize_input("bash", {"command": "ls -la"})
+        assert "cmd=" in result
+        assert "ls -la" in result
+
+    def test_summarize_input_edit(self):
+        """Test input summarization for edit tools."""
+        result = InteractionLog._summarize_input("replace_in_file", {"old_str": "hello world"})
+        assert "replacing:" in result
+
+    def test_load_log_empty(self, tmp_path: Path):
+        """Test loading from nonexistent log file."""
+        log = InteractionLog("/test/project", "test-sess")
+        log.interactions_dir = tmp_path / "interactions"
+        entries = log.load_log()
+        assert entries == []
+
+
+class TestRollingUpdate:
+    """Tests for session summary rolling update (every N turns)."""
+
+    def test_tick_turn(self):
+        """Test turn counter incrementing."""
+        memory = SessionMemory("/test/project", "test-session")
+        assert memory._turn_count == 0
+        assert memory.tick_turn() == 1
+        assert memory.tick_turn() == 2
+        assert memory._turn_count == 2
+
+    @pytest.mark.asyncio
+    async def test_update_summary_skips_when_not_due(self, sample_messages):
+        """Test that update_summary_if_due skips when turn is not a multiple of interval."""
+        memory = SessionMemory("/test/project", "test-session")
+        memory._config["enabled"] = True
+        memory._turn_count = 3  # Not a multiple of 5
+
+        result = await memory.update_summary_if_due(sample_messages)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_update_summary_runs_when_due(self, sample_messages, temp_memory_dir):
+        """Test that update_summary_if_due runs at interval multiples."""
+        memory = SessionMemory("/test/project", "test-session")
+        memory._config["enabled"] = True
+        memory._turn_count = 5  # Multiple of 5
+        memory.memory_dir = temp_memory_dir
+        memory.notes_dir = temp_memory_dir / "notes"
+        memory.index_path = temp_memory_dir / "index.json"
+
+        result = await memory.update_summary_if_due(sample_messages)
+        assert result is not None
+        assert result.exists()
+        # Should have set _last_summary_path
+        assert memory._last_summary_path == result
+
+    @pytest.mark.asyncio
+    async def test_update_summary_overwrites_same_file(self, sample_messages, temp_memory_dir):
+        """Test that rolling update overwrites the same file."""
+        memory = SessionMemory("/test/project", "test-session")
+        memory._config["enabled"] = True
+        memory.memory_dir = temp_memory_dir
+        memory.notes_dir = temp_memory_dir / "notes"
+        memory.index_path = temp_memory_dir / "index.json"
+
+        # First update at turn 5
+        memory._turn_count = 5
+        path1 = await memory.update_summary_if_due(sample_messages)
+        assert path1 is not None
+
+        # Second update at turn 10 — should overwrite same file
+        memory._turn_count = 10
+        path2 = await memory.update_summary_if_due(sample_messages)
+        assert path2 is not None
+        assert path1 == path2  # Same file path
+
+    @pytest.mark.asyncio
+    async def test_update_summary_force(self, sample_messages, temp_memory_dir):
+        """Test that force=True triggers update regardless of turn count."""
+        memory = SessionMemory("/test/project", "test-session")
+        memory._config["enabled"] = True
+        memory._turn_count = 3  # Not a multiple of 5
+        memory.memory_dir = temp_memory_dir
+        memory.notes_dir = temp_memory_dir / "notes"
+        memory.index_path = temp_memory_dir / "index.json"
+
+        result = await memory.update_summary_if_due(sample_messages, force=True)
+        assert result is not None
+        assert result.exists()
+
+    @pytest.mark.asyncio
+    async def test_update_summary_disabled(self, sample_messages):
+        """Test that rolling update does nothing when disabled."""
+        memory = SessionMemory("/test/project", "test-session")
+        memory._config["enabled"] = False
+        memory._turn_count = 5
+
+        result = await memory.update_summary_if_due(sample_messages)
+        assert result is None
+
+
+class TestFormatFullContext:
+    """Tests for format_full_context combining both memory types."""
+
+    def test_format_full_context_empty(self):
+        """Test with no notes and no interaction log."""
+        memory = SessionMemory("/test/project", "test-session")
+        result = memory.format_full_context([], None)
+        assert result == ""
+
+    def test_format_full_context_with_interaction_log(self, tmp_path: Path):
+        """Test that interaction log is included in full context."""
+        memory = SessionMemory("/test/project", "test-session")
+        log = InteractionLog("/test/project", "test-sess")
+        log.interactions_dir = tmp_path / "interactions"
+
+        log.record_tool_call("read_file", {"filePath": "/a.py"}, "content")
+        log.record_turn("Read a.py", "Here's the content")
+
+        result = memory.format_full_context([], log)
+        assert "<interaction_log>" in result
+        assert "read_file" in result

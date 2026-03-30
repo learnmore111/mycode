@@ -1,7 +1,11 @@
-"""Session memory — auto-save conversation notes at session end.
+"""Session memory — dual-layer memory system for AI agent context.
 
-Parses conversation history, generates AI summary, and saves as structured notes.
-Inspired by claude-memory skill implementation.
+Two types of memory:
+1. Session Summary Note — high-level technical context memo, updated every N turns.
+   Used to quickly restore working state on next session start.
+2. Interaction Log — near-lossless per-turn record of user queries, tool calls
+   (with parameters), and brief results. Enables the agent to recall exactly
+   what it did and where it found things.
 """
 
 from __future__ import annotations
@@ -59,8 +63,224 @@ class ParsedConversation:
     key_topics: list[str]
 
 
+@dataclass
+class InteractionEntry:
+    """A single turn's interaction record — near-lossless."""
+
+    turn: int  # 1-based turn number
+    timestamp: str  # ISO format
+    user_query: str  # what the user asked (truncated to 500 chars)
+    tool_calls: list[dict[str, Any]]  # [{tool, input_summary, output_summary, file}]
+    assistant_summary: str  # brief summary of assistant response (first 200 chars)
+
+
+class InteractionLog:
+    """Near-lossless per-turn interaction log.
+
+    Records every user→agent→tool interaction with enough detail that
+    a future agent can recall exactly what happened: "user asked about X,
+    agent used read_file on /path/to/file.py with pattern='foo', found bar".
+
+    Storage: one JSONL file per session under memory/interactions/<date>/<session>.jsonl
+    Each line is one InteractionEntry serialized as JSON.
+    """
+
+    def __init__(self, project_path: str, session_id: str):
+        self.project_path = project_path
+        self.session_id = session_id
+        self.interactions_dir = MEMORY_DIR / "interactions"
+        self._turn_counter = 0
+        self._current_tool_calls: list[dict[str, Any]] = []
+
+    def _ensure_dirs(self) -> None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        (self.interactions_dir / date_str).mkdir(parents=True, exist_ok=True)
+
+    def _log_path(self) -> Path:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        session_prefix = self.session_id[:8] if len(self.session_id) > 8 else self.session_id
+        return self.interactions_dir / date_str / f"{session_prefix}.jsonl"
+
+    def record_tool_call(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        tool_output: str,
+        status: str = "completed",
+    ) -> None:
+        """Record a tool call during the current turn.
+
+        Call this for each tool event received from the agentic loop.
+        The tool calls are buffered and flushed when record_turn() is called.
+        """
+        # Extract the most useful bits from input — file path, query, pattern, etc.
+        input_summary = self._summarize_input(tool_name, tool_input)
+        output_summary = tool_output[:200].strip() if tool_output else ""
+        file_path = (
+            tool_input.get("filePath")
+            or tool_input.get("file_path")
+            or tool_input.get("path")
+            or tool_input.get("target_file")
+            or ""
+        )
+
+        self._current_tool_calls.append({
+            "tool": tool_name,
+            "status": status,
+            "input": input_summary,
+            "output": output_summary,
+            "file": file_path,
+        })
+
+    def record_turn(
+        self,
+        user_query: str,
+        assistant_response: str,
+    ) -> InteractionEntry:
+        """Flush the current turn to disk.
+
+        Call this after each user→agent exchange is complete.
+        Returns the InteractionEntry for testing/inspection.
+        """
+        self._turn_counter += 1
+        entry = InteractionEntry(
+            turn=self._turn_counter,
+            timestamp=datetime.now().isoformat(),
+            user_query=user_query[:500],
+            tool_calls=list(self._current_tool_calls),
+            assistant_summary=assistant_response[:200].strip(),
+        )
+        self._current_tool_calls = []
+
+        # Append to JSONL file
+        self._ensure_dirs()
+        log_path = self._log_path()
+        with log_path.open("a", encoding="utf-8") as f:
+            record = {
+                "turn": entry.turn,
+                "ts": entry.timestamp,
+                "q": entry.user_query,
+                "tools": entry.tool_calls,
+                "a": entry.assistant_summary,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        logger.debug("recorded interaction turn", turn=entry.turn, tools=len(entry.tool_calls))
+        return entry
+
+    def load_log(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Load recent interaction entries from the current session's JSONL file."""
+        log_path = self._log_path()
+        if not log_path.exists():
+            return []
+        entries = []
+        try:
+            for line in log_path.read_text(encoding="utf-8").strip().split("\n"):
+                if line:
+                    entries.append(json.loads(line))
+        except (json.JSONDecodeError, IOError):
+            return []
+        return entries[-limit:]
+
+    def format_for_context(self, limit: int = 20) -> str:
+        """Format recent interactions as agent-consumable context.
+
+        Output is a compact record that the agent can scan to recall:
+        'I searched for X in file Y and found Z'.
+        """
+        entries = self.load_log(limit=limit)
+        if not entries:
+            return ""
+
+        lines = ["<interaction_log>"]
+        for entry in entries:
+            turn = entry.get("turn", "?")
+            q = entry.get("q", "")
+            tools = entry.get("tools", [])
+            a = entry.get("a", "")
+
+            lines.append(f"<turn n=\"{turn}\">")
+            lines.append(f"  user: {q[:300]}")
+            if tools:
+                for tc in tools:
+                    tool = tc.get("tool", "?")
+                    inp = tc.get("input", "")
+                    out = tc.get("output", "")[:100]
+                    f = tc.get("file", "")
+                    parts = [f"    {tool}"]
+                    if f:
+                        parts.append(f"file={f}")
+                    if inp:
+                        parts.append(f"({inp})")
+                    if out:
+                        parts.append(f"→ {out}")
+                    lines.append(" ".join(parts))
+            if a:
+                lines.append(f"  assistant: {a[:200]}")
+            lines.append("</turn>")
+
+        lines.append("</interaction_log>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _summarize_input(tool_name: str, tool_input: dict[str, Any]) -> str:
+        """Extract the most informative bits from tool input for the log.
+
+        Goal: just enough to understand what the tool was asked to do,
+        not the full verbose input.
+        """
+        if not tool_input:
+            return ""
+
+        # For search tools — capture the query/pattern
+        for key in ("query", "pattern", "queryString", "search", "regex"):
+            if key in tool_input:
+                return f"{key}={tool_input[key]!r}"
+
+        # For file tools — just the path (already captured in 'file' field)
+        for key in ("filePath", "file_path", "path", "target_file"):
+            if key in tool_input:
+                # Also capture offset/limit if present
+                extras = []
+                if "offset" in tool_input:
+                    extras.append(f"offset={tool_input['offset']}")
+                if "limit" in tool_input:
+                    extras.append(f"limit={tool_input['limit']}")
+                if extras:
+                    return ", ".join(extras)
+                return ""
+
+        # For edit tools — capture old_str snippet
+        if "old_str" in tool_input:
+            old = tool_input["old_str"][:80]
+            return f"replacing: {old!r}"
+
+        # For command tools
+        if "command" in tool_input:
+            return f"cmd={tool_input['command'][:100]!r}"
+
+        # Generic: dump first key-value pair
+        for k, v in tool_input.items():
+            if k.startswith("_"):
+                continue
+            val = str(v)[:80]
+            return f"{k}={val!r}"
+        return ""
+
+
 class SessionMemory:
-    """Manages session memory notes."""
+    """Manages session memory notes.
+
+    Supports two update modes:
+    - Final save: save_note() at session end (original behavior).
+    - Rolling update: update_summary_if_due() called every turn from the
+      CLI loop — actually writes/overwrites the summary every N user turns
+      (default 5). This ensures the summary stays fresh during long sessions
+      and is always available even if the session crashes.
+    """
+
+    # How many user turns between summary updates
+    SUMMARY_UPDATE_INTERVAL = 5
 
     def __init__(self, project_path: str, session_id: str | None = None):
         self.project_path = project_path
@@ -69,6 +289,8 @@ class SessionMemory:
         self.notes_dir = self.memory_dir / "notes"
         self.index_path = self.memory_dir / "index.json"
         self._config = self._load_config()
+        self._turn_count = 0  # tracks user turns for rolling update
+        self._last_summary_path: Path | None = None  # path to current rolling summary file
 
     def _load_config(self) -> dict[str, Any]:
         """Load session memory config.
@@ -511,6 +733,74 @@ Rules:
         logger.info("saved session note", path=str(note_path))
         return note_path
 
+    def tick_turn(self) -> int:
+        """Increment the turn counter. Returns new turn count."""
+        self._turn_count += 1
+        return self._turn_count
+
+    async def update_summary_if_due(
+        self,
+        messages: list[dict[str, Any]],
+        start_time: datetime | None = None,
+        force: bool = False,
+    ) -> Path | None:
+        """Rolling update: rewrite the session summary every N turns.
+
+        Call this after each user turn. It will only actually regenerate
+        the summary when turn_count is a multiple of SUMMARY_UPDATE_INTERVAL,
+        or when force=True (e.g. at session end).
+
+        Unlike save_note(), this OVERWRITES the same file each time (no new
+        file per update), and skips min_duration/min_prompts checks since
+        we want rolling updates even for short sessions.
+        """
+        if not self.is_enabled:
+            return None
+
+        if not force and (self._turn_count % self.SUMMARY_UPDATE_INTERVAL != 0):
+            return None
+
+        # Parse conversation
+        parsed = self.parse_conversation(messages, start_time)
+
+        if not parsed.user_prompts:
+            return None
+
+        # Generate summary
+        summary = await self.generate_summary(parsed)
+
+        # Create note
+        note = SessionNote(
+            session_id=parsed.session_id,
+            project_path=self.project_path,
+            start_time=parsed.start_time.isoformat(),
+            end_time=parsed.end_time.isoformat(),
+            duration_minutes=parsed.duration_minutes,
+            summary=summary,
+            files_modified=parsed.files_modified,
+            files_read=parsed.files_read,
+            tool_uses={t["name"]: t["count"] for t in parsed.tool_uses},
+            user_prompts=parsed.user_prompts,
+            key_topics=parsed.key_topics,
+        )
+
+        # Save — overwrite the same file for this session
+        if self._last_summary_path and self._last_summary_path.exists():
+            # Overwrite existing summary file
+            lang = self._config.get("note_language", "en")
+            content = self._format_note_markdown(note, lang)
+            self._last_summary_path.write_text(content, encoding="utf-8")
+            note_path = self._last_summary_path
+        else:
+            # First time — create new file
+            note_path = self._save_note_file(note)
+            self._last_summary_path = note_path
+            # Update index only on first creation
+            self._update_index(note, note_path)
+
+        logger.info("rolling summary updated", path=str(note_path), turn=self._turn_count)
+        return note_path
+
     def _save_note_file(self, note: SessionNote) -> Path:
         """Save note to markdown file."""
         self._ensure_dirs()
@@ -648,7 +938,7 @@ Rules:
         return project_notes[:max_recent]
 
     def format_notes_for_context(self, notes: list[dict[str, Any]]) -> str:
-        """Format recent notes as structured context for the AI agent.
+        """Format recent session summary notes as structured context for the AI agent.
 
         This produces a compact, machine-friendly context block that gets
         injected into the agent's system prompt. Every word must be useful
@@ -695,6 +985,33 @@ Rules:
         lines.append("</session_history>")
         return "\n".join(lines)
 
+    def format_full_context(
+        self,
+        notes: list[dict[str, Any]],
+        interaction_log: InteractionLog | None = None,
+    ) -> str:
+        """Format BOTH session summaries AND interaction log as agent context.
+
+        This is the primary method for injecting memory into the agent's
+        system prompt. It combines:
+        - Session summaries (high-level what_was_done, technical_context, etc.)
+        - Interaction log (per-turn detail: user asked X, agent used tool Y on file Z)
+        """
+        parts = []
+
+        # 1. Session summaries from previous sessions
+        summary_ctx = self.format_notes_for_context(notes)
+        if summary_ctx:
+            parts.append(summary_ctx)
+
+        # 2. Current session's interaction log
+        if interaction_log:
+            log_ctx = interaction_log.format_for_context(limit=30)
+            if log_ctx:
+                parts.append(log_ctx)
+
+        return "\n\n".join(parts)
+
 
 # --- Convenience functions ---
 
@@ -714,3 +1031,8 @@ def load_recent_notes(project_path: str, limit: int = 5) -> list[dict[str, Any]]
     """Convenience function to load recent notes for a project."""
     memory = SessionMemory(project_path)
     return memory.load_recent_notes(limit)
+
+
+def create_interaction_log(project_path: str, session_id: str) -> InteractionLog:
+    """Convenience function to create an InteractionLog for a session."""
+    return InteractionLog(project_path, session_id)

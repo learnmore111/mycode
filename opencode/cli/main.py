@@ -80,10 +80,18 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
 
 async def _interactive(directory: str, model: str | None, agent: str | None) -> None:
     """Run the interactive CLI REPL with Rich-powered UI."""
+    import shlex
     import time
     from datetime import datetime
+    from pathlib import Path
 
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import (
+        Completer,
+        Completion,
+        merge_completers,
+    )
+    from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.patch_stdout import patch_stdout
@@ -99,7 +107,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
-    from opencode.session.memory import SessionMemory, save_session_note
+    from opencode.session.memory import InteractionLog, SessionMemory, save_session_note
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
@@ -108,6 +116,9 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     register_builtins()
     abs_directory = os.path.abspath(directory)
     project = await from_directory(directory)
+
+    # --- Mutable working directory for shell commands ---
+    shell_cwd = [abs_directory]  # Use list to allow mutation in nested scope
 
     # --- Welcome Panel ---
     blue = "dodger_blue1"
@@ -146,14 +157,153 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     ))
     console.print()
 
+    # --- Completer: slash commands, !shell commands, @file paths ---
+    _slash_commands = {
+        "/help": "Show available commands",
+        "/clear": "Clear conversation history",
+        "/reset": "Clear conversation history",
+        "/history": "Show conversation turns",
+        "/memory": "Show recent session notes",
+        "/quit": "Exit",
+        "/exit": "Exit",
+        "/q": "Exit",
+    }
+
+    class _SlashCompleter(Completer):
+        """Fuzzy-match slash commands like /help, /clear."""
+        def get_completions(self, document: Document, complete_event):
+            text = document.text_before_cursor.lstrip()
+            if not text.startswith("/"):
+                return
+            typed = text[1:]
+            for cmd, desc in _slash_commands.items():
+                name = cmd[1:]  # strip leading /
+                if typed.lower() in name.lower() or not typed:
+                    yield Completion(cmd, start_position=-len(text), display=cmd, display_meta=desc)
+
+    class _ShellCompleter(Completer):
+        """Complete commands after ! prefix with common shell commands and path completion."""
+        _common_cmds = [
+            "ls", "cd", "pwd", "cat", "head", "tail", "grep", "find", "echo",
+            "mkdir", "rm", "cp", "mv", "touch", "git", "python", "pip", "uv",
+            "which", "env", "export", "source", "make", "curl", "wget", "tree",
+        ]
+        def get_completions(self, document: Document, complete_event):
+            text = document.text_before_cursor.lstrip()
+            if not text.startswith("!"):
+                return
+            shell_text = text[1:]
+            # If no space yet, complete the command name
+            if " " not in shell_text:
+                for cmd in self._common_cmds:
+                    if shell_text.lower() in cmd.lower() or not shell_text:
+                        yield Completion(f"!{cmd}", start_position=-len(text), display=f"!{cmd}")
+            else:
+                # After the command, offer path completion
+                parts = shell_text.split(None, 1)
+                if len(parts) >= 2:
+                    fragment = parts[1]
+                else:
+                    fragment = ""
+                base_dir = shell_cwd[0]
+                try:
+                    p = Path(base_dir)
+                    if fragment:
+                        search_dir = p / Path(fragment).parent if "/" in fragment else p
+                        prefix = Path(fragment).name if "/" in fragment else fragment
+                    else:
+                        search_dir = p
+                        prefix = ""
+                    if search_dir.is_dir():
+                        for entry in sorted(search_dir.iterdir()):
+                            name = entry.name
+                            if name.startswith("."):
+                                continue
+                            if prefix and not name.lower().startswith(prefix.lower()):
+                                continue
+                            display_name = f"{name}/" if entry.is_dir() else name
+                            # Build the full replacement text
+                            if "/" in fragment:
+                                rel = str(Path(fragment).parent / name)
+                            else:
+                                rel = name
+                            if entry.is_dir():
+                                rel += "/"
+                            full_text = f"!{parts[0]} {rel}"
+                            yield Completion(full_text, start_position=-len(text), display=display_name)
+                except OSError:
+                    pass
+
+    class _FileMentionCompleter(Completer):
+        """Complete file paths after @ mention."""
+        def get_completions(self, document: Document, complete_event):
+            text = document.text_before_cursor
+            idx = text.rfind("@")
+            if idx == -1:
+                return
+            # Don't trigger in the middle of a word (e.g. email@)
+            if idx > 0 and text[idx - 1].isalnum():
+                return
+            fragment = text[idx + 1:]
+            if " " in fragment:
+                return
+            base_dir = shell_cwd[0]
+            try:
+                p = Path(base_dir)
+                if fragment and "/" in fragment:
+                    search_dir = p / Path(fragment).parent
+                    prefix = Path(fragment).name
+                else:
+                    search_dir = p
+                    prefix = fragment
+                if not search_dir.is_dir():
+                    return
+                for entry in sorted(search_dir.iterdir()):
+                    name = entry.name
+                    if name.startswith("."):
+                        continue
+                    if prefix and prefix.lower() not in name.lower():
+                        continue
+                    if "/" in fragment:
+                        rel_path = str(Path(fragment).parent / name)
+                    else:
+                        rel_path = name
+                    if entry.is_dir():
+                        rel_path += "/"
+                    yield Completion(
+                        rel_path, start_position=-len(fragment),
+                        display=f"{name}/" if entry.is_dir() else name,
+                    )
+            except OSError:
+                pass
+
+    completer = merge_completers([_SlashCompleter(), _ShellCompleter(), _FileMentionCompleter()])
+
     # --- Prompt setup ---
+    def _bottom_toolbar():
+        """Show current working directory and hints in the bottom toolbar."""
+        cwd_display = shell_cwd[0]
+        home = os.path.expanduser("~")
+        if cwd_display.startswith(home):
+            cwd_display = "~" + cwd_display[len(home):]
+        return HTML(
+            f'<b>cwd:</b> <style fg="#888888">{cwd_display}</style>'
+            f'  <style fg="#555555">Ctrl+J: newline | Ctrl+D: exit | !cd &lt;dir&gt;: change dir</style>'
+        )
+
     pt_style = PtStyle.from_dict({
-        "bottom-toolbar": "noreverse",
+        "bottom-toolbar": "noreverse bg:#1a1a2e #aaaaaa",
+        "prompt": "bold",
     })
     history = InMemoryHistory()
     ps = PromptSession(
         history=history,
         style=pt_style,
+        completer=completer,
+        complete_while_typing=True,
+        reserve_space_for_menu=4,
+        placeholder=HTML('<style fg="#666666">(message, /help, !cmd, @file)</style>'),
+        bottom_toolbar=_bottom_toolbar,
     )
 
     # Input area border
@@ -170,6 +320,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     # Initialize session memory
     session_memory = SessionMemory(abs_directory)
+    interaction_log: InteractionLog | None = None
     if session_memory.is_enabled:
         # Load recent notes for context (optional: can be used for context injection)
         recent_notes = session_memory.load_recent_notes()
@@ -228,11 +379,31 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             if text.startswith("!"):
                 shell_cmd = text[1:].strip()
                 if shell_cmd:
-                    await _run_shell(console, shell_cmd, abs_directory)
+                    # Handle cd command specially — update cwd in main process
+                    try:
+                        parts_cmd = shlex.split(shell_cmd)
+                    except ValueError:
+                        parts_cmd = shell_cmd.split()
+                    if parts_cmd and parts_cmd[0] == "cd":
+                        target = parts_cmd[1] if len(parts_cmd) > 1 else os.path.expanduser("~")
+                        # Resolve relative to current shell_cwd
+                        new_dir = os.path.normpath(os.path.join(shell_cwd[0], os.path.expanduser(target)))
+                        if os.path.isdir(new_dir):
+                            shell_cwd[0] = new_dir
+                            console.print(Text(f"  → {new_dir}", style="cyan"))
+                        else:
+                            console.print(Text(f"  ✗ cd: no such directory: {target}", style="red"))
+                        console.print()
+                    else:
+                        await _run_shell(console, shell_cmd, shell_cwd[0])
                 continue
 
             if session_info is None:
                 session_info = create_session(title=text[:60])
+                # Initialize interaction log for this session
+                if session_memory.is_enabled:
+                    session_memory.session_id = session_info.id
+                    interaction_log = InteractionLog(abs_directory, session_info.id)
 
             inp = PromptInput(
                 session_id=session_info.id,
@@ -274,7 +445,16 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         tool_name = event.data.get("tool", "?")
                         status = event.data.get("status", "?")
                         output = event.data.get("output", "")
+                        tool_input = event.data.get("input", {})
                         if status == "completed":
+                            # Record tool call to interaction log
+                            if interaction_log:
+                                interaction_log.record_tool_call(
+                                    tool_name=tool_name,
+                                    tool_input=tool_input if isinstance(tool_input, dict) else {},
+                                    tool_output=output,
+                                    status=status,
+                                )
                             # Print tool result permanently
                             live.update(Text(""))
                             console.print(Text.assemble(
@@ -349,18 +529,42 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             if full_text:
                 conversation_history.append({"role": "assistant", "content": full_text})
 
+            # --- Per-turn memory updates ---
+            if session_memory.is_enabled:
+                turn = session_memory.tick_turn()
+
+                # 1. Record interaction log (every turn)
+                if interaction_log:
+                    interaction_log.record_turn(
+                        user_query=text,
+                        assistant_response=full_text,
+                    )
+
+                # 2. Rolling summary update (every N turns)
+                try:
+                    note_path = await session_memory.update_summary_if_due(
+                        messages=conversation_history,
+                        start_time=session_start_time,
+                    )
+                    if note_path:
+                        pass  # rolling summary updated silently
+                except Exception:
+                    pass  # Don't let memory failures break the main loop
+
         # --- Session end: save memory note if enabled ---
         if session_memory.is_enabled and conversation_history:
             console.print(Text("  💾 Saving session memory...", style="grey50"))
             try:
-                note_path = await save_session_note(
-                    project_path=abs_directory,
-                    session_id=session_info.id if session_info else "unknown",
+                # Force a final rolling summary update
+                note_path = await session_memory.update_summary_if_due(
                     messages=conversation_history,
                     start_time=session_start_time,
+                    force=True,
                 )
                 if note_path:
                     console.print(Text(f"  ✓ Session note saved: {note_path.name}", style="green"))
+            except Exception as e:
+                console.print(Text(f"  ✗ Failed to save session note: {e}", style="red"))
             except Exception as e:
                 console.print(Text(f"  ✗ Failed to save session note: {e}", style="red"))
 
@@ -517,7 +721,7 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
-    from opencode.session.memory import SessionMemory, save_session_note
+    from opencode.session.memory import InteractionLog, SessionMemory, save_session_note
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
@@ -531,6 +735,13 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
         session = create_session(title=message[:60])
         session_start_time = datetime.now()
         conversation_history: list[dict] = []
+        interaction_log: InteractionLog | None = None
+
+        # Initialize interaction log if memory is enabled
+        if session_memory.is_enabled:
+            session_memory.session_id = session.id
+            interaction_log = InteractionLog(abs_directory, session.id)
+
         bus = Bus()
         inp = PromptInput(
             session_id=session.id,
@@ -547,7 +758,17 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
             elif event.type == "tool":
                 tool_name = event.data.get("tool", "?")
                 status = event.data.get("status", "?")
+                tool_input = event.data.get("input", {})
+                output = event.data.get("output", "")
                 click.echo(f"\n[tool:{tool_name}] {status}", err=True)
+                # Record tool call to interaction log
+                if interaction_log and status == "completed":
+                    interaction_log.record_tool_call(
+                        tool_name=tool_name,
+                        tool_input=tool_input if isinstance(tool_input, dict) else {},
+                        tool_output=output,
+                        status=status,
+                    )
             elif event.type == "error":
                 click.echo(f"\nError: {event.data.get('message', 'unknown')}", err=True)
             elif event.type == "done":
@@ -573,14 +794,20 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
         if full_response:
             conversation_history.append({"role": "assistant", "content": full_response})
 
+        # Record interaction turn
+        if interaction_log:
+            interaction_log.record_turn(
+                user_query=message,
+                assistant_response=full_response,
+            )
+
         # Save session memory if enabled
         if session_memory.is_enabled and conversation_history:
             try:
-                note_path = await save_session_note(
-                    project_path=abs_directory,
-                    session_id=session.id,
+                note_path = await session_memory.update_summary_if_due(
                     messages=conversation_history,
                     start_time=session_start_time,
+                    force=True,
                 )
                 if note_path:
                     click.echo(f"Session note saved: {note_path.name}", err=True)
