@@ -154,6 +154,11 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         style=pt_style,
     )
 
+    # Input area border
+    _border_color = "grey50"
+    _border_char = "─"
+    _border_width = 60
+
     session_info = None
     bus = Bus()
     conversation_history: list[dict] = []
@@ -167,15 +172,31 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # Prompt symbol
             prompt_symbol = "✨ " if not (agent and agent == "plan") else "📋 "
 
+            # Upper border of input area
+            console.print(Text(
+                f"┌{'─' * _border_width}",
+                style=_border_color,
+            ))
+
             try:
                 with patch_stdout(raw=True):
                     user_input = await ps.prompt_async(
-                        HTML(f"<b>{prompt_symbol}</b>"),
+                        HTML(f"<b>│ {prompt_symbol}</b>"),
                         multiline=False,
                     )
             except (EOFError, KeyboardInterrupt):
+                console.print(Text(
+                    f"└{'─' * _border_width}",
+                    style=_border_color,
+                ))
                 console.print("\n[grey50]Bye![/grey50]")
                 break
+
+            # Lower border of input area
+            console.print(Text(
+                f"└{'─' * _border_width}",
+                style=_border_color,
+            ))
 
             text = user_input.strip()
             if not text:
