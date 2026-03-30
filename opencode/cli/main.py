@@ -656,6 +656,24 @@ def mcp_list() -> None:
         click.echo(f"  {name} ({stype}) — {status}")
 
 
+@mcp.command("serve")
+@click.option("--opencode-url", default="http://127.0.0.1:4096", help="OpenCode HTTP server URL")
+@click.option("--directory", "-d", default=".", help="Project directory")
+def mcp_serve(opencode_url: str, directory: str) -> None:
+    """Start the opencode MCP server (stdio transport).
+
+    This exposes opencode as MCP tools for external AI agents.
+    Make sure the opencode HTTP server is running first:
+
+        opencode serve --port 4096
+    """
+    os.environ["OPENCODE_URL"] = opencode_url
+    os.environ["OPENCODE_DIRECTORY"] = os.path.abspath(directory)
+
+    from opencode.mcp_server.server import main
+    main()
+
+
 # --- Snapshot commands ---
 
 @cli.group()

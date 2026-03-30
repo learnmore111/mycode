@@ -53,6 +53,7 @@ dev = [
 
 [project.scripts]
 opencode = "opencode.cli.main:cli"
+opencode-mcp = "opencode.mcp_server.server:main"
 
 [build-system]
 requires = ["hatchling"]
