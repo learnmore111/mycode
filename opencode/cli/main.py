@@ -5,6 +5,8 @@ Equivalent to the original src/index.ts yargs CLI.
 
 from __future__ import annotations
 
+import os
+
 import click
 
 from opencode import __version__
@@ -102,6 +104,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     console = Console(highlight=False)
     register_builtins()
+    abs_directory = os.path.abspath(directory)
     project = await from_directory(directory)
 
     # --- Welcome Panel ---
@@ -115,7 +118,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     header_table.add_row(logo, Text.assemble(head, "\n", help_text))
 
     info_items = [
-        ("Directory", directory, "grey50"),
+        ("Directory", abs_directory, "grey50"),
         ("Model", model or "default", "grey50"),
         ("Agent", agent or "build", "grey50"),
     ]
@@ -127,6 +130,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         ("Ctrl+J", "newline"),
         ("Ctrl+D", "exit"),
         ("/clear", "reset"),
+        ("!cmd", "shell"),
     ]
     tip_text = "  ".join(f"{k}: {v}" for k, v in tips)
     info_lines.append(Text(tip_text, style="grey50"))
@@ -186,6 +190,13 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                     session_info = None
                     conversation_history = []
                     total_tokens_used = 0
+                continue
+
+            # Shell escape: !command runs directly in shell
+            if text.startswith("!"):
+                shell_cmd = text[1:].strip()
+                if shell_cmd:
+                    await _run_shell(console, shell_cmd, abs_directory)
                 continue
 
             if session_info is None:
@@ -350,6 +361,38 @@ def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> N
     console.print(bar)
 
 
+async def _run_shell(console, command: str, cwd: str) -> None:
+    """Execute a shell command directly and print output."""
+    import asyncio as _aio
+    import shutil
+
+    from rich.text import Text
+
+    shell = os.environ.get("SHELL", "/bin/sh")
+    if os.path.basename(shell) in ("fish", "nu"):
+        shell = shutil.which("bash") or shutil.which("zsh") or "/bin/sh"
+
+    console.print(Text(f"  $ {command}", style="cyan"))
+    try:
+        proc = await _aio.create_subprocess_exec(
+            shell, "-c", command,
+            stdout=_aio.subprocess.PIPE,
+            stderr=_aio.subprocess.STDOUT,
+            cwd=cwd,
+        )
+        stdout, _ = await _aio.wait_for(proc.communicate(), timeout=30)
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+        if output:
+            console.print(output.rstrip())
+        if proc.returncode and proc.returncode != 0:
+            console.print(Text(f"  exit code: {proc.returncode}", style="red"))
+    except TimeoutError:
+        console.print(Text("  ⏱ Command timed out (30s)", style="red"))
+    except Exception as e:
+        console.print(Text(f"  ✗ {e}", style="red"))
+    console.print()
+
+
 def _handle_command(text: str, history: list, console=None) -> str | None:
     """Handle slash commands. Returns 'quit', 'clear', or None."""
     if console is None:
@@ -374,6 +417,7 @@ def _handle_command(text: str, history: list, console=None) -> str | None:
         table.add_row("/clear", "Clear conversation history")
         table.add_row("/history", "Show conversation turns")
         table.add_row("/quit", "Exit")
+        table.add_row("!<cmd>", "Execute a shell command directly")
         table.add_row("", "")
         table.add_row("Ctrl+J", "Insert newline")
         table.add_row("Ctrl+D", "Exit")
