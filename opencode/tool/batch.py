@@ -13,11 +13,11 @@ Limitations:
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from opencode.tool import registry as tool_registry
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 from opencode.util import log as logmod
 
 logger = logmod.create(service="tool.batch")
@@ -28,7 +28,19 @@ MAX_BATCH_SIZE = 25
 _EXCLUDED_TOOLS = frozenset({"batch", "task", "todo", "question"})
 
 
-class BatchTool(ToolInfo):
+class BatchCallItem(BaseModel):
+    """A single tool call within a batch."""
+    tool: str = Field(description="The name of the tool to call")
+    args: dict = Field(default_factory=dict, description="Arguments to pass to the tool")
+
+
+class BatchParams(BaseModel):
+    """Parameters for the batch tool."""
+    description: str = Field(default="batch execution", description="A brief description of what this batch accomplishes")
+    calls: list[BatchCallItem] = Field(description="Array of tool calls to execute in parallel", max_length=MAX_BATCH_SIZE)
+
+
+class BatchTool(CallableTool[BatchParams]):
     id = "batch"
     description = (
         "Execute multiple tool calls in parallel within a single request. "
@@ -38,63 +50,29 @@ class BatchTool(ToolInfo):
         "Maximum 25 calls per batch. Only built-in tools are supported (no nested batch or task)."
     )
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "description": "A brief description of what this batch accomplishes",
-                },
-                "calls": {
-                    "type": "array",
-                    "description": (
-                        "Array of tool calls to execute in parallel. "
-                        "Each item has 'tool' (tool name) and 'args' (tool arguments object)."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "tool": {
-                                "type": "string",
-                                "description": "The name of the tool to call",
-                            },
-                            "args": {
-                                "type": "object",
-                                "description": "Arguments to pass to the tool",
-                            },
-                        },
-                        "required": ["tool", "args"],
-                    },
-                    "maxItems": MAX_BATCH_SIZE,
-                },
-            },
-            "required": ["calls"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        calls: list[dict[str, Any]] = args.get("calls", [])
-        description = args.get("description", "batch execution")
+    async def call(self, params: BatchParams, ctx: ToolContext) -> ToolResult:
+        calls = params.calls
+        description = params.description
 
         if not calls:
-            return ToolResult(
+            return ToolError(
+                "No calls provided.",
                 title=f"Batch: {description}",
-                output="No calls provided.",
                 metadata={"total": 0, "succeeded": 0, "failed": 0},
             )
 
         if len(calls) > MAX_BATCH_SIZE:
-            return ToolResult(
+            return ToolError(
+                f"Too many calls: {len(calls)} exceeds maximum of {MAX_BATCH_SIZE}.",
                 title=f"Batch: {description}",
-                output=f"Too many calls: {len(calls)} exceeds maximum of {MAX_BATCH_SIZE}.",
                 metadata={"total": len(calls), "succeeded": 0, "failed": 0},
             )
 
         # Validate all calls before executing any
-        validated: list[tuple[dict[str, Any], Any]] = []  # (call_spec, tool_impl)
+        validated: list[tuple[BatchCallItem, object]] = []  # (call_spec, tool_impl)
         errors: list[str] = []
-        for i, call in enumerate(calls):
-            tool_name = call.get("tool", "")
+        for i, call_item in enumerate(calls):
+            tool_name = call_item.tool
             if tool_name in _EXCLUDED_TOOLS:
                 errors.append(f"[{i}] Tool '{tool_name}' is not allowed in batch")
                 continue
@@ -102,45 +80,47 @@ class BatchTool(ToolInfo):
             if not tool_impl:
                 errors.append(f"[{i}] Unknown tool: {tool_name}")
                 continue
-            validated.append((call, tool_impl))
+            validated.append((call_item, tool_impl))
 
         if errors and not validated:
-            return ToolResult(
+            return ToolError(
+                "All calls failed validation:\n" + "\n".join(errors),
                 title=f"Batch: {description}",
-                output="All calls failed validation:\n" + "\n".join(errors),
                 metadata={"total": len(calls), "succeeded": 0, "failed": len(errors)},
             )
 
         # Execute all validated calls in parallel
-        async def _execute_one(idx: int, call: dict[str, Any], tool_impl: Any) -> str:
-            tool_name = call.get("tool", "")
-            tool_args = call.get("args", {})
+        async def _execute_one(idx: int, call_item: BatchCallItem, tool_impl: object) -> str:
+            tool_name = call_item.tool
+            tool_args = call_item.args
             try:
+                from opencode.tool.base import ToolInfo
+                assert isinstance(tool_impl, ToolInfo)
                 result = await tool_impl.execute(tool_args, ctx)
                 return f"[{idx}:{tool_name}] {result.output}"
             except Exception as e:
                 return f"[{idx}:{tool_name}] Error: {e}"
 
         tasks = [
-            _execute_one(i, call, impl)
-            for i, (call, impl) in enumerate(validated)
+            _execute_one(i, call_item, impl)
+            for i, (call_item, impl) in enumerate(validated)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=False)
 
         succeeded = sum(1 for r in results if "Error:" not in r)
         failed = len(results) - succeeded
 
-        output_parts: list[str] = []
+        builder = ToolResultBuilder()
         if errors:
-            output_parts.append("--- Validation Errors ---")
-            output_parts.extend(errors)
-            output_parts.append("")
-        output_parts.append("--- Results ---")
-        output_parts.extend(results)
+            builder.add_heading("Validation Errors")
+            builder.add("\n".join(errors))
+            builder.add("\n")
+        builder.add_heading("Results")
+        builder.add("\n".join(results))
 
-        return ToolResult(
+        return ToolOk(
+            builder.build(),
             title=f"Batch: {description} ({succeeded}/{len(validated)} succeeded)",
-            output="\n".join(output_parts),
             metadata={
                 "total": len(calls),
                 "succeeded": succeeded,

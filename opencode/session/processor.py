@@ -11,7 +11,13 @@ from opencode.bus.events import PART_DELTA, PART_UPDATED
 from opencode.session import llm as llmmod
 from opencode.session.message import AssistantMessage, Part, TextPart, ToolPart, create_text_part, create_tool_part
 from opencode.tool import registry as tool_registry
-from opencode.tool.base import ToolContext
+from opencode.tool.base import (
+    ToolBaseError,
+    ToolContext,
+    ToolNotFoundError,
+    ToolRuntimeError,
+    ToolValidateError,
+)
 from opencode.util import log as logmod
 
 if TYPE_CHECKING:
@@ -114,12 +120,16 @@ async def process(
         # Phase 1: Pre-flight checks (serial) — permission + doom loop detection
         executable: list[tuple[ToolPart, Any, ToolContext]] = []  # (tp, tool_impl, tool_ctx)
         for tp in tool_calls_pending:
-            tool = tool_registry.get(tp.tool)
-            if not tool:
+            # Use structured error for unknown tools
+            try:
+                tool = tool_registry.get_or_raise(tp.tool)
+            except ToolNotFoundError as e:
                 tp.state["status"] = "error"
-                tp.state["output"] = f"Unknown tool: {tp.tool}"
+                tp.state["output"] = str(e)
+                tp.state["is_error"] = True
                 tp.time_completed = int(time.time() * 1000)
                 has_failure = True
+                logger.warn("tool not found", tool=tp.tool)
                 continue
 
             tool_ctx = ToolContext(
@@ -144,6 +154,7 @@ async def process(
                 except (RejectedError, DeniedError) as e:
                     tp.state["status"] = "error"
                     tp.state["output"] = str(e)
+                    tp.state["is_error"] = True
                     tp.time_completed = int(time.time() * 1000)
                     blocked = True
                     continue
@@ -159,6 +170,7 @@ async def process(
                     logger.warn("doom loop detected", tool=tp.tool)
                     tp.state["status"] = "error"
                     tp.state["output"] = "Doom loop detected: same tool with same input called repeatedly"
+                    tp.state["is_error"] = True
                     tp.time_completed = int(time.time() * 1000)
                     doom_detected = True
                     break
@@ -175,19 +187,59 @@ async def process(
                 try:
                     tp.state["status"] = "running"
                     result = await tool_impl.execute(tp.state.get("input", {}), tool_ctx)
-                    tp.state["status"] = "completed"
+
+                    # Handle structured ToolResult with is_error flag
+                    if result.is_error:
+                        tp.state["status"] = "error"
+                        tp.state["is_error"] = True
+                    else:
+                        tp.state["status"] = "completed"
+                        tp.state["is_error"] = False
+
                     tp.state["output"] = result.output
                     tp.state["title"] = result.title
                     tp.state["metadata"] = result.metadata
+
+                    # Store display separately (not sent to model)
+                    if result.display:
+                        tp.state["display"] = result.display
+                    # Store message for richer context
+                    if result.message:
+                        tp.state["message"] = result.message
+
                     tp.time_completed = int(time.time() * 1000)
                     ctx.parts.append(tp)
                     await ctx.bus.publish(PART_UPDATED, {
-                        "session_id": ctx.session_id, "part": {"id": tp.id, "tool": tp.tool, "status": "completed"},
+                        "session_id": ctx.session_id,
+                        "part": {
+                            "id": tp.id,
+                            "tool": tp.tool,
+                            "status": tp.state["status"],
+                            "is_error": result.is_error,
+                        },
                     })
-                    return True
-                except Exception as e:
+                    return not result.is_error
+
+                except ToolValidateError as e:
                     tp.state["status"] = "error"
                     tp.state["output"] = str(e)
+                    tp.state["is_error"] = True
+                    tp.time_completed = int(time.time() * 1000)
+                    logger.warn("tool validation failed", tool=tp.tool, error=str(e))
+                    return False
+
+                except ToolBaseError as e:
+                    tp.state["status"] = "error"
+                    tp.state["output"] = str(e)
+                    tp.state["is_error"] = True
+                    tp.time_completed = int(time.time() * 1000)
+                    logger.error("tool error", tool=tp.tool, error=str(e))
+                    return False
+
+                except Exception as e:
+                    tp.state["status"] = "error"
+                    tp.state["output"] = str(ToolRuntimeError(tp.tool, e))
+                    tp.state["is_error"] = True
                     tp.time_completed = int(time.time() * 1000)
                     logger.error("tool execution failed", tool=tp.tool, error=str(e))
                     return False
@@ -245,12 +297,17 @@ def build_tool_results_messages(parts: list[Part]) -> list[dict[str, Any]]:
         "tool_calls": assistant_tool_calls,
     })
 
-    # Tool results
+    # Tool results — only send output (not display) to the model
     for tp in tool_calls:
+        output = tp.state.get("output", "")
+        # Append message field if present for richer context
+        tool_message = tp.state.get("message", "")
+        if tool_message:
+            output = f"{output}\n\n{tool_message}"
         messages.append({
             "role": "tool",
             "tool_call_id": tp.tool_call_id,
-            "content": tp.state.get("output", ""),
+            "content": output,
         })
 
     return messages

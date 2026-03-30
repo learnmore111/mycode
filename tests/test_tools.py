@@ -1,12 +1,16 @@
 """Tests for the tool system."""
-import os, tempfile
+import os
+import tempfile
+
 import pytest
+
 from opencode.tool.base import ToolContext
-from opencode.tool.read import tool as read_tool
-from opencode.tool.write import tool as write_tool
 from opencode.tool.edit import tool as edit_tool
 from opencode.tool.glob_tool import tool as glob_tool
-from opencode.tool.registry import register, all_tools, to_llm_tools
+from opencode.tool.read import tool as read_tool
+from opencode.tool.registry import all_tools, to_llm_tools
+from opencode.tool.write import tool as write_tool
+
 
 def _ctx() -> ToolContext:
     return ToolContext(session_id="test", message_id="test", agent="build")
@@ -64,7 +68,8 @@ async def test_glob():
             token.reset()
 
 def test_registry():
-    from opencode.tool.registry import register_builtins
+    from opencode.tool.registry import clear, register_builtins
+    clear()  # Reset for clean test
     register_builtins()
     tools = all_tools()
     assert len(tools) >= 4  # bash, read, edit, write, glob, grep

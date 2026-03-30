@@ -1,13 +1,13 @@
 """Tests for the BatchTool — application-level explicit parallel tool execution."""
 import os
-import tempfile
 
 import pytest
 
 import opencode.project.instance as inst
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
-from opencode.tool.batch import BatchTool, MAX_BATCH_SIZE, _EXCLUDED_TOOLS, tool as batch_tool
 from opencode.tool import registry as tool_registry
+from opencode.tool.base import ToolContext, ToolValidateError
+from opencode.tool.batch import _EXCLUDED_TOOLS, MAX_BATCH_SIZE
+from opencode.tool.batch import tool as batch_tool
 
 
 def _ctx() -> ToolContext:
@@ -22,6 +22,7 @@ def _project(tmp_path):
         project=inst.ProjectInfo(id="test", worktree=str(tmp_path)),
     ))
     tool_registry._tools.clear()
+    tool_registry._registered = False
     tool_registry.register_builtins()
     yield tmp_path
     token.reset()
@@ -63,9 +64,9 @@ async def test_batch_empty_calls():
 
 @pytest.mark.asyncio
 async def test_batch_no_calls_key():
-    result = await batch_tool.execute({}, _ctx())
-    assert result.metadata["total"] == 0
-    assert "No calls provided" in result.output
+    """Missing 'calls' key now raises ToolValidateError thanks to Pydantic validation."""
+    with pytest.raises(ToolValidateError, match="calls"):
+        await batch_tool.execute({}, _ctx())
 
 
 # ── Too many calls ─────────────────────────────────────────────────────
@@ -73,10 +74,10 @@ async def test_batch_no_calls_key():
 
 @pytest.mark.asyncio
 async def test_batch_exceeds_max():
+    """Pydantic max_length validation rejects calls exceeding MAX_BATCH_SIZE."""
     calls = [{"tool": "read", "args": {"file_path": "x"}}] * (MAX_BATCH_SIZE + 1)
-    result = await batch_tool.execute({"calls": calls}, _ctx())
-    assert result.metadata["succeeded"] == 0
-    assert "Too many calls" in result.output
+    with pytest.raises(ToolValidateError):
+        await batch_tool.execute({"calls": calls}, _ctx())
 
 
 # ── Excluded tools ─────────────────────────────────────────────────────

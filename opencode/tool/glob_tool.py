@@ -3,29 +3,26 @@ from __future__ import annotations
 
 import glob as globmod
 import os
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolOk, ToolResult
 
 
-class GlobTool(ToolInfo):
+class GlobParams(BaseModel):
+    """Parameters for the glob tool."""
+    pattern: str = Field(description="Glob pattern (e.g. '**/*.py', 'src/**/*.ts')")
+    path: str = Field(default="", description="Directory to search in (default: project root)")
+
+
+class GlobTool(CallableTool[GlobParams]):
     id = "glob"
     description = "Find files matching a glob pattern. Returns relative file paths."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')"},
-                "path": {"type": "string", "description": "Directory to search in (default: project root)"},
-            },
-            "required": ["pattern"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        pattern = args["pattern"]
-        search_path = args.get("path", "")
+    async def call(self, params: GlobParams, ctx: ToolContext) -> ToolResult:
+        pattern = params.pattern
+        search_path = params.path
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
         if search_path:
@@ -36,6 +33,7 @@ class GlobTool(ToolInfo):
             output = "\n".join(matches) + f"\n\n... truncated (500 of {len(matches)} matches)"
         else:
             output = "\n".join(matches) if matches else "No files found."
-        return ToolResult(title=f"Glob {pattern}", output=output, metadata={"count": len(matches)})
+        return ToolOk(output, title=f"Glob {pattern}", metadata={"count": len(matches)})
+
 
 tool = GlobTool()

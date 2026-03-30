@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 
 
 def _html_to_text(html: str) -> str:
@@ -23,22 +23,18 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
-class WebFetchTool(ToolInfo):
+class WebFetchParams(BaseModel):
+    """Parameters for the webfetch tool."""
+    url: str = Field(description="The URL to fetch content from")
+    extract: str | None = Field(default=None, description="What information to extract from the page")
+
+
+class WebFetchTool(CallableTool[WebFetchParams]):
     id = "webfetch"
     description = "Fetch content from a URL. Returns the page content as text. HTTP URLs are upgraded to HTTPS."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "The URL to fetch content from"},
-                "extract": {"type": "string", "description": "What information to extract from the page"},
-            },
-            "required": ["url"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        url = args["url"]
+    async def call(self, params: WebFetchParams, ctx: ToolContext) -> ToolResult:
+        url = params.url
         if url.startswith("http://"):
             url = "https://" + url[7:]
 
@@ -50,19 +46,19 @@ class WebFetchTool(ToolInfo):
             content_type = resp.headers.get("content-type", "")
             text = _html_to_text(resp.text) if "text/html" in content_type else resp.text
 
-            # Truncate very long pages
-            if len(text) > 50_000:
-                text = text[:50_000] + f"\n\n... truncated ({len(text)} chars total)"
+            # Use ToolResultBuilder for truncation
+            builder = ToolResultBuilder(max_chars=50_000)
+            builder.add(text or "(empty page)")
 
-            return ToolResult(
+            return ToolOk(
+                builder.build(),
                 title=f"Fetch {url[:60]}",
-                output=text or "(empty page)",
                 metadata={"url": url, "status": resp.status_code, "length": len(text)},
             )
         except httpx.HTTPStatusError as e:
-            return ToolResult(title=f"Fetch {url[:60]}", output=f"HTTP {e.response.status_code}: {e}", metadata={})
+            return ToolError(f"HTTP {e.response.status_code}: {e}", title=f"Fetch {url[:60]}")
         except Exception as e:
-            return ToolResult(title=f"Fetch {url[:60]}", output=f"Error: {e}", metadata={})
+            return ToolError(f"Error: {e}", title=f"Fetch {url[:60]}")
 
 
 tool = WebFetchTool()

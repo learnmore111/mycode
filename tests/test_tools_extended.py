@@ -1,12 +1,16 @@
 """Tests for extended tools: question, todo, skill, webfetch, websearch."""
-import os, tempfile
+import os
+import tempfile
+
 import pytest
+
+import opencode.project.instance as inst
 from opencode.tool.base import ToolContext
 from opencode.tool.question import tool as question_tool
-from opencode.tool.todo import tool as todo_tool
+from opencode.tool.registry import all_tools, register_builtins
 from opencode.tool.skill import tool as skill_tool
-from opencode.tool.registry import register_builtins, all_tools
-import opencode.project.instance as inst
+from opencode.tool.todo import tool as todo_tool
+
 
 def _ctx(sid: str = "test") -> ToolContext:
     return ToolContext(session_id=sid, message_id="m1", agent="build")
@@ -69,6 +73,8 @@ async def test_skill_found():
             token.reset()
 
 def test_all_builtins_registered():
+    from opencode.tool.registry import clear
+    clear()
     register_builtins()
     tools = all_tools()
     ids = {t.id for t in tools}

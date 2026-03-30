@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,8 +22,7 @@ from opencode.session import llm as llmmod
 from opencode.session.message import AssistantMessage, ToolPart, create_tool_part
 from opencode.session.processor import DOOM_LOOP_THRESHOLD, ProcessorContext, process
 from opencode.tool import registry as tool_registry
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
-
+from opencode.tool.base import ToolContext, ToolInfo, ToolOk, ToolResult
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -55,7 +53,7 @@ class SlowTool(ToolInfo):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         await asyncio.sleep(self._delay)
-        return ToolResult(title="slow", output=self._output, metadata={"ok": True})
+        return ToolOk(self._output, title="slow", metadata={"ok": True})
 
 
 class FailTool(ToolInfo):
@@ -88,7 +86,7 @@ class CounterTool(ToolInfo):
             self.max_concurrent = self.concurrent
         await asyncio.sleep(0.05)
         self.concurrent -= 1
-        return ToolResult(title="counter", output="ok", metadata={"ok": True})
+        return ToolOk("ok", title="counter", metadata={"ok": True})
 
 
 async def _fake_stream_with_tools(tool_calls: list[tuple[str, str, dict]]):

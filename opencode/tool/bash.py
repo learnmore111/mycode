@@ -4,29 +4,26 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 
 
-class BashTool(ToolInfo):
+class BashParams(BaseModel):
+    """Parameters for the bash tool."""
+    command: str = Field(description="The shell command to execute")
+    timeout: int = Field(default=120000, description="Timeout in milliseconds (default: 120000)")
+
+
+class BashTool(CallableTool[BashParams]):
     id = "bash"
     description = "Execute a shell command. Use this to run commands, install packages, or interact with the system."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The shell command to execute"},
-                "timeout": {"type": "integer", "description": "Timeout in milliseconds (default: 120000)"},
-            },
-            "required": ["command"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        command = args["command"]
-        timeout = args.get("timeout", 120000) / 1000
+    async def call(self, params: BashParams, ctx: ToolContext) -> ToolResult:
+        command = params.command
+        timeout_sec = params.timeout / 1000
 
         inst = current_or_none()
         cwd = inst.directory if inst else os.getcwd()
@@ -44,22 +41,33 @@ class BashTool(ToolInfo):
                 cwd=cwd,
                 env={**os.environ, "AGENT": "1"},
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
             output = stdout.decode("utf-8", errors="replace") if stdout else ""
             code = proc.returncode or 0
 
-            # Truncate very long output
-            if len(output) > 100_000:
-                output = output[:50_000] + f"\n\n... truncated ({len(output)} chars total) ...\n\n" + output[-50_000:]
+            # Use ToolResultBuilder for output truncation
+            builder = ToolResultBuilder(max_chars=100_000)
+            if code != 0:
+                builder.add(f"Exit code: {code}\n")
+            builder.add(output)
 
-            return ToolResult(
+            return ToolOk(
+                builder.build(),
                 title=command[:80],
-                output=f"Exit code: {code}\n{output}" if code != 0 else output,
                 metadata={"exit_code": code},
             )
         except TimeoutError:
-            return ToolResult(title=command[:80], output="Command timed out.", metadata={"exit_code": -1, "timeout": True})
+            return ToolError(
+                "Command timed out.",
+                title=command[:80],
+                metadata={"exit_code": -1, "timeout": True},
+            )
         except Exception as e:
-            return ToolResult(title=command[:80], output=f"Error: {e}", metadata={"exit_code": -1})
+            return ToolError(
+                f"Error: {e}",
+                title=command[:80],
+                metadata={"exit_code": -1},
+            )
+
 
 tool = BashTool()

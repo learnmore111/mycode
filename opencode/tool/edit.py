@@ -3,64 +3,66 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
 
 
-class EditTool(ToolInfo):
+class EditParams(BaseModel):
+    """Parameters for the edit tool."""
+    file_path: str = Field(description="Path to the file to edit")
+    old_string: str = Field(description="Exact string to find and replace")
+    new_string: str = Field(description="Replacement string")
+
+
+class EditTool(CallableTool[EditParams]):
     id = "edit"
     description = "Edit a file by replacing an exact string with new content. The old_string must match exactly (including whitespace)."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "file_path": {"type": "string", "description": "Path to the file to edit"},
-                "old_string": {"type": "string", "description": "Exact string to find and replace"},
-                "new_string": {"type": "string", "description": "Replacement string"},
-            },
-            "required": ["file_path", "old_string", "new_string"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        file_path = args["file_path"]
-        old_string = args["old_string"]
-        new_string = args["new_string"]
+    async def call(self, params: EditParams, ctx: ToolContext) -> ToolResult:
+        file_path = params.file_path
+        old_string = params.old_string
+        new_string = params.new_string
 
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
         full = os.path.join(base, file_path) if not os.path.isabs(file_path) else file_path
 
         if not os.path.exists(full):
-            return ToolResult(title=f"Edit {file_path}", output=f"File not found: {file_path}", metadata={"success": False})
+            return ToolError(
+                f"File not found: {file_path}",
+                title=f"Edit {file_path}",
+                metadata={"success": False},
+            )
 
         try:
             content = Path(full).read_text(encoding="utf-8")
             count = content.count(old_string)
             if count == 0:
-                return ToolResult(
+                return ToolError(
+                    "old_string not found in file. Make sure it matches exactly including whitespace.",
                     title=f"Edit {file_path}",
-                    output="old_string not found in file. Make sure it matches exactly including whitespace.",
                     metadata={"success": False},
                 )
             if count > 1:
-                return ToolResult(
+                return ToolError(
+                    f"old_string found {count} times. It must be unique. Add more surrounding context.",
                     title=f"Edit {file_path}",
-                    output=f"old_string found {count} times. It must be unique. Add more surrounding context.",
                     metadata={"success": False},
                 )
 
             new_content = content.replace(old_string, new_string, 1)
             Path(full).write_text(new_content, encoding="utf-8")
 
-            return ToolResult(
+            return ToolOk(
+                f"Successfully edited {file_path}",
                 title=f"Edit {file_path}",
-                output=f"Successfully edited {file_path}",
                 metadata={"success": True},
             )
         except Exception as e:
-            return ToolResult(title=f"Edit {file_path}", output=f"Error: {e}", metadata={"success": False})
+            return ToolError(f"Error: {e}", title=f"Edit {file_path}", metadata={"success": False})
+
 
 tool = EditTool()

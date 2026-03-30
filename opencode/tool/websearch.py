@@ -5,30 +5,26 @@ Uses a simple approach: fetches search results via DuckDuckGo HTML (no API key n
 from __future__ import annotations
 
 import re
-from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
 
 
-class WebSearchTool(ToolInfo):
+class WebSearchParams(BaseModel):
+    """Parameters for the websearch tool."""
+    query: str = Field(description="Search query")
+    max_results: int = Field(default=5, description="Max results to return (default: 5)")
+
+
+class WebSearchTool(CallableTool[WebSearchParams]):
     id = "websearch"
     description = "Search the web for information. Returns search results with titles, URLs, and snippets."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "max_results": {"type": "integer", "description": "Max results to return (default: 5)"},
-            },
-            "required": ["query"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        query = args["query"]
-        max_results = args.get("max_results", 5)
+    async def call(self, params: WebSearchParams, ctx: ToolContext) -> ToolResult:
+        query = params.query
+        max_results = params.max_results
 
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
@@ -41,7 +37,6 @@ class WebSearchTool(ToolInfo):
 
             # Parse DuckDuckGo HTML results
             results: list[str] = []
-            # Find result blocks
             blocks = re.findall(
                 r'<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
                 r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
@@ -61,13 +56,13 @@ class WebSearchTool(ToolInfo):
                         results.append(f"**{title.strip()}**\n{url}\n")
 
             output = "\n".join(results) if results else "No results found."
-            return ToolResult(
+            return ToolOk(
+                output,
                 title=f"Search: {query[:50]}",
-                output=output,
                 metadata={"query": query, "results": len(results)},
             )
         except Exception as e:
-            return ToolResult(title=f"Search: {query[:50]}", output=f"Search error: {e}", metadata={})
+            return ToolError(f"Search error: {e}", title=f"Search: {query[:50]}")
 
 
 tool = WebSearchTool()

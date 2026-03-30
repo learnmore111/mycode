@@ -3,30 +3,27 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
 
 
-class SkillTool(ToolInfo):
+class SkillParams(BaseModel):
+    """Parameters for the skill tool."""
+    name: str = Field(description="Name of the skill to load (without .md extension)")
+
+
+class SkillTool(CallableTool[SkillParams]):
     id = "skill"
     description = (
         "Load a skill file to get specialized instructions. "
         "Skills are markdown files in .opencode/skills/ that provide domain-specific knowledge."
     )
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Name of the skill to load (without .md extension)"},
-            },
-            "required": ["name"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        name = args["name"]
+    async def call(self, params: SkillParams, ctx: ToolContext) -> ToolResult:
+        name = params.name
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
 
@@ -40,15 +37,15 @@ class SkillTool(ToolInfo):
                 p = os.path.join(d, name + ext)
                 if os.path.isfile(p):
                     content = Path(p).read_text(encoding="utf-8")
-                    return ToolResult(
+                    return ToolOk(
+                        content,
                         title=f"Skill: {name}",
-                        output=content,
                         metadata={"path": p, "found": True},
                     )
 
-        return ToolResult(
+        return ToolError(
+            f"Skill '{name}' not found. Searched in .opencode/skills/",
             title=f"Skill: {name}",
-            output=f"Skill '{name}' not found. Searched in .opencode/skills/",
             metadata={"found": False},
         )
 

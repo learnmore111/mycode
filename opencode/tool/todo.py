@@ -3,44 +3,34 @@ from __future__ import annotations
 
 from typing import Any
 
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from pydantic import BaseModel, Field
+
+from opencode.tool.base import CallableTool, ToolContext, ToolOk, ToolResult
 
 # In-memory todo storage per session
 _todos: dict[str, list[dict[str, Any]]] = {}
 
 
-class TodoTool(ToolInfo):
+class TodoItem(BaseModel):
+    """A single todo item."""
+    id: str
+    content: str
+    status: str = Field(description="One of: pending, in_progress, completed, cancelled")
+
+
+class TodoParams(BaseModel):
+    """Parameters for the todo tool."""
+    todos: list[TodoItem] = Field(description="List of todo items")
+    merge: bool = Field(default=True, description="If true, merge with existing todos. If false, replace.")
+
+
+class TodoTool(CallableTool[TodoParams]):
     id = "todo"
     description = "Create and manage a todo list to track progress on multi-step tasks."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "todos": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "content": {"type": "string"},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]},
-                        },
-                        "required": ["id", "content", "status"],
-                    },
-                    "description": "List of todo items",
-                },
-                "merge": {
-                    "type": "boolean",
-                    "description": "If true, merge with existing todos. If false, replace.",
-                },
-            },
-            "required": ["todos"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        items = args["todos"]
-        merge = args.get("merge", True)
+    async def call(self, params: TodoParams, ctx: ToolContext) -> ToolResult:
+        items = [item.model_dump() for item in params.todos]
+        merge = params.merge
 
         if merge and ctx.session_id in _todos:
             existing = {t["id"]: t for t in _todos[ctx.session_id]}
@@ -56,9 +46,9 @@ class TodoTool(ToolInfo):
             icon = {"pending": "⬜", "in_progress": "🔶", "completed": "✅", "cancelled": "⬛"}.get(t["status"], "⬜")
             lines.append(f"{icon} [{t['id']}] {t['content']}")
 
-        return ToolResult(
+        return ToolOk(
+            "\n".join(lines) if lines else "Empty todo list.",
             title="Todo list updated",
-            output="\n".join(lines) if lines else "Empty todo list.",
             metadata={"count": len(current)},
         )
 

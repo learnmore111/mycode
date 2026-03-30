@@ -3,38 +3,35 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+
+from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import ToolContext, ToolInfo, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
 
 
-class ReadTool(ToolInfo):
+class ReadParams(BaseModel):
+    """Parameters for the read tool."""
+    file_path: str = Field(description="Path to the file to read (relative to project root)")
+    line_offset: int | None = Field(default=None, description="Starting line number (0-based)")
+    line_count: int | None = Field(default=None, description="Number of lines to read")
+
+
+class ReadTool(CallableTool[ReadParams]):
     id = "read"
     description = "Read the contents of a file. Use line_offset and line_count for partial reads."
 
-    def parameters_schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "file_path": {"type": "string", "description": "Path to the file to read (relative to project root)"},
-                "line_offset": {"type": "integer", "description": "Starting line number (0-based)"},
-                "line_count": {"type": "integer", "description": "Number of lines to read"},
-            },
-            "required": ["file_path"],
-        }
-
-    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        file_path = args["file_path"]
-        offset = args.get("line_offset", 0)
-        count = args.get("line_count")
+    async def call(self, params: ReadParams, ctx: ToolContext) -> ToolResult:
+        file_path = params.file_path
+        offset = params.line_offset or 0
+        count = params.line_count
 
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
         full = os.path.join(base, file_path) if not os.path.isabs(file_path) else file_path
 
         if not os.path.exists(full):
-            return ToolResult(title=f"Read {file_path}", output=f"File not found: {file_path}", metadata={})
+            return ToolError(f"File not found: {file_path}", title=f"Read {file_path}")
 
         try:
             content = Path(full).read_text(encoding="utf-8", errors="replace")
@@ -46,12 +43,13 @@ class ReadTool(ToolInfo):
                 lines = lines[offset:end]
 
             numbered = "\n".join(f"{i + offset + 1:6d}:{line}" for i, line in enumerate(lines))
-            return ToolResult(
+            return ToolOk(
+                numbered,
                 title=f"Read {file_path}",
-                output=numbered,
                 metadata={"lines": len(lines), "total": total},
             )
         except Exception as e:
-            return ToolResult(title=f"Read {file_path}", output=f"Error reading file: {e}", metadata={})
+            return ToolError(f"Error reading file: {e}", title=f"Read {file_path}")
+
 
 tool = ReadTool()
