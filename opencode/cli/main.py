@@ -281,20 +281,28 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     completer = merge_completers([_SlashCompleter(), _ShellCompleter(), _FileMentionCompleter()])
 
     # --- Prompt setup ---
+    def _get_border_width() -> int:
+        """Get border inner width based on terminal size."""
+        tw = shutil.get_terminal_size((80, 24)).columns
+        return max(tw - 6, 20)  # leave margin for ┌/└ + spaces
+
     def _bottom_toolbar():
-        """Show current working directory and hints in the bottom toolbar."""
+        """Bottom toolbar = lower border + status info."""
+        bw = _get_border_width()
         cwd_display = shell_cwd[0]
         home = os.path.expanduser("~")
         if cwd_display.startswith(home):
             cwd_display = "~" + cwd_display[len(home):]
         return HTML(
-            f'<b>cwd:</b> <style fg="#888888">{cwd_display}</style>'
-            f'  <style fg="#555555">Ctrl+J: newline | Ctrl+D: exit | !cd &lt;dir&gt;: change dir</style>'
+            f'<style fg="#555555">  └{"─" * bw}┘</style>\n'
+            f'  <b>cwd:</b> <style fg="#888888">{cwd_display}</style>'
+            f'  <style fg="#555555">Ctrl+D: exit | !cd &lt;dir&gt;</style>'
         )
 
     pt_style = PtStyle.from_dict({
-        "bottom-toolbar": "noreverse bg:#1a1a2e #aaaaaa",
-        "prompt": "bold",
+        "bottom-toolbar": "noreverse",
+        "bottom-toolbar.text": "",
+        "prompt": "",
     })
     history = InMemoryHistory()
     ps = PromptSession(
@@ -331,29 +339,23 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # Prompt symbol
             prompt_symbol = "✨ " if not (agent and agent == "plan") else "📋 "
 
-            # Upper border of input area (auto-fit terminal width)
-            tw = shutil.get_terminal_size((80, 24)).columns
-            border_inner = tw - 4  # ┌ + ─ padding + ┐ = 4 chars
-            if border_inner < 10:
-                border_inner = 10
-            top_border = f"  \033[38;5;243m┌{'─' * border_inner}┐\033[0m"
-            click.echo(top_border)
+            # Build prompt message with upper border embedded
+            bw = _get_border_width()
+            # prompt message = top border line + input line prefix
+            prompt_msg = HTML(
+                f'<style fg="#555555">  ┌{"─" * bw}┐</style>\n'
+                f'<style fg="#555555">  │</style> {prompt_symbol}'
+            )
 
             try:
                 with patch_stdout(raw=True):
                     user_input = await ps.prompt_async(
-                        HTML(f'<style fg="#888888">  │</style> {prompt_symbol}'),
+                        prompt_msg,
                         multiline=False,
                     )
             except (EOFError, KeyboardInterrupt):
-                bot_border = f"  \033[38;5;243m└{'─' * border_inner}┘\033[0m"
-                click.echo(bot_border)
                 console.print("\n[grey50]Bye![/grey50]")
                 break
-
-            # Lower border of input area
-            bot_border = f"  \033[38;5;243m└{'─' * border_inner}┘\033[0m"
-            click.echo(bot_border)
 
             text = user_input.strip()
             if not text:
