@@ -108,6 +108,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
+    from opencode.provider import provider as providermod
     from opencode.session.memory import InteractionLog, SessionMemory, save_session_note
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
@@ -121,6 +122,19 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     # --- Mutable working directory for shell commands ---
     shell_cwd = [abs_directory]  # Use list to allow mutation in nested scope
 
+    # --- Mutable model reference (allows runtime switching via /model) ---
+    model_ref = [model]  # Use list to allow mutation in nested scope
+
+    # --- Pre-fetch available models for /model completion ---
+    _available_models: list[str] = []
+    try:
+        provs = await providermod.list_providers()
+        for pid, p in provs.items():
+            for mid in p.models:
+                _available_models.append(f"{pid}/{mid}")
+    except Exception:
+        pass  # Will be populated lazily if needed
+
     # --- Welcome Panel ---
     blue = "dodger_blue1"
     logo = Text.from_markup(f"[{blue} bold]▐█▛█▛█▌\n▐█████▌[/{blue} bold]")
@@ -133,7 +147,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     info_items = [
         ("Directory", abs_directory, "grey50"),
-        ("Model", model or "default", "grey50"),
+        ("Model", model_ref[0] or "default", "grey50"),
         ("Agent", agent or "build", "grey50"),
     ]
     info_lines = [header_table, Text("")]
@@ -163,6 +177,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         "/help": "Show available commands",
         "/clear": "Clear conversation history",
         "/reset": "Clear conversation history",
+        "/model": "Switch model (/model <provider/model>)",
         "/history": "Show conversation turns",
         "/memory": "Show recent session notes",
         "/quit": "Exit",
@@ -171,11 +186,25 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     }
 
     class _SlashCompleter(Completer):
-        """Fuzzy-match slash commands like /help, /clear."""
+        """Fuzzy-match slash commands like /help, /clear. Also complete model names after /model."""
         def get_completions(self, document: Document, complete_event):
             text = document.text_before_cursor.lstrip()
             if not text.startswith("/"):
                 return
+
+            # Check if user is typing /model <model_name>
+            if text.lower().startswith("/model "):
+                fragment = text[7:]  # after "/model "
+                for m in _available_models:
+                    if fragment.lower() in m.lower() or not fragment:
+                        yield Completion(
+                            f"/model {m}",
+                            start_position=-len(text),
+                            display=m,
+                            display_meta="switch model",
+                        )
+                return
+
             typed = text[1:]
             for cmd, desc in _slash_commands.items():
                 name = cmd[1:]  # strip leading /
@@ -362,6 +391,42 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 continue
 
             if text.startswith("/"):
+                if text.lower().startswith("/model"):
+                    # Handle /model command inline (needs access to model_ref and _available_models)
+                    parts_cmd = text.split(None, 1)
+                    if len(parts_cmd) < 2:
+                        # No argument — list available models
+                        if _available_models:
+                            console.print(f"  [cyan]Current model:[/cyan] {model_ref[0] or 'default'}")
+                            console.print(f"  [cyan]Available models ({len(_available_models)}):[/cyan]")
+                            for m in _available_models:
+                                marker = " ←" if m == model_ref[0] else ""
+                                console.print(f"    • {m}[green]{marker}[/green]")
+                        else:
+                            console.print("  [grey50]No models found. Set an API key env var.[/grey50]")
+                        console.print("  [grey50]Usage: /model <provider/model>[/grey50]")
+                    else:
+                        new_model = parts_cmd[1].strip()
+                        if new_model in _available_models:
+                            old_model = model_ref[0] or "default"
+                            model_ref[0] = new_model
+                            console.print(f"  [green]✓ Model switched: {old_model} → {new_model}[/green]")
+                        else:
+                            # Try fuzzy match
+                            matches = [m for m in _available_models if new_model.lower() in m.lower()]
+                            if len(matches) == 1:
+                                old_model = model_ref[0] or "default"
+                                model_ref[0] = matches[0]
+                                console.print(f"  [green]✓ Model switched: {old_model} → {matches[0]}[/green]")
+                            elif matches:
+                                console.print(f"  [yellow]Ambiguous model name '{new_model}'. Matches:[/yellow]")
+                                for m in matches:
+                                    console.print(f"    • {m}")
+                            else:
+                                console.print(f"  [red]✗ Unknown model: {new_model}[/red]")
+                                console.print("  [grey50]Use /model to list available models.[/grey50]")
+                    continue
+
                 handled = _handle_command(text, conversation_history, console, abs_directory)
                 if handled == "quit":
                     console.print("[grey50]Bye![/grey50]")
@@ -405,7 +470,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             inp = PromptInput(
                 session_id=session_info.id,
                 parts=[{"type": "text", "content": text}],
-                model=model,
+                model=model_ref[0],
                 agent=agent,
             )
 
@@ -664,6 +729,7 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
         table.add_column(style="grey50")
         table.add_row("/help", "Show this help")
         table.add_row("/clear", "Clear conversation history")
+        table.add_row("/model", "List models or switch: /model <provider/model>")
         table.add_row("/history", "Show conversation turns")
         table.add_row("/memory", "Show recent session notes")
         table.add_row("/quit", "Exit")
