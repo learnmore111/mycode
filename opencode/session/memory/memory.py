@@ -352,116 +352,103 @@ class SessionMemory:
             return self._create_simple_summary(parsed)
 
     def _build_summary_prompt(self, parsed: ParsedConversation, lang: str) -> str:
-        """Build the prompt for AI summary generation."""
-        if lang == "zh":
-            template = """请为以下编程会话生成一个结构化的笔记摘要：
+        """Build prompt for AI summary — generates agent-oriented technical context memo.
 
-## 会话信息
-- 会话ID: {session_id}
-- 时长: {duration} 分钟
-- 项目: {project}
+        The output is NOT for humans to read. It is structured technical context
+        that an AI agent can consume on next session start to quickly restore
+        working state: what was done, what changed, what broke, what's left.
+        """
+        # Use same prompt regardless of lang — the output is for the agent, not the user
+        template = """You are an AI coding agent's memory system. Analyze this session and produce
+a concise technical context memo that YOUR FUTURE SELF can read to resume work.
 
-## 用户请求
-{user_prompts}
-
-## 工具使用
-{tool_uses}
-
-## 修改的文件
-{files_modified}
-
-## 读取的文件
-{files_read}
-
-## 助手回复摘要
-{assistant_summaries}
+## Raw Session Data
+- project: {project}
+- duration: {duration} min
+- user_prompts: {user_prompts}
+- tool_uses: {tool_uses}
+- files_modified: {files_modified}
+- files_read: {files_read}
+- assistant_responses: {assistant_summaries}
 
 ---
 
-请按以下格式输出笔记：
+Output a memo in EXACTLY this format (no extra sections, no prose):
 
-## 摘要
-[一段话总结本次会话完成的工作]
+## what_was_done
+[1-3 bullet points: concrete technical changes made. e.g. "Added retry logic to opencode/http/client.py with exponential backoff"]
 
-## 关键决策
-- [决策1及其原因]
-- [决策2及其原因]
+## technical_context
+[1-3 bullet points: key technical facts the agent needs to know. e.g. "Project uses uv as package manager, Python 3.14, litellm for LLM calls"]
 
-## 待办 / 遗留问题
-- [ ] [如有未完成的任务或问题]
+## problems_encountered
+[0-2 bullet points: bugs, errors, failed approaches. e.g. "cd command didn't work because subprocess doesn't persist cwd — fixed by tracking shell_cwd in main process"]
 
-注意：
-- 简洁明了，重点突出
-- 不要重复列出已经在上面显示的文件列表
-- 使用中文"""
-        else:
-            template = """Please generate a structured note summary for this coding session:
+## unfinished_work
+[0-2 bullet points: things left incomplete, with enough detail to resume. e.g. "TODO: add unit tests for the new ShellCompleter class in tests/test_cli.py"]
 
-## Session Info
-- Session ID: {session_id}
-- Duration: {duration} minutes
-- Project: {project}
+## file_changes
+[list each modified file with a SHORT description of what changed. e.g. "opencode/cli/main.py: added cd handling, smart completers, bottom toolbar"]
 
-## User Requests
-{user_prompts}
-
-## Tool Usage
-{tool_uses}
-
-## Files Modified
-{files_modified}
-
-## Files Read
-{files_read}
-
-## Assistant Response Summaries
-{assistant_summaries}
-
----
-
-Please output the note in this format:
-
-## Summary
-[One paragraph summarizing what was accomplished]
-
-## Key Decisions
-- [Decision 1 and reasoning]
-- [Decision 2 and reasoning]
-
-## Open TODOs
-- [ ] [Any unfinished tasks or issues]
-
-Notes:
-- Be concise and highlight key points
-- Don't repeat the file lists already shown above
-- Use English"""
+Rules:
+- Be extremely concise — every word must carry information
+- Focus on TECHNICAL FACTS, not narrative
+- No filler phrases like "In this session..." or "The user asked..."
+- If a section has nothing, write "none"
+- Output plain text, no code blocks"""
 
         return template.format(
-            session_id=parsed.session_id,
-            duration=parsed.duration_minutes,
             project=self.project_path,
-            user_prompts="\n".join(f"- {p}" for p in parsed.user_prompts) or "- (none)",
-            tool_uses="\n".join(
-                f"- {t['name']}: {t['count']} times" for t in parsed.tool_uses
-            ) or "- (none)",
-            files_modified="\n".join(f"- {f}" for f in parsed.files_modified) or "- (none)",
-            files_read="\n".join(f"- {f}" for f in parsed.files_read[:10]) or "- (none)",
-            assistant_summaries="\n".join(
-                f"- {s[:200]}" for s in parsed.assistant_summaries
-            ) or "- (none)",
+            duration=parsed.duration_minutes,
+            user_prompts="; ".join(p[:200] for p in parsed.user_prompts) or "(none)",
+            tool_uses=", ".join(
+                f"{t['name']}×{t['count']}" for t in parsed.tool_uses
+            ) or "(none)",
+            files_modified=", ".join(parsed.files_modified) or "(none)",
+            files_read=", ".join(parsed.files_read[:10]) or "(none)",
+            assistant_summaries=" | ".join(
+                s[:150] for s in parsed.assistant_summaries
+            ) or "(none)",
         )
 
     def _create_simple_summary(self, parsed: ParsedConversation) -> str:
-        """Create a simple summary without AI."""
-        lines = ["## Summary", ""]
-        lines.append(f"Session lasted {parsed.duration_minutes} minutes.")
+        """Create a structured technical summary without AI (fallback)."""
+        lines = []
+
+        # what_was_done — derive from user prompts
+        lines.append("## what_was_done")
         if parsed.user_prompts:
-            lines.append(f"User made {len(parsed.user_prompts)} requests.")
-        if parsed.files_modified:
-            lines.append(f"Modified {len(parsed.files_modified)} files.")
+            for p in parsed.user_prompts[:5]:
+                lines.append(f"- user request: {p[:200]}")
+        else:
+            lines.append("- none")
+
+        # technical_context
+        lines.append("\n## technical_context")
+        lines.append(f"- duration: {parsed.duration_minutes}min, {len(parsed.user_prompts)} prompts")
         if parsed.tool_uses:
-            top_tools = [f"{t['name']}({t['count']})" for t in parsed.tool_uses[:5]]
-            lines.append(f"Top tools: {', '.join(top_tools)}")
+            top_tools = ", ".join(f"{t['name']}×{t['count']}" for t in parsed.tool_uses[:5])
+            lines.append(f"- tools: {top_tools}")
+
+        # problems_encountered
+        lines.append("\n## problems_encountered")
+        lines.append("- none (no AI analysis available)")
+
+        # unfinished_work
+        lines.append("\n## unfinished_work")
+        lines.append("- none (no AI analysis available)")
+
+        # file_changes
+        lines.append("\n## file_changes")
+        if parsed.files_modified:
+            for f in parsed.files_modified:
+                lines.append(f"- {f}: modified")
+        elif parsed.files_read:
+            for f in parsed.files_read[:5]:
+                lines.append(f"- {f}: read only")
+        else:
+            lines.append("- none")
+
         return "\n".join(lines)
 
     async def save_note(
@@ -547,48 +534,55 @@ Notes:
         return note_path
 
     def _format_note_markdown(self, note: SessionNote, lang: str) -> str:
-        """Format note as markdown."""
-        if lang == "zh":
-            lines = [
-                "# 会话笔记",
-                "",
-                f"- **会话 ID**: {note.session_id}",
-                f"- **时间**: {note.start_time} → {note.end_time}",
-                f"- **时长**: {note.duration_minutes} 分钟",
-                f"- **项目**: {note.project_path}",
-            ]
-            if note.key_topics:
-                lines.append(f"- **主题**: {', '.join(note.key_topics)}")
-            if note.tool_uses:
-                tools_str = ", ".join(f"{k}×{v}" for k, v in note.tool_uses.items())
-                lines.append(f"- **工具**: {tools_str}")
-        else:
-            lines = [
-                "# Session Note",
-                "",
-                f"- **Session ID**: {note.session_id}",
-                f"- **Time**: {note.start_time} → {note.end_time}",
-                f"- **Duration**: {note.duration_minutes} min",
-                f"- **Project**: {note.project_path}",
-            ]
-            if note.key_topics:
-                lines.append(f"- **Topics**: {', '.join(note.key_topics)}")
-            if note.tool_uses:
-                tools_str = ", ".join(f"{k}×{v}" for k, v in note.tool_uses.items())
-                lines.append(f"- **Tools**: {tools_str}")
+        """Format note as agent-oriented structured markdown.
 
+        This format is designed for AI agent consumption, NOT human reading.
+        It contains machine-parseable sections that an agent can use to
+        restore working context on the next session.
+        """
+        lines = [
+            "# agent-memory",
+            "",
+            "## meta",
+            f"- session_id: {note.session_id}",
+            f"- project: {note.project_path}",
+            f"- time: {note.start_time} → {note.end_time}",
+            f"- duration: {note.duration_minutes}min",
+        ]
+        if note.key_topics:
+            lines.append(f"- topics: {', '.join(note.key_topics)}")
+        if note.tool_uses:
+            tools_str = ", ".join(f"{k}×{v}" for k, v in note.tool_uses.items())
+            lines.append(f"- tools: {tools_str}")
+
+        # The AI-generated (or fallback) summary — already in structured format
         lines.extend(["", note.summary, ""])
 
+        # Always include file changes section for easy scanning
         if note.files_modified:
-            lines.append("## Files Modified" if lang == "en" else "## 修改的文件")
-            for f in note.files_modified:
-                lines.append(f"- `{f}`")
+            # Only add if not already present in the summary
+            if "## file_changes" not in note.summary:
+                lines.append("## file_changes")
+                for f in note.files_modified:
+                    lines.append(f"- {f}")
+                lines.append("")
+
+        if note.files_read:
+            lines.append("## files_read")
+            for f in note.files_read[:10]:
+                lines.append(f"- {f}")
+            lines.append("")
+
+        if note.user_prompts:
+            lines.append("## user_prompts")
+            for p in note.user_prompts[:10]:
+                lines.append(f"- {p[:300]}")
             lines.append("")
 
         # Footer
         lines.extend([
             "---",
-            f"*auto-saved by opencode session-memory at {datetime.now().isoformat()}*",
+            f"*auto-saved at {datetime.now().isoformat()}*",
         ])
 
         return "\n".join(lines)
@@ -654,38 +648,51 @@ Notes:
         return project_notes[:max_recent]
 
     def format_notes_for_context(self, notes: list[dict[str, Any]]) -> str:
-        """Format notes as context string for AI."""
+        """Format recent notes as structured context for the AI agent.
+
+        This produces a compact, machine-friendly context block that gets
+        injected into the agent's system prompt. Every word must be useful
+        for the agent to restore working state.
+        """
         if not notes:
             return ""
 
-        lines = ["## Recent Session History", ""]
+        lines = ["<session_history>"]
         for i, note in enumerate(notes, 1):
             note_path = Path(note.get("path", ""))
             if note_path.exists():
-                # Read summary from file
                 content = note_path.read_text(encoding="utf-8")
-                # Extract just the summary section
-                summary_lines = []
-                in_summary = False
+                # Extract the structured sections (what_was_done, technical_context, etc.)
+                # Skip the meta header and footer, keep the meat
+                useful_lines = []
+                skip_sections = {"# agent-memory", "## meta", "---"}
+                in_meta = False
                 for line in content.split("\n"):
-                    if line.startswith("## Summary") or line.startswith("## 摘要"):
-                        in_summary = True
+                    stripped = line.strip()
+                    if stripped == "## meta":
+                        in_meta = True
                         continue
-                    if in_summary:
-                        if line.startswith("## "):
-                            break
-                        summary_lines.append(line)
-                summary = "\n".join(summary_lines).strip()
+                    if in_meta:
+                        if stripped.startswith("## "):
+                            in_meta = False
+                        else:
+                            continue
+                    if stripped in skip_sections or stripped.startswith("*auto-saved"):
+                        continue
+                    # Keep everything else
+                    useful_lines.append(line)
+                body = "\n".join(useful_lines).strip()
             else:
-                summary = "(note file not found)"
+                body = "(note file missing)"
 
             date = note.get("date", "?")
             duration = note.get("duration_minutes", 0)
             topics = ", ".join(note.get("topics", [])) or "general"
-            lines.append(f"### Session {i} ({date}, {duration}min, {topics})")
-            lines.append(summary[:500])
-            lines.append("")
+            lines.append(f"<session date=\"{date}\" duration=\"{duration}min\" topics=\"{topics}\">")
+            lines.append(body)
+            lines.append("</session>")
 
+        lines.append("</session_history>")
         return "\n".join(lines)
 
 

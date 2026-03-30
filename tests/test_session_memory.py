@@ -108,16 +108,17 @@ class TestSessionMemory:
         assert "Documentation" in topics
 
     def test_create_simple_summary(self, sample_messages):
-        """Test simple summary creation without AI."""
+        """Test simple summary creation without AI (agent-oriented format)."""
         memory = SessionMemory("/test/project", "test-session")
         parsed = memory.parse_conversation(sample_messages)
         summary = memory._create_simple_summary(parsed)
 
-        assert "## Summary" in summary
-        assert "minutes" in summary.lower() or "min" in summary.lower()
+        assert "## what_was_done" in summary
+        assert "## technical_context" in summary
+        assert "## file_changes" in summary
 
     def test_format_note_markdown_english(self):
-        """Test note formatting in English."""
+        """Test note formatting — agent-oriented structured format."""
         memory = SessionMemory("/test/project", "test-session")
         memory._config["note_language"] = "en"
 
@@ -127,20 +128,22 @@ class TestSessionMemory:
             start_time="2024-01-01T10:00:00",
             end_time="2024-01-01T10:30:00",
             duration_minutes=30,
-            summary="## Summary\nThis is a test session.",
+            summary="## what_was_done\n- Added retry logic\n\n## technical_context\n- Uses litellm",
             files_modified=["/src/main.py"],
             tool_uses={"read": 5, "edit": 3},
             key_topics=["Python"],
         )
 
         markdown = memory._format_note_markdown(note, "en")
-        assert "# Session Note" in markdown
+        assert "# agent-memory" in markdown
+        assert "## meta" in markdown
         assert "test-123" in markdown
-        assert "30 min" in markdown
+        assert "30min" in markdown
         assert "Python" in markdown
+        assert "## what_was_done" in markdown
 
     def test_format_note_markdown_chinese(self):
-        """Test note formatting in Chinese."""
+        """Test note formatting — same agent format regardless of language."""
         memory = SessionMemory("/test/project", "test-session")
         memory._config["note_language"] = "zh"
 
@@ -150,16 +153,16 @@ class TestSessionMemory:
             start_time="2024-01-01T10:00:00",
             end_time="2024-01-01T10:30:00",
             duration_minutes=30,
-            summary="## 摘要\n这是一个测试会话。",
+            summary="## what_was_done\n- 添加了重试逻辑\n\n## technical_context\n- 使用 litellm",
             files_modified=["/src/main.py"],
             tool_uses={"read": 5, "edit": 3},
             key_topics=["Python"],
         )
 
         markdown = memory._format_note_markdown(note, "zh")
-        assert "# 会话笔记" in markdown
+        assert "# agent-memory" in markdown
         assert "test-123" in markdown
-        assert "30 分钟" in markdown
+        assert "30min" in markdown
 
 
 class TestSessionMemoryAsync:
@@ -205,12 +208,13 @@ class TestSessionMemoryAsync:
 
     @pytest.mark.asyncio
     async def test_generate_summary_no_model(self, sample_messages):
-        """Test summary generation falls back to simple summary without model config."""
+        """Test summary generation falls back to structured format without model config."""
         memory = SessionMemory("/test/project", "test-session")
         parsed = memory.parse_conversation(sample_messages)
 
         summary = await memory.generate_summary(parsed)
-        assert "## Summary" in summary
+        assert "## what_was_done" in summary
+        assert "## technical_context" in summary
 
 
 class TestConvenienceFunctions:
@@ -274,22 +278,27 @@ class TestIndexManagement:
 class TestBuildSummaryPrompt:
     """Tests for summary prompt building."""
 
-    def test_build_summary_prompt_english(self, sample_messages):
-        """Test building English summary prompt."""
+    def test_build_summary_prompt_agent_oriented(self, sample_messages):
+        """Test that prompt generates agent-oriented technical memo instructions."""
         memory = SessionMemory("/test/project", "test-session")
         parsed = memory.parse_conversation(sample_messages)
 
         prompt = memory._build_summary_prompt(parsed, "en")
-        assert "Session Info" in prompt
-        assert "User Requests" in prompt
-        assert "Tool Usage" in prompt
+        # Should contain structured section names for the agent memo
+        assert "## what_was_done" in prompt
+        assert "## technical_context" in prompt
+        assert "## problems_encountered" in prompt
+        assert "## unfinished_work" in prompt
+        assert "## file_changes" in prompt
+        # Should contain raw session data
+        assert "Raw Session Data" in prompt
+        assert "/test/project" in prompt
 
-    def test_build_summary_prompt_chinese(self, sample_messages):
-        """Test building Chinese summary prompt."""
+    def test_build_summary_prompt_same_for_all_languages(self, sample_messages):
+        """Test that prompt is the same regardless of language — agent doesn't need i18n."""
         memory = SessionMemory("/test/project", "test-session")
         parsed = memory.parse_conversation(sample_messages)
 
-        prompt = memory._build_summary_prompt(parsed, "zh")
-        assert "会话信息" in prompt
-        assert "用户请求" in prompt
-        assert "工具使用" in prompt
+        prompt_en = memory._build_summary_prompt(parsed, "en")
+        prompt_zh = memory._build_summary_prompt(parsed, "zh")
+        assert prompt_en == prompt_zh
