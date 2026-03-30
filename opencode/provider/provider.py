@@ -187,6 +187,11 @@ async def _init_state() -> dict[str, ProviderInfo]:
             if provider_id in providers:
                 if pcfg.options:
                     providers[provider_id].options.update(pcfg.options)
+                    # Update key and source if apiKey is provided in config options
+                    cfg_key = pcfg.options.get("apiKey")
+                    if cfg_key:
+                        providers[provider_id].key = cfg_key
+                        providers[provider_id].source = "config"
                 if pcfg.name:
                     providers[provider_id].name = pcfg.name
             else:

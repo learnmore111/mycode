@@ -160,6 +160,7 @@ async def prompt(
                 temperature=agent.temperature,
                 top_p=agent.top_p,
                 api_key=await providermod.get_api_key(provider_id),
+                api_base=model.api.url or None,
             )
 
             result, parts = await proc.process(ctx, stream_input)
