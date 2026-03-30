@@ -60,21 +60,51 @@ Session Memory 是 OpenCode 的一个可选功能，可以在每次对话结束�
 
 ### 模型配置
 
+**推荐方式：自动使用主模型**
+
+如果不指定 `sessionMemory.model`，系统会自动使用主配置中的 `model`（即对话使用的模型）：
+
 ```json
 {
-  "model": {
-    "provider": "openai",       // "openai" 或 "anthropic"
-    "name": "gpt-4o-mini",      // 模型名称
-    "baseURL": "https://...",   // 可选：自定义 API 地址
-    "apiKey": "sk-...",         // 直接提供 API Key
-    "apiKeyEnv": "OPENAI_API_KEY"  // 或从环境变量读取
+  "model": "deepseek/deepseek-chat",
+  "provider": {
+    "deepseek": {
+      "api": "https://api.deepseek.com/v1",
+      "env": ["DEEPSEEK_API_KEY"]
+    }
+  },
+  "sessionMemory": {
+    "enabled": true,
+    "noteLanguage": "zh"
+  }
+}
+```
+
+这种配置方式下，session memory 会自动使用 `deepseek/deepseek-chat` 模型进行摘要生成。
+
+**手动指定模型**
+
+也可以单独为 session memory 指定不同的模型：
+
+```json
+{
+  "sessionMemory": {
+    "model": {
+      "provider": "openai",       // "openai", "anthropic", "deepseek" 等
+      "name": "gpt-4o-mini",      // 模型名称
+      "baseURL": "https://...",   // 可选：自定义 API 地址
+      "apiKey": "sk-...",         // 直接提供 API Key
+      "apiKeyEnv": "OPENAI_API_KEY"  // 或从环境变量读取
+    }
   }
 }
 ```
 
 支持的 Provider：
-- `openai` - OpenAI API（支持兼容接口如火山引擎、智谱等）
+- `openai` - OpenAI API
 - `anthropic` - Anthropic Claude API
+- `deepseek` - DeepSeek API（自动使用 OpenAI 兼容格式）
+- 其他兼容 OpenAI 的接口（如火山引擎、智谱等）
 
 ## 存储位置
 
@@ -161,6 +191,42 @@ This session focused on implementing a new authentication module...
 4. **无 AI 模式**：如果未配置模型，系统会生成简单的统计摘要
 
 ## 示例配置
+
+### 使用 DeepSeek（推荐：与主模型保持一致）
+
+最简单的方式是让 session memory 自动使用主模型配置：
+
+```json
+{
+  "model": "deepseek/deepseek-chat",
+  "provider": {
+    "deepseek": {
+      "api": "https://api.deepseek.com/v1",
+      "env": ["DEEPSEEK_API_KEY"]
+    }
+  },
+  "sessionMemory": {
+    "enabled": true,
+    "noteLanguage": "zh"
+  }
+}
+```
+
+### 使用 DeepSeek（手动指定）
+
+```json
+{
+  "sessionMemory": {
+    "enabled": true,
+    "noteLanguage": "zh",
+    "model": {
+      "provider": "deepseek",
+      "name": "deepseek-chat",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    }
+  }
+}
+```
 
 ### 使用 OpenAI
 

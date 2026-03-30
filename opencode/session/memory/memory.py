@@ -71,7 +71,10 @@ class SessionMemory:
         self._config = self._load_config()
 
     def _load_config(self) -> dict[str, Any]:
-        """Load session memory config."""
+        """Load session memory config.
+        
+        If no model is specified in sessionMemory config, falls back to main model config.
+        """
         cfg = configmod.get()
         sm = cfg.session_memory
         if not sm:
@@ -83,20 +86,74 @@ class SessionMemory:
                 "max_notes_per_project": 50,
                 "max_recent_for_context": 5,
             }
+        
+        # Build model config - use sessionMemory.model if specified, otherwise use main model
+        model_config = None
+        if sm.model and (sm.model.provider or sm.model.name):
+            # Explicit model config in sessionMemory
+            model_config = {
+                "provider": sm.model.provider,
+                "name": sm.model.name,
+                "base_url": sm.model.base_url,
+                "api_key": sm.model.api_key,
+                "api_key_env": sm.model.api_key_env,
+            }
+        elif cfg.model:
+            # Fallback to main model (e.g., "deepseek/deepseek-chat")
+            model_config = self._parse_main_model(cfg)
+        
         return {
             "enabled": sm.enabled or False,
-            "model": {
-                "provider": sm.model.provider if sm.model else None,
-                "name": sm.model.name if sm.model else None,
-                "base_url": sm.model.base_url if sm.model else None,
-                "api_key": sm.model.api_key if sm.model else None,
-                "api_key_env": sm.model.api_key_env if sm.model else None,
-            } if sm.model else None,
+            "model": model_config,
             "note_language": sm.note_language or "en",
             "min_duration_minutes": sm.min_duration_minutes or 1,
             "min_user_prompts": sm.min_user_prompts or 1,
             "max_notes_per_project": sm.max_notes_per_project or 50,
             "max_recent_for_context": sm.max_recent_for_context or 5,
+        }
+    
+    def _parse_main_model(self, cfg: Any) -> dict[str, Any] | None:
+        """Parse main model config (e.g., 'deepseek/deepseek-chat') into model config dict."""
+        if not cfg.model:
+            return None
+        
+        parts = cfg.model.split("/", 1)
+        if len(parts) != 2:
+            return None
+        
+        provider_id, model_id = parts
+        
+        # Get provider config to extract API key and base URL
+        base_url = None
+        api_key = None
+        api_key_env = None
+        
+        if cfg.provider and provider_id in cfg.provider:
+            pcfg = cfg.provider[provider_id]
+            if pcfg.api:
+                base_url = pcfg.api
+            if pcfg.options:
+                api_key = pcfg.options.get("apiKey")
+            if pcfg.env:
+                api_key_env = pcfg.env[0] if isinstance(pcfg.env, list) and pcfg.env else pcfg.env
+        
+        # Map well-known providers to their env vars
+        if not api_key_env:
+            provider_env_map = {
+                "openai": "OPENAI_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+                "google": "GOOGLE_API_KEY",
+                "groq": "GROQ_API_KEY",
+            }
+            api_key_env = provider_env_map.get(provider_id)
+        
+        return {
+            "provider": provider_id,
+            "name": model_id,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_key_env": api_key_env,
         }
 
     @property
@@ -248,14 +305,31 @@ class SessionMemory:
             provider = model_config.get("provider", "openai")
             model_name = model_config.get("name", "gpt-4o-mini")
             base_url = model_config.get("base_url")
+            
+            # Get base_url from provider config if not specified
+            if not base_url:
+                cfg = configmod.get()
+                if cfg.provider and provider in cfg.provider:
+                    pcfg = cfg.provider[provider]
+                    base_url = pcfg.api
 
             # Build model string for litellm
+            # For custom providers like deepseek, use openai-compatible format
             if provider == "anthropic":
                 model_str = f"anthropic/{model_name}"
+            elif provider == "openai" and not base_url:
+                model_str = f"openai/{model_name}"
+            elif provider == "deepseek":
+                # DeepSeek uses OpenAI-compatible API
+                model_str = f"openai/{model_name}"
+                if not base_url:
+                    base_url = "https://api.deepseek.com/v1"
             elif base_url:
+                # Custom provider with base_url uses openai-compatible format
                 model_str = f"openai/{model_name}"
             else:
-                model_str = model_name
+                # Try provider/model format for known providers
+                model_str = f"{provider}/{model_name}"
 
             kwargs: dict[str, Any] = {
                 "model": model_str,
@@ -267,6 +341,7 @@ class SessionMemory:
             if base_url:
                 kwargs["base_url"] = base_url
 
+            logger.debug("calling LLM for summary", provider=provider, model=model_name, base_url=base_url)
             response = await litellm.acompletion(**kwargs)
             summary = response.choices[0].message.content or ""
             logger.info("generated AI summary", length=len(summary))
