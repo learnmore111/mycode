@@ -129,9 +129,12 @@ def get(directory: str | None = None, worktree: str | None = None) -> Config:
         for filepath in project_files(directory, worktree):
             merged = _deep_merge(merged, _load_file(filepath))
 
-    # 4. .opencode directory configs
+    # 4. .opencode directory configs (skip global dir — already loaded in step 1)
     if directory:
+        global_dir = str(global_config_file().parent)
         for d in config_directories(directory, worktree):
+            if d == global_dir:
+                continue  # Already loaded in step 1
             for name in ["opencode.jsonc", "opencode.json"]:
                 merged = _deep_merge(merged, _load_file(str(Path(d) / name)))
 
