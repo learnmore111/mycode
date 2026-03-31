@@ -4,6 +4,12 @@ Streaming architecture: process_stream() is an async generator that yields
 ProcessorEvent objects in real-time as the LLM generates text and tools execute.
 This enables the CLI to render text and tool output interleaved, just like
 Claude Code / Cursor / aider.
+
+Enhanced with:
+- Result caching for read-only tools (skip duplicate calls)
+- Retry logic for transient failures
+- Read/write separation: read-only tools run in parallel, mutating tools run sequentially
+- Step-level state recording for the loop guard
 """
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from opencode.bus.events import PART_DELTA, PART_UPDATED
 from opencode.session import llm as llmmod
+from opencode.session.loop_guard import MUTATING_TOOLS, LoopGuard, ToolResultCache
 from opencode.session.message import AssistantMessage, Part, TextPart, ToolPart, create_text_part, create_tool_part
 from opencode.tool import registry as tool_registry
 from opencode.tool.base import (
@@ -66,8 +73,9 @@ class ProcessorContext:
     parts: list[Part] = field(default_factory=list)
     should_break: bool = False
     doom_count: int = 0
-    permission_manager: Any = None  # PermissionManager instance
+    permission_manager: Any = None
     agent_permission: list[dict[str, Any]] = field(default_factory=list)
+    loop_guard: LoopGuard | None = None  # Injected by prompt.py
 
 
 async def process_stream(
@@ -75,19 +83,11 @@ async def process_stream(
     stream_input: llmmod.StreamInput,
     messages_for_tools: list[Any] | None = None,
 ) -> AsyncGenerator[ProcessorEvent, None]:
-    """Run one iteration of the agentic loop, yielding events in real time.
-
-    Yields ProcessorEvent objects as:
-      1. text_delta — each chunk of LLM text
-      2. tool_start — when a tool call is identified
-      3. tool_running — when tool execution begins
-      4. tool_done — when tool execution completes
-      5. error — on LLM errors
-      6. finish — at the end, with result="stop"|"continue" and parts list
-    """
+    """Run one iteration of the agentic loop, yielding events in real time."""
     current_text: TextPart | None = None
     tool_calls_pending: list[ToolPart] = []
     parts: list[Part] = []
+    text_length = 0
 
     async for event in llmmod.stream(stream_input):
         if isinstance(event, llmmod.TextDelta):
@@ -95,6 +95,7 @@ async def process_stream(
                 current_text = create_text_part(ctx.session_id, ctx.assistant_message.id)
                 parts.append(current_text)
             current_text.content += event.text
+            text_length += len(event.text)
             await ctx.bus.publish(PART_DELTA, {
                 "session_id": ctx.session_id,
                 "message_id": ctx.assistant_message.id,
@@ -102,16 +103,14 @@ async def process_stream(
                 "field": "content",
                 "delta": event.text,
             })
-            # Yield text delta immediately for real-time rendering
             yield ProcessorEvent(type="text_delta", data={"content": event.text})
 
         elif isinstance(event, llmmod.ToolCallPartial):
-            # A new tool call has been identified by the LLM
             tp = create_tool_part(ctx.session_id, ctx.assistant_message.id, event.tool_name, event.tool_call_id)
             tp.state = {"status": "pending", "input": {}}
             ctx.toolcalls[event.tool_call_id] = tp
             parts.append(tp)
-            current_text = None  # reset text accumulator
+            current_text = None
             yield ProcessorEvent(type="tool_start", data={
                 "tool": event.tool_name,
                 "call_id": event.tool_call_id,
@@ -147,16 +146,18 @@ async def process_stream(
             yield ProcessorEvent(type="error", data={"message": event.error})
             break
 
-    # Execute tool calls (parallel when possible)
+    # Execute tool calls
     if tool_calls_pending:
         has_failure = False
         blocked = False
         doom_detected = False
+        cache = ctx.loop_guard.cache if ctx.loop_guard else None
 
-        # Phase 1: Pre-flight checks (serial) — permission + doom loop detection
-        executable: list[tuple[ToolPart, Any, ToolContext]] = []  # (tp, tool_impl, tool_ctx)
+        # Phase 1: Pre-flight — permission, doom loop, cache check
+        executable: list[tuple[ToolPart, Any, ToolContext]] = []
+        cached_results: list[tuple[ToolPart, str]] = []
+
         for tp in tool_calls_pending:
-            # Use structured error for unknown tools
             try:
                 tool = tool_registry.get_or_raise(tp.tool)
             except ToolNotFoundError as e:
@@ -165,7 +166,6 @@ async def process_stream(
                 tp.state["is_error"] = True
                 tp.time_completed = int(time.time() * 1000)
                 has_failure = True
-                logger.warn("tool not found", tool=tp.tool)
                 yield ProcessorEvent(type="tool_done", data={
                     "tool": tp.tool, "call_id": tp.tool_call_id,
                     "status": "error", "output": str(e), "input": {},
@@ -203,9 +203,9 @@ async def process_stream(
                     })
                     continue
                 except Exception:
-                    pass  # Permission manager not connected, allow
+                    pass
 
-            # Doom loop detection: check if same tool+input repeated
+            # Doom loop detection (legacy, loop_guard has more advanced detection)
             recent_tool_parts = [p for p in ctx.parts if isinstance(p, ToolPart) and p.tool == tp.tool]
             if len(recent_tool_parts) >= DOOM_LOOP_THRESHOLD:
                 last_inputs = [json.dumps(p.state.get("input", {}), sort_keys=True) for p in recent_tool_parts[-DOOM_LOOP_THRESHOLD:]]
@@ -224,15 +224,46 @@ async def process_stream(
                     })
                     break
 
+            # Cache check — skip execution if we have a cached result
+            if cache:
+                cached = cache.get(tp.tool, tp.state.get("input", {}))
+                if cached is not None:
+                    cached_results.append((tp, cached))
+                    logger.debug("cache hit", tool=tp.tool)
+                    continue
+
             executable.append((tp, tool, tool_ctx))
 
         if doom_detected:
             yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
             return
 
-        # Phase 2: Execute all tools in parallel via asyncio.gather
+        # Phase 1.5: Serve cached results immediately
+        for tp, cached_output in cached_results:
+            tp.state["status"] = "completed"
+            tp.state["output"] = cached_output
+            tp.state["is_error"] = False
+            tp.state["metadata"] = {"cached": True}
+            tp.time_completed = int(time.time() * 1000)
+            ctx.parts.append(tp)
+            yield ProcessorEvent(type="tool_done", data={
+                "tool": tp.tool, "call_id": tp.tool_call_id,
+                "status": "completed", "output": cached_output[:500],
+                "input": tp.state.get("input", {}),
+            })
+
+        # Phase 2: Execute tools with read/write separation
         if executable:
-            # Yield running events for all tools before execution starts
+            # Separate read-only tools from mutating tools
+            readonly_tasks: list[tuple[ToolPart, Any, ToolContext]] = []
+            mutating_tasks: list[tuple[ToolPart, Any, ToolContext]] = []
+            for tp, tool_impl, tool_ctx in executable:
+                if tp.tool in MUTATING_TOOLS:
+                    mutating_tasks.append((tp, tool_impl, tool_ctx))
+                else:
+                    readonly_tasks.append((tp, tool_impl, tool_ctx))
+
+            # Yield running events
             for tp, _, _ in executable:
                 tp.state["status"] = "running"
                 yield ProcessorEvent(type="tool_running", data={
@@ -240,96 +271,24 @@ async def process_stream(
                     "input": tp.state.get("input", {}),
                 })
 
-            async def _run_tool(tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext) -> tuple[bool, ProcessorEvent]:
-                """Execute a single tool. Returns (success, event)."""
-                try:
-                    result = await tool_impl.execute(tp.state.get("input", {}), tool_ctx)
+            all_results: list[tuple[bool, ProcessorEvent]] = []
 
-                    # Handle structured ToolResult with is_error flag
-                    if result.is_error:
-                        tp.state["status"] = "error"
-                        tp.state["is_error"] = True
-                    else:
-                        tp.state["status"] = "completed"
-                        tp.state["is_error"] = False
+            # Run read-only tools in parallel
+            if readonly_tasks:
+                ro_results = await asyncio.gather(
+                    *[_run_tool_with_retry(tp, impl, tctx, ctx) for tp, impl, tctx in readonly_tasks],
+                    return_exceptions=False,
+                )
+                all_results.extend(ro_results)
 
-                    tp.state["output"] = result.output
-                    tp.state["title"] = result.title
-                    tp.state["metadata"] = result.metadata
+            # Run mutating tools sequentially (order matters)
+            for tp, impl, tctx in mutating_tasks:
+                result = await _run_tool_with_retry(tp, impl, tctx, ctx)
+                all_results.append(result)
 
-                    # Store display separately (not sent to model)
-                    if result.display:
-                        tp.state["display"] = result.display
-                    # Store message for richer context
-                    if result.message:
-                        tp.state["message"] = result.message
-
-                    tp.time_completed = int(time.time() * 1000)
-                    ctx.parts.append(tp)
-                    await ctx.bus.publish(PART_UPDATED, {
-                        "session_id": ctx.session_id,
-                        "part": {
-                            "id": tp.id,
-                            "tool": tp.tool,
-                            "status": tp.state["status"],
-                            "is_error": result.is_error,
-                        },
-                    })
-                    event = ProcessorEvent(type="tool_done", data={
-                        "tool": tp.tool, "call_id": tp.tool_call_id,
-                        "status": tp.state["status"],
-                        "output": result.output[:500],
-                        "input": tp.state.get("input", {}),
-                    })
-                    return not result.is_error, event
-
-                except ToolValidateError as e:
-                    tp.state["status"] = "error"
-                    tp.state["output"] = str(e)
-                    tp.state["is_error"] = True
-                    tp.time_completed = int(time.time() * 1000)
-                    logger.warn("tool validation failed", tool=tp.tool, error=str(e))
-                    event = ProcessorEvent(type="tool_done", data={
-                        "tool": tp.tool, "call_id": tp.tool_call_id,
-                        "status": "error", "output": str(e),
-                        "input": tp.state.get("input", {}),
-                    })
-                    return False, event
-
-                except ToolBaseError as e:
-                    tp.state["status"] = "error"
-                    tp.state["output"] = str(e)
-                    tp.state["is_error"] = True
-                    tp.time_completed = int(time.time() * 1000)
-                    logger.error("tool error", tool=tp.tool, error=str(e))
-                    event = ProcessorEvent(type="tool_done", data={
-                        "tool": tp.tool, "call_id": tp.tool_call_id,
-                        "status": "error", "output": str(e),
-                        "input": tp.state.get("input", {}),
-                    })
-                    return False, event
-
-                except Exception as e:
-                    tp.state["status"] = "error"
-                    tp.state["output"] = str(ToolRuntimeError(tp.tool, e))
-                    tp.state["is_error"] = True
-                    tp.time_completed = int(time.time() * 1000)
-                    logger.error("tool execution failed", tool=tp.tool, error=str(e))
-                    event = ProcessorEvent(type="tool_done", data={
-                        "tool": tp.tool, "call_id": tp.tool_call_id,
-                        "status": "error", "output": str(ToolRuntimeError(tp.tool, e)),
-                        "input": tp.state.get("input", {}),
-                    })
-                    return False, event
-
-            results = await asyncio.gather(
-                *[_run_tool(tp, impl, tctx) for tp, impl, tctx in executable],
-                return_exceptions=False,
-            )
-
-            # Yield tool_done events in order as tools complete
+            # Yield results and track failures
             all_success = True
-            for success, tool_event in results:
+            for success, tool_event in all_results:
                 yield tool_event
                 if not success:
                     all_success = False
@@ -351,26 +310,140 @@ async def process_stream(
             yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
             return
 
-        yield ProcessorEvent(type="finish", data={"result": "continue", "parts": parts})
+        yield ProcessorEvent(type="finish", data={
+            "result": "continue", "parts": parts, "text_length": text_length,
+        })
         return
 
     if ctx.should_break:
-        yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
+        yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts, "text_length": text_length})
         return
 
-    yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
+    yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts, "text_length": text_length})
 
 
-# Keep backward-compatible wrapper for any code that uses the old API
+async def _run_tool_with_retry(
+    tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext, ctx: ProcessorContext,
+) -> tuple[bool, ProcessorEvent]:
+    """Execute a tool with retry logic for transient failures."""
+    guard = ctx.loop_guard
+    max_retries = guard.config.max_retries if guard else 0
+    last_error = ""
+
+    for attempt in range(max_retries + 1):
+        success, event = await _run_tool(tp, tool_impl, tool_ctx, ctx)
+
+        if success:
+            # Record in loop guard and cache
+            if guard:
+                guard.record_tool_call(
+                    tp.tool, tp.state.get("input", {}),
+                    output=tp.state.get("output", ""), is_error=False,
+                )
+            return success, event
+
+        last_error = tp.state.get("output", "")
+
+        # Check if should retry
+        if guard and attempt < max_retries and guard.should_retry(tp.tool, last_error, attempt):
+            logger.info("retrying tool", tool=tp.tool, attempt=attempt + 1, error=last_error[:100])
+            # Reset tool state for retry
+            tp.state["status"] = "running"
+            tp.state.pop("output", None)
+            tp.state.pop("is_error", None)
+            await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+            continue
+
+        # No retry — record failure and return
+        if guard:
+            guard.record_tool_call(
+                tp.tool, tp.state.get("input", {}),
+                output=last_error, is_error=True,
+            )
+        return success, event
+
+    # Should not reach here, but just in case
+    if guard:
+        guard.record_tool_call(tp.tool, tp.state.get("input", {}), output=last_error, is_error=True)
+    return False, ProcessorEvent(type="tool_done", data={
+        "tool": tp.tool, "call_id": tp.tool_call_id,
+        "status": "error", "output": f"Failed after {max_retries + 1} attempts: {last_error}",
+        "input": tp.state.get("input", {}),
+    })
+
+
+async def _run_tool(
+    tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext, ctx: ProcessorContext,
+) -> tuple[bool, ProcessorEvent]:
+    """Execute a single tool. Returns (success, event)."""
+    try:
+        result = await tool_impl.execute(tp.state.get("input", {}), tool_ctx)
+
+        if result.is_error:
+            tp.state["status"] = "error"
+            tp.state["is_error"] = True
+        else:
+            tp.state["status"] = "completed"
+            tp.state["is_error"] = False
+
+        tp.state["output"] = result.output
+        tp.state["title"] = result.title
+        tp.state["metadata"] = result.metadata
+
+        if result.display:
+            tp.state["display"] = result.display
+        if result.message:
+            tp.state["message"] = result.message
+
+        tp.time_completed = int(time.time() * 1000)
+        ctx.parts.append(tp)
+        await ctx.bus.publish(PART_UPDATED, {
+            "session_id": ctx.session_id,
+            "part": {
+                "id": tp.id, "tool": tp.tool,
+                "status": tp.state["status"], "is_error": result.is_error,
+            },
+        })
+        event = ProcessorEvent(type="tool_done", data={
+            "tool": tp.tool, "call_id": tp.tool_call_id,
+            "status": tp.state["status"],
+            "output": result.output[:500],
+            "input": tp.state.get("input", {}),
+        })
+        return not result.is_error, event
+
+    except ToolValidateError as e:
+        return _tool_error(tp, str(e), "tool validation failed")
+
+    except ToolBaseError as e:
+        return _tool_error(tp, str(e), "tool error")
+
+    except Exception as e:
+        return _tool_error(tp, str(ToolRuntimeError(tp.tool, e)), "tool execution failed")
+
+
+def _tool_error(tp: ToolPart, error_msg: str, log_msg: str) -> tuple[bool, ProcessorEvent]:
+    """Helper to handle tool errors uniformly."""
+    tp.state["status"] = "error"
+    tp.state["output"] = error_msg
+    tp.state["is_error"] = True
+    tp.time_completed = int(time.time() * 1000)
+    logger.error(log_msg, tool=tp.tool, error=error_msg[:200])
+    event = ProcessorEvent(type="tool_done", data={
+        "tool": tp.tool, "call_id": tp.tool_call_id,
+        "status": "error", "output": error_msg,
+        "input": tp.state.get("input", {}),
+    })
+    return False, event
+
+
+# Backward-compatible wrapper
 async def process(
     ctx: ProcessorContext,
     stream_input: llmmod.StreamInput,
     messages_for_tools: list[Any] | None = None,
 ) -> tuple[Result, list[Part]]:
-    """Backward-compatible wrapper around process_stream().
-
-    Consumes the entire stream and returns (result, parts) as before.
-    """
+    """Backward-compatible wrapper around process_stream()."""
     result: Result = "stop"
     parts: list[Part] = []
     async for event in process_stream(ctx, stream_input, messages_for_tools):
@@ -386,7 +459,6 @@ def build_tool_results_messages(parts: list[Part]) -> list[dict[str, Any]]:
     if not tool_calls:
         return []
 
-    # Assistant message with tool_calls
     assistant_tool_calls = []
     for tp in tool_calls:
         assistant_tool_calls.append({
@@ -397,7 +469,6 @@ def build_tool_results_messages(parts: list[Part]) -> list[dict[str, Any]]:
 
     messages: list[dict[str, Any]] = []
 
-    # Text + tool_calls in one assistant message
     text_parts = [p for p in parts if isinstance(p, TextPart)]
     text_content = "".join(p.content for p in text_parts)
     messages.append({
@@ -406,10 +477,8 @@ def build_tool_results_messages(parts: list[Part]) -> list[dict[str, Any]]:
         "tool_calls": assistant_tool_calls,
     })
 
-    # Tool results — only send output (not display) to the model
     for tp in tool_calls:
         output = tp.state.get("output", "")
-        # Append message field if present for richer context
         tool_message = tp.state.get("message", "")
         if tool_message:
             output = f"{output}\n\n{tool_message}"

@@ -3,9 +3,11 @@
 This is the core orchestrator equivalent to src/session/prompt.ts.
 Flow: validate → create messages → build system prompt → load tools → run agentic loop
 
-Streaming: Events are yielded in real-time as the LLM generates text and tools execute.
-The CLI receives text_delta events for incremental text rendering and tool events
-for interleaved tool display — matching the experience of Claude Code / Cursor.
+Enhanced with:
+- Three-layer loop guard (hard limit, pattern detection, near-limit intelligence)
+- Per-step atomic state with checkpoint data
+- Result caching for read-only tool deduplication
+- Guard verdict events for CLI display
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from opencode.provider import provider as providermod
 from opencode.session import compaction
 from opencode.session import llm as llmmod
 from opencode.session import processor as proc
+from opencode.session.loop_guard import GuardAction, LoopGuard, LoopGuardConfig
 from opencode.session.message import (
     Part,
     TextPart,
@@ -64,9 +67,11 @@ class PromptEvent:
       - "tool_done":  Tool finished. data["tool"], data["status"], data["output"], data["input"].
       - "error":      Error occurred. data["message"].
       - "compact":    Context compaction in progress.
+      - "guard_warn": Loop guard warning. data["reason"], data["layer"].
+      - "guard_stop": Loop guard stopped the loop. data["reason"], data["layer"].
       - "done":       All iterations finished. data has tokens/cost/context stats.
     """
-    type: str  # "text_delta", "tool_start", "tool_running", "tool_done", "done", "error", etc.
+    type: str
     data: dict[str, Any] = field(default_factory=dict)
 
 
@@ -80,18 +85,16 @@ async def prompt(
 
     This is the main entry point for the agentic loop.
     Yields PromptEvent in real-time as the model generates text and executes tools.
-    Text deltas and tool events are interleaved — the CLI can render them immediately.
     """
     session_id = prompt_input.session_id
 
-    # 1. Check busy
     if _busy.get(session_id):
         yield PromptEvent(type="error", data={"message": f"Session {session_id} is busy"})
         return
 
     _busy[session_id] = True
     try:
-        # 2. Resolve model
+        # Resolve model
         if prompt_input.model:
             provider_id, model_id = providermod.parse_model(prompt_input.model)
         else:
@@ -103,33 +106,33 @@ async def prompt(
             yield PromptEvent(type="error", data={"message": f"Model not found: {e}"})
             return
 
-        # 3. Resolve agent
+        # Resolve agent
         agent_name = prompt_input.agent or await agentmod.default_agent()
         agent = await agentmod.get(agent_name)
         if not agent:
             yield PromptEvent(type="error", data={"message": f"Agent not found: {agent_name}"})
             return
 
-        # 4. Build system prompt
+        # Build system prompt
         system = build_system(model=model, agent_prompt=agent.prompt, instructions=None)
         if prompt_input.system:
             system.append(prompt_input.system)
 
-        # 5. Load tools
+        # Load tools
         tool_registry.register_builtins()
         tools = tool_registry.to_llm_tools()
 
-        # 6. Build user message content
+        # Build user message content
         user_text = ""
         for part in prompt_input.parts:
             if part.get("type") == "text":
                 user_text += part.get("content", "")
 
-        # 7. Build conversation messages
+        # Build conversation messages
         messages: list[dict[str, Any]] = list(history or [])
         messages.append({"role": "user", "content": user_text})
 
-        # 8. Create assistant message
+        # Create assistant message
         user_msg = create_user_message(session_id, prompt_input.message_id)
         assistant_msg = create_assistant_message(
             session_id, user_msg.id, provider_id, model_id, agent_name,
@@ -141,22 +144,56 @@ async def prompt(
             "agent": agent_name,
         })
 
-        # 9. Agentic loop
+        # Initialize loop guard with three-layer protection
+        max_iterations = agent.steps or 50
+        guard_config = LoopGuardConfig(max_iterations=max_iterations)
+        guard = LoopGuard(config=guard_config)
+
+        # Agentic loop with loop guard
         ctx = proc.ProcessorContext(
             session_id=session_id,
             model=model,
             assistant_message=assistant_msg,
             bus=bus,
+            loop_guard=guard,
         )
 
         all_parts: list[Part] = []
-        max_iterations = agent.steps or 50
         iterations_done = 0
+        stop_reason = ""
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
 
-            # Check if context needs compaction before sending to LLM
+            # === Loop Guard Check (BEFORE each iteration) ===
+            verdict = guard.check(iteration)
+
+            if verdict.action == GuardAction.FORCE_STOP:
+                logger.warn("guard force stop", reason=verdict.reason, layer=verdict.layer)
+                yield PromptEvent(type="guard_stop", data={
+                    "reason": verdict.reason, "layer": verdict.layer,
+                })
+                stop_reason = verdict.reason
+                break
+
+            if verdict.action == GuardAction.STOP:
+                logger.info("guard stop", reason=verdict.reason, layer=verdict.layer)
+                yield PromptEvent(type="guard_stop", data={
+                    "reason": verdict.reason, "layer": verdict.layer,
+                })
+                stop_reason = verdict.reason
+                break
+
+            if verdict.action == GuardAction.WARN:
+                logger.info("guard warn", reason=verdict.reason, layer=verdict.layer)
+                yield PromptEvent(type="guard_warn", data={
+                    "reason": verdict.reason, "layer": verdict.layer,
+                })
+
+            # === Step begin (atomic state) ===
+            step = guard.begin_step(iteration)
+
+            # Context compaction check
             context_limit = model.limit.context if model.limit.context > 0 else 0
             if context_limit > 0 and compaction.should_compact(
                 messages=messages, model_context=context_limit
@@ -180,9 +217,10 @@ async def prompt(
                 api_base=model.api.url or None,
             )
 
-            # Stream events from processor in real-time
+            # Stream events from processor
             result: proc.Result = "stop"
             iteration_parts: list[Part] = []
+            iter_text_length = 0
 
             async for event in proc.process_stream(ctx, stream_input):
                 if event.type == "text_delta":
@@ -199,10 +237,24 @@ async def prompt(
 
                 elif event.type == "error":
                     yield PromptEvent(type="error", data=event.data)
+                    step.fail(event.data.get("message", "unknown"))
 
                 elif event.type == "finish":
                     result = event.data.get("result", "stop")
                     iteration_parts = event.data.get("parts", [])
+                    iter_text_length = event.data.get("text_length", 0)
+
+            # === Step complete ===
+            if step.status.value != "failed":
+                guard.complete_step(step, text_length=iter_text_length)
+                # Record tool calls for this step
+                for p in iteration_parts:
+                    if isinstance(p, ToolPart):
+                        step.tool_calls.append({
+                            "tool": p.tool,
+                            "status": p.state.get("status", "?"),
+                            "cached": p.state.get("metadata", {}).get("cached", False),
+                        })
 
             all_parts.extend(iteration_parts)
 
@@ -210,7 +262,6 @@ async def prompt(
                 break
 
             if result == "continue":
-                # Add tool results to messages for next iteration
                 tool_messages = proc.build_tool_results_messages(iteration_parts)
                 messages.extend(tool_messages)
                 continue
@@ -225,7 +276,7 @@ async def prompt(
                 yield PromptEvent(type="compact", data={"session_id": session_id})
                 continue
 
-        # 10. Finalize — persist assistant message and parts
+        # Finalize
         assistant_msg.time_completed = int(time.time() * 1000)
         save_message(assistant_msg)
         save_parts(all_parts)
@@ -247,7 +298,9 @@ async def prompt(
             },
             "iterations": iterations_done,
             "parts": len(all_parts),
-            "messages": messages,  # Full conversation including tool calls/results
+            "messages": messages,
+            "stop_reason": stop_reason,
+            "checkpoint": guard.checkpoint,
         })
 
     except Exception as e:

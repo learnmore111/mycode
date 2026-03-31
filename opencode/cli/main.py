@@ -627,6 +627,25 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                             (event.data.get("message", "unknown"), "red"),
                         ))
 
+                    elif event.type == "guard_warn":
+                        reason = event.data.get("reason", "")
+                        if live.is_started:
+                            live.stop()
+                        console.print(Text(f"  ⚠ {reason}", style="yellow dim"))
+                        # Re-start spinner for continued execution
+                        live = Live(Spinner("dots", ""), console=console, refresh_per_second=10, transient=True)
+                        live.start()
+                        spinner = Spinner("dots", "")
+                        spinner.text = Text("Thinking...", style="dim italic")
+                        live.update(spinner)
+
+                    elif event.type == "guard_stop":
+                        reason = event.data.get("reason", "")
+                        if live.is_started:
+                            live.stop()
+                        _flush_text()
+                        console.print(Text(f"  ■ Loop stopped: {reason}", style="dark_orange"))
+
                     elif event.type == "compact":
                         if not live.is_started:
                             live.start()
