@@ -193,12 +193,17 @@ class ToolInfo(ABC):
         ...
 
     def to_llm_tool(self) -> dict[str, Any]:
-        """Convert to litellm/OpenAI function calling format."""
+        """Convert to litellm/OpenAI function calling format.
+
+        Uses the .md description file from descriptions/ if available,
+        falling back to the class-level description attribute.
+        """
+        desc = load_description(self.id) or self.description
         return {
             "type": "function",
             "function": {
                 "name": self.id,
-                "description": self.description,
+                "description": desc,
                 "parameters": self.parameters_schema(),
             },
         }

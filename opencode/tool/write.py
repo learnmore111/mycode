@@ -27,13 +27,24 @@ class WriteTool(CallableTool[WriteParams]):
         base = inst.directory if inst else os.getcwd()
         full = os.path.join(base, file_path) if not os.path.isabs(file_path) else file_path
         try:
+            existed = os.path.exists(full)
+            old_lines = 0
+            if existed:
+                old_lines = Path(full).read_text(encoding="utf-8", errors="replace").count("\n") + 1
+
             Path(full).parent.mkdir(parents=True, exist_ok=True)
             Path(full).write_text(content, encoding="utf-8")
-            lines = content.count("\n") + 1
+            new_lines = content.count("\n") + 1
+
+            if existed:
+                msg = f"Overwrote {file_path} ({old_lines} → {new_lines} lines)"
+            else:
+                msg = f"Created {file_path} ({new_lines} lines)"
+
             return ToolOk(
-                f"Wrote {lines} lines to {file_path}",
+                msg,
                 title=f"Write {file_path}",
-                metadata={"success": True, "lines": lines},
+                metadata={"success": True, "lines": new_lines, "created": not existed},
             )
         except Exception as e:
             return ToolError(f"Error: {e}", title=f"Write {file_path}", metadata={"success": False})

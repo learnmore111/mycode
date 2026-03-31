@@ -1,4 +1,9 @@
-"""Task tool — spawn a sub-agent for complex multi-step work. Equivalent to src/tool/task.ts."""
+"""Task tool — spawn a sub-agent for complex multi-step work. Equivalent to src/tool/task.ts.
+
+Key improvement: supports a multi-turn agentic loop (up to MAX_TURNS) so the
+sub-agent can perform multi-step reasoning (e.g. search → read → analyze)
+instead of being limited to a single LLM call.
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +17,11 @@ from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
 from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 
+MAX_TURNS = 8  # Maximum agentic loop iterations to prevent runaway
+
+# Tools excluded from sub-agent to prevent recursion or side effects
+_EXCLUDED_TOOLS = frozenset({"task", "todo", "question", "batch"})
+
 
 class TaskParams(BaseModel):
     """Parameters for the task tool."""
@@ -22,7 +32,8 @@ class TaskParams(BaseModel):
 class TaskTool(CallableTool[TaskParams]):
     id = "task"
     description = (
-        "Launch a sub-agent to handle a complex task. The sub-agent runs independently with its own context. "
+        "Launch a sub-agent to handle a complex task. The sub-agent runs independently with its own context "
+        "and can perform multi-step reasoning (search, read, edit, etc.). "
         "Use this when you need to research, explore, or execute multi-step work in parallel."
     )
 
@@ -41,50 +52,92 @@ class TaskTool(CallableTool[TaskParams]):
             return ToolError(f"Model error: {e}", title=f"Task ({agent_name})")
 
         system = build_system(agent_prompt=agent.prompt)
-        messages = [{"role": "user", "content": description}]
-        tools = tool_registry.to_llm_tools()
-
-        # Filter tools for sub-agent (no task recursion, no todo)
-        tools = [t for t in tools if t["function"]["name"] not in ("task", "todo", "question")]
-
-        stream_input = llmmod.StreamInput(
-            model=model,
-            messages=messages,
-            system=system,
-            tools=tools if model.capabilities.toolcall else None,
-            temperature=agent.temperature,
-        )
+        messages: list[dict[str, Any]] = [{"role": "user", "content": description}]
+        tools = [t for t in tool_registry.to_llm_tools() if t["function"]["name"] not in _EXCLUDED_TOOLS]
 
         builder = ToolResultBuilder(max_chars=50_000)
-        tool_results: list[str] = []
+        total_tool_calls = 0
 
-        # Run a simple single-pass (no agentic loop for sub-agent to avoid deep recursion)
-        async for event in llmmod.stream(stream_input):
-            if isinstance(event, llmmod.TextDelta):
-                builder.add(event.text)
-            elif isinstance(event, llmmod.ToolCallDelta):
-                # Execute tool calls inline
-                tool_impl = tool_registry.get(event.tool_name)
+        for turn in range(MAX_TURNS):
+            stream_input = llmmod.StreamInput(
+                model=model,
+                messages=messages,
+                system=system,
+                tools=tools if model.capabilities.toolcall else None,
+                temperature=agent.temperature,
+            )
+
+            # Accumulate this turn's response
+            text_parts: list[str] = []
+            pending_tool_calls: list[llmmod.ToolCallDelta] = []
+            finish_reason = "stop"
+
+            async for event in llmmod.stream(stream_input):
+                if isinstance(event, llmmod.TextDelta):
+                    text_parts.append(event.text)
+                elif isinstance(event, llmmod.ToolCallDelta):
+                    pending_tool_calls.append(event)
+                elif isinstance(event, llmmod.FinishEvent):
+                    finish_reason = event.reason
+                elif isinstance(event, llmmod.ErrorEvent):
+                    builder.add(f"\nError: {event.error}")
+                    return ToolOk(
+                        builder.build() or f"Sub-agent error: {event.error}",
+                        title=f"Task: {description[:60]}",
+                        metadata={"agent": agent_name, "tool_calls": total_tool_calls, "turns": turn + 1},
+                    )
+
+            assistant_text = "".join(text_parts)
+            if assistant_text:
+                builder.add(assistant_text)
+
+            # If no tool calls, the sub-agent is done
+            if not pending_tool_calls or finish_reason != "tool-calls":
+                break
+
+            # Build the assistant message with tool_calls for the conversation
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": assistant_text or None}
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.tool_call_id,
+                    "type": "function",
+                    "function": {"name": tc.tool_name, "arguments": tc.args},
+                }
+                for tc in pending_tool_calls
+            ]
+            messages.append(assistant_msg)
+
+            # Execute tool calls and add results to messages
+            for tc in pending_tool_calls:
+                total_tool_calls += 1
+                tool_impl = tool_registry.get(tc.tool_name)
+                tool_output = ""
                 if tool_impl:
                     try:
-                        tool_args = json.loads(event.args) if event.args else {}
+                        tool_args = json.loads(tc.args) if tc.args else {}
                         result = await tool_impl.execute(tool_args, ctx)
-                        tool_results.append(f"[{event.tool_name}] {result.output[:500]}")
+                        tool_output = result.output
                     except Exception as e:
-                        tool_results.append(f"[{event.tool_name}] Error: {e}")
-            elif isinstance(event, llmmod.ErrorEvent):
-                builder.add(f"\nError: {event.error}")
+                        tool_output = f"Error: {e}"
+                else:
+                    tool_output = f"Unknown tool: {tc.tool_name}"
 
-        if tool_results:
-            builder.add_heading("Tool Results")
-            builder.add("\n".join(tool_results))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.tool_call_id,
+                    "content": tool_output,
+                })
 
         output = builder.build()
         return ToolOk(
             output or "No output from sub-agent.",
             title=f"Task: {description[:60]}",
-            metadata={"agent": agent_name, "tool_calls": len(tool_results)},
+            metadata={"agent": agent_name, "tool_calls": total_tool_calls, "turns": min(turn + 1, MAX_TURNS)},
         )
+
+
+# Need this import at module level for type annotation in the loop
+from typing import Any  # noqa: E402
 
 
 tool = TaskTool()

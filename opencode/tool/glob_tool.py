@@ -31,12 +31,13 @@ class GlobTool(CallableTool[GlobParams]):
         raw_matches = sorted(globmod.glob(pattern, root_dir=base, recursive=True))
         # Filter out ignored directories (.venv, __pycache__, node_modules, etc.)
         matches = [m for m in raw_matches if not should_ignore_path(m)]
-        if len(matches) > 500:
+        total_count = len(matches)
+        if total_count > 500:
             matches = matches[:500]
-            output = "\n".join(matches) + f"\n\n... truncated (500 of {len(matches)} matches)"
+            output = "\n".join(matches) + f"\n\n... truncated (showing 500 of {total_count} matches)"
         else:
             output = "\n".join(matches) if matches else "No files found."
-        return ToolOk(output, title=f"Glob {pattern}", metadata={"count": len(matches)})
+        return ToolOk(output, title=f"Glob {pattern}", metadata={"count": total_count})
 
 
 tool = GlobTool()

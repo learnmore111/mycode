@@ -90,16 +90,16 @@ class BatchTool(CallableTool[BatchParams]):
             )
 
         # Execute all validated calls in parallel
-        async def _execute_one(idx: int, call_item: BatchCallItem, tool_impl: object) -> str:
+        async def _execute_one(idx: int, call_item: BatchCallItem, tool_impl: object) -> tuple[bool, str]:
             tool_name = call_item.tool
             tool_args = call_item.args
             try:
                 from opencode.tool.base import ToolInfo
                 assert isinstance(tool_impl, ToolInfo)
                 result = await tool_impl.execute(tool_args, ctx)
-                return f"[{idx}:{tool_name}] {result.output}"
+                return (not result.is_error, f"[{idx}:{tool_name}] {result.output}")
             except Exception as e:
-                return f"[{idx}:{tool_name}] Error: {e}"
+                return (False, f"[{idx}:{tool_name}] Error: {e}")
 
         tasks = [
             _execute_one(i, call_item, impl)
@@ -107,7 +107,7 @@ class BatchTool(CallableTool[BatchParams]):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=False)
 
-        succeeded = sum(1 for r in results if "Error:" not in r)
+        succeeded = sum(1 for ok, _ in results if ok)
         failed = len(results) - succeeded
 
         builder = ToolResultBuilder()
@@ -116,7 +116,7 @@ class BatchTool(CallableTool[BatchParams]):
             builder.add("\n".join(errors))
             builder.add("\n")
         builder.add_heading("Results")
-        builder.add("\n".join(results))
+        builder.add("\n".join(text for _, text in results))
 
         return ToolOk(
             builder.build(),
