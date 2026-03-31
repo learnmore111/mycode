@@ -10,6 +10,9 @@ from opencode.session.memory.memory import (
     SessionSummary,
     create_session_memory,
     load_recent_notes,
+    memory_age_days,
+    memory_age_text,
+    memory_freshness_note,
 )
 
 __all__ = [
@@ -18,4 +21,7 @@ __all__ = [
     "SessionSummary",
     "create_session_memory",
     "load_recent_notes",
+    "memory_age_days",
+    "memory_age_text",
+    "memory_freshness_note",
 ]

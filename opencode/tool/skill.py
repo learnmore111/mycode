@@ -1,4 +1,9 @@
-"""Skill tool — load and use skill files (.md instructions). Equivalent to src/tool/skill.ts."""
+"""Skill tool — load and use skill files (.md instructions). Equivalent to src/tool/skill.ts.
+
+Enhanced with:
+- User home directory skill search (~/.opencode/skills/)
+- Lists available skills when name not found
+"""
 from __future__ import annotations
 
 import os
@@ -22,14 +27,22 @@ class SkillTool(CallableTool[SkillParams]):
         "Skills are markdown files in .opencode/skills/ that provide domain-specific knowledge."
     )
 
+    def is_read_only(self, args=None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args=None) -> bool:
+        return True
+
     async def call(self, params: SkillParams, ctx: ToolContext) -> ToolResult:
         name = params.name
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
 
+        # Search directories: project-local + user home
         search_dirs = [
             os.path.join(base, ".opencode", "skills"),
             os.path.join(base, ".opencode", "skill"),
+            os.path.join(Path.home(), ".opencode", "skills"),
         ]
 
         for d in search_dirs:
@@ -43,11 +56,36 @@ class SkillTool(CallableTool[SkillParams]):
                         metadata={"path": p, "found": True},
                     )
 
+        # Not found — list available skills as hint
+        available = _list_available_skills(search_dirs)
+        hint = ""
+        if available:
+            hint = f"\n\nAvailable skills: {', '.join(sorted(available))}"
+
         return ToolError(
-            f"Skill '{name}' not found. Searched in .opencode/skills/",
+            f"Skill '{name}' not found. Searched in .opencode/skills/ and ~/.opencode/skills/{hint}",
             title=f"Skill: {name}",
-            metadata={"found": False},
+            metadata={"found": False, "available": sorted(available) if available else []},
         )
+
+
+def _list_available_skills(search_dirs: list[str]) -> set[str]:
+    """List all available skill names across search directories."""
+    skills: set[str] = set()
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            fp = os.path.join(d, f)
+            if os.path.isfile(fp):
+                name = f
+                for ext in [".md", ".txt"]:
+                    if name.endswith(ext):
+                        name = name[:-len(ext)]
+                        break
+                if name:
+                    skills.add(name)
+    return skills
 
 
 tool = SkillTool()

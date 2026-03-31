@@ -633,3 +633,45 @@ def load_recent_notes(project_path: str, limit: int = 5) -> list[dict[str, Any]]
     """Load recent session summaries for a project."""
     memory = SessionMemory(project_path)
     return memory.load_recent_sessions(limit)
+
+
+# ---------------------------------------------------------------------------
+# Memory freshness management (inspired by memdir/memoryAge.ts)
+# ---------------------------------------------------------------------------
+
+
+def memory_age_days(mtime_ms: float) -> int:
+    """Calculate how many days old a memory is. 0=today, 1=yesterday, etc."""
+    import datetime
+    now = datetime.datetime.now()
+    mem_time = datetime.datetime.fromtimestamp(mtime_ms / 1000)
+    delta = now.date() - mem_time.date()
+    return max(0, delta.days)
+
+
+def memory_age_text(mtime_ms: float) -> str:
+    """Human-readable age string for a memory."""
+    days = memory_age_days(mtime_ms)
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return f"{days} days ago"
+
+
+def memory_freshness_note(mtime_ms: float) -> str | None:
+    """Generate a freshness warning for memories older than 1 day.
+
+    Returns None for fresh memories, or a warning string for stale ones.
+    Older memories may reference outdated code state.
+    """
+    days = memory_age_days(mtime_ms)
+    if days <= 1:
+        return None
+    age = memory_age_text(mtime_ms)
+    return (
+        f"<system-reminder>This memory is {age}. "
+        f"Memories are point-in-time observations, not live state — "
+        f"claims about code behavior or file:line citations may be outdated. "
+        f"Verify against current code before asserting as fact.</system-reminder>"
+    )

@@ -1,4 +1,10 @@
-"""Message data models. Equivalent to src/session/message-v2.ts."""
+"""Message data models. Equivalent to src/session/message-v2.ts.
+
+Enhanced with:
+- SystemMessage (info/warning/error/compact_boundary subtypes)
+- Message metadata: isMeta (hidden from UI but sent to model), origin tracking
+- Message normalization pipeline (normalizeMessagesForAPI)
+"""
 from __future__ import annotations
 
 import json
@@ -7,6 +13,26 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from opencode.util import ids
+
+
+# ---------------------------------------------------------------------------
+# Message origin tracking
+# ---------------------------------------------------------------------------
+
+MessageOrigin = Literal[
+    "human",           # User typed in REPL
+    "api",             # SDK/API call
+    "cron",            # Scheduled trigger
+    "bridge",          # IDE bridge
+    "teammate",        # From another agent in a team
+    "system",          # System-generated (recovery, continuation)
+    "proactive",       # Proactive agent suggestion
+]
+
+
+# ---------------------------------------------------------------------------
+# Part types
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -52,12 +78,20 @@ class FilePart:
 
 Part = TextPart | ToolPart | ReasoningPart | FilePart
 
+
+# ---------------------------------------------------------------------------
+# Message types
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class UserMessage:
     id: str = ""
     session_id: str = ""
     role: Literal["user"] = "user"
     time_created: int = 0
+    is_meta: bool = False      # Hidden from UI, visible to model (recovery msgs, continuations)
+    origin: MessageOrigin = "human"
 
 @dataclass
 class AssistantMessage:
@@ -79,21 +113,74 @@ class AssistantMessage:
     cost: float = 0.0
     time_created: int = 0
     time_completed: int | None = None
+    is_api_error: bool = False  # Marks API errors (rate limit, prompt too long)
+    duration_ms: int = 0        # API call duration
 
-MessageInfo = UserMessage | AssistantMessage
+
+@dataclass
+class SystemMessage:
+    """System-level message for internal state tracking.
+
+    Subtypes:
+    - info:             Informational (e.g. model switch notification)
+    - warning:          Warning (e.g. approaching token limit)
+    - error:            Error (e.g. API failure)
+    - compact_boundary: Marks where compaction occurred (messages after this are kept)
+    - local_command:    Local command output (e.g. /compact result) — filtered from API
+    """
+    id: str = ""
+    session_id: str = ""
+    role: Literal["system"] = "system"
+    subtype: Literal["info", "warning", "error", "compact_boundary", "local_command"] = "info"
+    content: str = ""
+    time_created: int = 0
+
+
+MessageInfo = UserMessage | AssistantMessage | SystemMessage
 
 @dataclass
 class WithParts:
     info: MessageInfo
     parts: list[Part] = field(default_factory=list)
 
-def create_user_message(session_id: str, message_id: str | None = None) -> UserMessage:
-    return UserMessage(id=message_id or ids.message_id(), session_id=session_id, time_created=int(time.time() * 1000))
+
+# ---------------------------------------------------------------------------
+# Factory functions
+# ---------------------------------------------------------------------------
+
+
+def create_user_message(
+    session_id: str,
+    message_id: str | None = None,
+    *,
+    is_meta: bool = False,
+    origin: MessageOrigin = "human",
+) -> UserMessage:
+    return UserMessage(
+        id=message_id or ids.message_id(),
+        session_id=session_id,
+        time_created=int(time.time() * 1000),
+        is_meta=is_meta,
+        origin=origin,
+    )
 
 def create_assistant_message(session_id: str, parent_id: str, provider_id: str, model_id: str, agent: str) -> AssistantMessage:
     return AssistantMessage(
         id=ids.message_id(), session_id=session_id, parent_id=parent_id,
         provider_id=provider_id, model_id=model_id, agent=agent,
+        time_created=int(time.time() * 1000),
+    )
+
+def create_system_message(
+    session_id: str,
+    content: str,
+    subtype: Literal["info", "warning", "error", "compact_boundary", "local_command"] = "info",
+) -> SystemMessage:
+    return SystemMessage(
+        id=ids.message_id(),
+        session_id=session_id,
+        subtype=subtype,
+        content=content,
         time_created=int(time.time() * 1000),
     )
 
@@ -105,6 +192,68 @@ def create_tool_part(session_id: str, message_id: str, tool: str, call_id: str) 
         id=ids.part_id(), session_id=session_id, message_id=message_id,
         tool=tool, tool_call_id=call_id, time_created=int(time.time() * 1000),
     )
+
+
+# ---------------------------------------------------------------------------
+# Message normalization pipeline
+# ---------------------------------------------------------------------------
+
+
+def normalize_messages_for_api(
+    messages: list[dict[str, Any]],
+    *,
+    include_system: bool = False,
+) -> list[dict[str, Any]]:
+    """Normalize messages for sending to LLM API.
+
+    Performs:
+    1. Filter out SystemMessage with subtype='local_command' (never sent to API)
+    2. Filter out compact_boundary markers (internal state only)
+    3. Optionally include system messages as user context
+    4. Ensure message format is API-compatible
+    """
+    normalized: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role", "")
+
+        # Skip local_command system messages (e.g. /compact output)
+        if role == "system" and msg.get("subtype") == "local_command":
+            continue
+
+        # Skip compact_boundary markers
+        if role == "system" and msg.get("subtype") == "compact_boundary":
+            continue
+
+        # Convert system info/warning/error to user-visible context if requested
+        if role == "system" and not include_system:
+            subtype = msg.get("subtype", "info")
+            if subtype in ("info", "warning", "error"):
+                content = msg.get("content", "")
+                if content:
+                    normalized.append({"role": "user", "content": f"[System {subtype}] {content}"})
+            continue
+
+        normalized.append(msg)
+    return normalized
+
+
+def get_messages_after_compact_boundary(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only messages after the last compact_boundary.
+
+    Used by the compaction system: after compaction, a compact_boundary
+    marker is inserted. On next API call, only messages after the boundary
+    are sent (the boundary itself contains the summary).
+    """
+    last_boundary_idx = -1
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "system" and msg.get("subtype") == "compact_boundary":
+            last_boundary_idx = i
+
+    if last_boundary_idx >= 0:
+        return messages[last_boundary_idx:]  # Include boundary (it has the summary)
+    return messages
 
 
 # --------------- Persistence helpers ---------------

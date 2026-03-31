@@ -254,11 +254,18 @@ async def process_stream(
 
         # Phase 2: Execute tools with read/write separation
         if executable:
-            # Separate read-only tools from mutating tools
+            # Separate read-only tools from mutating tools using capability declarations
             readonly_tasks: list[tuple[ToolPart, Any, ToolContext]] = []
             mutating_tasks: list[tuple[ToolPart, Any, ToolContext]] = []
             for tp, tool_impl, tool_ctx in executable:
-                if tp.tool in MUTATING_TOOLS:
+                # Use capability declaration if available, fallback to hardcoded set
+                if hasattr(tool_impl, "is_concurrency_safe") and hasattr(tool_impl, "is_read_only"):
+                    tool_input = tp.state.get("input", {})
+                    if tool_impl.is_read_only(tool_input) or tool_impl.is_concurrency_safe(tool_input):
+                        readonly_tasks.append((tp, tool_impl, tool_ctx))
+                    else:
+                        mutating_tasks.append((tp, tool_impl, tool_ctx))
+                elif tp.tool in MUTATING_TOOLS:
                     mutating_tasks.append((tp, tool_impl, tool_ctx))
                 else:
                     readonly_tasks.append((tp, tool_impl, tool_ctx))
