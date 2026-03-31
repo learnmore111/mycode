@@ -124,6 +124,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     # --- Pre-fetch available models (will be populated inside provide() context) ---
     _available_models: list[str] = []
+    debug_mode: list[bool] = [False]  # Use list for mutation in nested scope
 
     # --- Welcome will be printed inside _run_loop (after provide() sets project context) ---
 
@@ -134,6 +135,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         "/reset": "Clear conversation history",
         "/model": "Switch model (/model <provider/model>)",
         "/history": "Show conversation turns",
+        "/debug": "Toggle debug mode (dump LLM input/output to file)",
         "/memory": "Show recent session notes",
         "/quit": "Exit",
         "/exit": "Exit",
@@ -424,7 +426,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                                 console.print("  [dim]Use /model to list available models.[/dim]")
                     continue
 
-                handled = _handle_command(text, conversation_history, console, abs_directory, last_checkpoint=last_checkpoint)
+                handled = _handle_command(text, conversation_history, console, abs_directory, last_checkpoint=last_checkpoint, debug_ref=debug_mode)
                 if handled == "quit":
                     console.print("[grey50]Bye![/grey50]")
                     break
@@ -531,7 +533,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             live.start()
 
             try:
-                async for event in prompt(inp, bus, history=conversation_history):
+                async for event in prompt(inp, bus, history=conversation_history, debug=debug_mode[0]):
                     if event.type == "started":
                         _started = True
                         model_name = event.data.get("model", "?")
@@ -668,6 +670,24 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         spinner = Spinner("dots", "")
                         spinner.text = Text("  Compacting context...", style="yellow dim")
                         live.update(spinner)
+
+                    elif event.type == "debug_iter":
+                        # Debug mode: write iteration data to file
+                        debug_file = event.data.get("file", "")
+                        iteration = event.data.get("iteration", "?")
+                        phase = event.data.get("phase", "?")
+                        msg_count = event.data.get("message_count", 0)
+                        if live.is_started:
+                            live.stop()
+                        console.print(Text(
+                            f"  🔍 [debug] iter={iteration} phase={phase} msgs={msg_count} → {debug_file}",
+                            style="magenta dim",
+                        ))
+                        if not live.is_started:
+                            live.start()
+                            spinner = Spinner("dots", "")
+                            spinner.text = Text("Thinking...", style="dim italic")
+                            live.update(spinner)
 
                     elif event.type == "done":
                         done_data = event.data
@@ -878,6 +898,7 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
         table.add_row("/history", "Show conversation turns")
         table.add_row("/history N", "Show full detail for message #N")
         table.add_row("/steps", "Show agentic loop step states from last turn")
+        table.add_row("/debug", "Toggle debug mode (dump LLM I/O to .opencode/debug/)")
         table.add_row("/memory", "Show recent session notes")
         table.add_row("/quit", "Exit")
         table.add_row("!<cmd>", "Execute a shell command")
@@ -934,6 +955,20 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
                 console.print(f"  [cyan][{i}] tool ({tool_id}):[/cyan] {first_line}")
 
         console.print(f"\n  [dim]{len(history)} messages total. Use /history N for detail.[/dim]")
+        return ""
+
+    if cmd == "/debug":
+        # Toggle debug mode — requires access to debug_mode from outer scope
+        debug_ref = extra.get("debug_ref")
+        if debug_ref is not None:
+            debug_ref[0] = not debug_ref[0]
+            state = "ON" if debug_ref[0] else "OFF"
+            color = "green" if debug_ref[0] else "dim"
+            console.print(f"  [{color}]🔍 Debug mode: {state}[/{color}]")
+            if debug_ref[0]:
+                console.print(f"  [dim]Each LLM iteration will dump full messages to .opencode/debug/[/dim]")
+        else:
+            console.print("  [red]Debug mode not available[/red]")
         return ""
 
     if cmd == "/steps":

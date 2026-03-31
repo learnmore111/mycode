@@ -81,6 +81,7 @@ async def prompt(
     bus: Bus,
     *,
     history: list[dict[str, Any]] | None = None,
+    debug: bool = False,
 ) -> AsyncGenerator[PromptEvent, None]:
     """Send a message and stream the AI response.
 
@@ -218,13 +219,28 @@ async def prompt(
                 api_base=model.api.url or None,
             )
 
+            # === Debug: dump input before LLM call ===
+            if debug:
+                debug_file = _debug_dump(
+                    session_id, iteration, "input",
+                    messages=messages, system=system,
+                    model=f"{provider_id}/{model_id}",
+                    tool_count=len(tools) if tools else 0,
+                )
+                yield PromptEvent(type="debug_iter", data={
+                    "iteration": iteration, "phase": "input",
+                    "message_count": len(messages), "file": debug_file,
+                })
+
             # Stream events from processor
             result: proc.Result = "stop"
             iteration_parts: list[Part] = []
             iter_text_length = 0
+            iter_text_content = ""
 
             async for event in proc.process_stream(ctx, stream_input):
                 if event.type == "text_delta":
+                    iter_text_content += event.data.get("content", "")
                     yield PromptEvent(type="text_delta", data=event.data)
 
                 elif event.type == "tool_start":
@@ -256,6 +272,27 @@ async def prompt(
                             "status": p.state.get("status", "?"),
                             "cached": p.state.get("metadata", {}).get("cached", False),
                         })
+
+            # === Debug: dump output after LLM call ===
+            if debug:
+                tool_outputs = []
+                for p in iteration_parts:
+                    if isinstance(p, ToolPart):
+                        tool_outputs.append({
+                            "tool": p.tool, "call_id": p.tool_call_id,
+                            "input": p.state.get("input", {}),
+                            "output": p.state.get("output", "")[:2000],
+                            "status": p.state.get("status", "?"),
+                        })
+                debug_file = _debug_dump(
+                    session_id, iteration, "output",
+                    text=iter_text_content, text_length=iter_text_length,
+                    tool_calls=tool_outputs, result=result,
+                )
+                yield PromptEvent(type="debug_iter", data={
+                    "iteration": iteration, "phase": "output",
+                    "message_count": len(messages), "file": debug_file,
+                })
 
             all_parts.extend(iteration_parts)
 
@@ -313,3 +350,42 @@ async def prompt(
         await bus.publish(SESSION_ERROR, {"session_id": session_id, "error": {"message": str(e)}})
     finally:
         _busy.pop(session_id, None)
+
+
+def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str:
+    """Write debug data to .opencode/debug/ as JSON files.
+
+    Returns the file path for display.
+    """
+    import json
+    from pathlib import Path
+
+    debug_dir = Path(".opencode") / "debug" / session_id[:12]
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"iter{iteration:02d}_{phase}.json"
+    filepath = debug_dir / filename
+
+    # For messages, truncate long content to keep files readable
+    dump_data = {"session_id": session_id, "iteration": iteration, "phase": phase, "timestamp": time.time()}
+    for key, value in data.items():
+        if key == "messages" and isinstance(value, list):
+            # Truncate each message's content for readability
+            truncated = []
+            for msg in value:
+                m = dict(msg)
+                if isinstance(m.get("content"), str) and len(m["content"]) > 3000:
+                    m["content"] = m["content"][:3000] + f"\n... ({len(msg['content'])} chars total)"
+                truncated.append(m)
+            dump_data[key] = truncated
+        else:
+            dump_data[key] = value
+
+    try:
+        filepath.write_text(
+            json.dumps(dump_data, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warn("debug dump failed", error=str(e))
+
+    return str(filepath)
