@@ -669,6 +669,13 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # Flush any remaining text
             _flush_text()
 
+            # If no text was produced but tools were called, show a notice
+            if not full_text and _tool_count > 0:
+                console.print(Text(
+                    "  (No text response — model returned only tool calls. Use /history to view tool results.)",
+                    style="yellow dim",
+                ))
+
             # Status line (Claude Code style: compact single line)
             elapsed = time.monotonic() - start_time
             tokens = done_data.get("tokens", {}) if done_data else {}
