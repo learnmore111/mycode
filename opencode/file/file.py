@@ -53,9 +53,10 @@ async def list_dir(dir_path: str | None = None) -> list[dict]:
     resolved = os.path.join(base, dir_path) if dir_path else base
     if not os.path.isdir(resolved):
         return []
+    from opencode.file.ignore import should_ignore_entry
     entries = []
     for entry in sorted(os.scandir(resolved), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name in (".git", ".DS_Store"):
+        if should_ignore_entry(entry.name):
             continue
         entries.append({"name": entry.name, "type": "directory" if entry.is_dir() else "file",
                         "path": os.path.relpath(entry.path, base)})

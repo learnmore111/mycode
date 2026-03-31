@@ -6,6 +6,7 @@ import os
 
 from pydantic import BaseModel, Field
 
+from opencode.file.ignore import should_ignore_path
 from opencode.project.instance import current_or_none
 from opencode.tool.base import CallableTool, ToolContext, ToolOk, ToolResult
 
@@ -27,7 +28,9 @@ class GlobTool(CallableTool[GlobParams]):
         base = inst.directory if inst else os.getcwd()
         if search_path:
             base = os.path.join(base, search_path) if not os.path.isabs(search_path) else search_path
-        matches = sorted(globmod.glob(pattern, root_dir=base, recursive=True))
+        raw_matches = sorted(globmod.glob(pattern, root_dir=base, recursive=True))
+        # Filter out ignored directories (.venv, __pycache__, node_modules, etc.)
+        matches = [m for m in raw_matches if not should_ignore_path(m)]
         if len(matches) > 500:
             matches = matches[:500]
             output = "\n".join(matches) + f"\n\n... truncated (500 of {len(matches)} matches)"

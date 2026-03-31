@@ -7,6 +7,7 @@ import shutil
 
 from pydantic import BaseModel, Field
 
+from opencode.file.ignore import IGNORED_DIRS, RG_EXCLUDE_GLOBS
 from opencode.project.instance import current_or_none
 from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
 
@@ -33,13 +34,22 @@ class GrepTool(CallableTool[GrepParams]):
         rg = shutil.which("rg")
         if rg:
             cmd = [rg, "-rn", "--no-heading", "-m", "100"]
+            # Explicitly exclude common non-project directories
+            for glob_pattern in RG_EXCLUDE_GLOBS:
+                cmd += ["--glob", glob_pattern]
             if include:
                 cmd += ["-g", include]
             cmd.append(pattern)
             cmd.append(".")
             exec_cwd = cwd
         else:
-            cmd = ["grep", "-rn", "-m", "100", pattern, cwd]
+            cmd = ["grep", "-rn", "-m", "100"]
+            # Exclude directories for fallback grep
+            for d in sorted(IGNORED_DIRS):
+                if "*" not in d:  # grep --exclude-dir doesn't support wildcards
+                    cmd += ["--exclude-dir", d]
+            cmd.append(pattern)
+            cmd.append(cwd)
             exec_cwd = None
 
         try:
