@@ -52,38 +52,42 @@ build/
 .ruff_cache/
 ```
 
-**按理说 `rg` (ripgrep) 默认会读取 `.gitignore` 并跳过这些目录，为什么还是搜到了？**
+代码设计上，grep 工具分两条路径：
 
-#### 关键原因：`rg` 的 `.gitignore` 查找机制
+```python
+rg = shutil.which("rg")
+if rg:
+    # 使用 ripgrep（rg 默认读 .gitignore，能自动排除 .venv 等）
+    cmd = [rg, "-rn", "--no-heading", "-m", "100"]
+    ...
+else:
+    # fallback：使用系统 grep
+    cmd = ["grep", "-rn", "-m", "100", pattern, cwd]
+```
 
-`rg` 读取 `.gitignore` 的行为取决于以下条件：
+**按理说 `rg` (ripgrep) 默认会读取 `.gitignore` 并跳过 `.venv`，搜索结果应该是干净的。但为什么实际搜到了 `.venv` 的内容？**
 
-1. **必须在 Git 仓库中运行**：`rg` 会查找 `.git/` 目录来判断是否是 Git 仓库。如果当前目录或父目录中没有 `.git/`，`rg` 就**不会读取 `.gitignore`**。
+#### 🔑 实际根因：环境没有安装 ripgrep
 
-2. **`.gitignore` 文件的查找路径是相对于 `.git/` 所在目录**：`rg` 从 `cwd` 向上查找 `.git/`，然后使用该位置的 `.gitignore`。
+经过排查，发现当前开发环境（macOS）**根本没有安装 `rg`**：
 
-3. **搜索路径 `"."` 与 `cwd` 的交互**：修复前 grep 工具的代码逻辑是：
+```bash
+$ command -v rg
+# (无输出)
+$ command -v grep
+/usr/bin/grep
+grep (BSD grep, GNU compatible) 2.6.0-FreeBSD
+```
 
-   ```python
-   cwd = os.path.join(base, path) if not os.path.isabs(path) else path
-   cmd.append(".")  # 搜索当前目录
-   exec_cwd = cwd   # 设置工作目录为 cwd
-   ```
+所以 `shutil.which("rg")` 返回 `None`，**代码从未走过 `rg` 分支，每次都走的 fallback `grep` 分支**。
 
-   如果 `params.path` 传入了子目录（如 `"opencode/tool"`），那么：
-   - `cwd` = `/project/opencode/tool`
-   - `rg` 的工作目录变成了子目录
-   - `rg` 从 `/project/opencode/tool` 向上查找 `.git/`
-   
-   这在**大多数情况下**能正确找到根目录的 `.gitignore`，但存在以下边界场景：
+完整的因果链：
 
-   **场景 A — `cwd` 不在 Git 仓库内**：如果传入了绝对路径 `path` 且该路径不在 Git 仓库内，`rg` 无法找到 `.git/`，`.gitignore` 规则完全失效。
-
-   **场景 B — 符号链接或挂载点**：如果 `.venv` 是一个符号链接指向仓库外的位置，`rg` 在跟随符号链接时可能不会应用 `.gitignore` 规则。
-
-   **场景 C — `.gitignore` 规则的路径匹配**：`.gitignore` 中的 `.venv/` 是相对于仓库根目录的。如果 `rg` 的 `cwd` 不是仓库根目录，而 `.gitignore` 规则又依赖于相对路径，可能会出现匹配偏移。
-
-4. **`--no-ignore` 或环境变量**：如果用户的环境中设置了 `RIPGREP_CONFIG_PATH` 指向的配置文件包含 `--no-ignore`，或者 `rg` 的全局配置中禁用了 `.gitignore`，也会导致失效。
+```
+没装 rg → shutil.which("rg") 返回 None → 走 else fallback 分支
+→ 使用系统 grep，而 fallback 代码没有任何 --exclude-dir 参数
+→ grep 暴力递归搜索所有文件 → .venv/__pycache__ 的内容全部被搜到
+```
 
 #### 为什么 fallback `grep` 完全没有排除？
 
@@ -104,18 +108,34 @@ grep -rn --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=node_module
 
 但修复前的代码完全没有加任何 `--exclude-dir` 参数。
 
+#### 即使有 rg，也需要显式排除作为保底
+
+虽然本次问题的直接原因是没装 `rg` 导致走了 fallback，但 `rg` 的 `.gitignore` 自动读取也不是万能的，以下场景仍可能失效：
+
+| 场景 | 原因 |
+|---|---|
+| `cwd` 不在 Git 仓库内（传入了仓库外的绝对路径） | `rg` 找不到 `.git/`，不读 `.gitignore` |
+| `.venv` 是符号链接指向仓库外 | `rg` 跟随链接后脱离 Git 仓库上下文 |
+| 环境变量 `RIPGREP_CONFIG_PATH` 设了 `--no-ignore` | 全局禁用了 `.gitignore` 读取 |
+| `rg` 版本差异 | 不同版本对 `.gitignore` 的处理可能有差异 |
+
+因此修复时也为 `rg` 分支添加了显式排除参数作为保底。
+
 ### 2.3 总结：没有统一的排除配置
 
-| 工具 | 搜索引擎 | 依赖的排除机制 | 失败原因 |
+| 工具 | 搜索引擎 | 依赖的排除机制 | 实际失败原因 |
 |---|---|---|---|
 | **Glob** | `glob.glob()` | ❌ 无 | `glob.glob()` 不读 `.gitignore` |
-| **Grep (rg)** | ripgrep | `.gitignore`（隐式） | 某些 `cwd` 场景下 `.gitignore` 失效 |
-| **Grep (fallback)** | GNU `grep` | ❌ 无 | 没有传 `--exclude-dir` |
-| **ripgrep.py files()** | `rg --files` | `.gitignore`（隐式） | 同 Grep (rg) |
-| **ripgrep.py files() fallback** | `find` | 仅排除 `.git` | 只硬编码了一个 `.git` |
+| **Grep** | ~~ripgrep~~ → 实际是 GNU `grep` | ❌ 无 | **没装 `rg`**，fallback `grep` 无 `--exclude-dir` |
+| **ripgrep.py files()** | ~~`rg --files`~~ → 实际是 `find` | 仅排除 `.git` | **没装 `rg`**，`find` 只排除了一个 `.git` |
+| **ripgrep.py search()** | ~~`rg`~~ → 实际是 `grep` | ❌ 无 | **没装 `rg`**，fallback `grep` 无排除 |
 | **list_dir** | `os.scandir()` | 硬编码 `.git`/`.DS_Store` | 排除列表太少 |
 
-**核心问题**：整个项目没有一个统一的"应忽略目录列表"，每个工具各自为政，且大部分工具**隐式依赖 `rg` 读取 `.gitignore`** 来排除，没有显式保底机制。
+**核心问题**：
+
+1. **环境缺少 `rg`**：代码设计上依赖 `rg` 的 `.gitignore` 读取能力来实现排除，但目标环境没装 `rg`，导致全部走 fallback 路径
+2. **fallback 路径无排除逻辑**：fallback 到 `grep`/`find` 时，没有添加任何 `--exclude-dir` 或 `-not -path` 参数
+3. **没有统一的排除配置**：整个项目没有一个统一的"应忽略目录列表"，各工具各自为政
 
 ## 3. 修复方案
 
@@ -151,10 +171,14 @@ grep -rn --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=node_module
 
 ## 4. 经验教训
 
-1. **不要隐式依赖外部工具的"默认行为"**：`rg` 默认读 `.gitignore` 是个很好的特性，但不能作为唯一的排除手段。工具的 `cwd`、环境变量、是否在 Git 仓库内等因素都可能让这个行为失效。
+1. **不要假设外部工具一定存在**：代码的核心排除逻辑依赖 `rg`，但目标环境可能根本没装 `rg`。当设计 "优选路径 + fallback 路径" 的代码时，**两条路径必须提供等价的功能保障**，而不是让 fallback 成为"残废模式"。
 
-2. **每个搜索路径都必须有显式排除**：包括 `rg`、`grep`、`find`、`glob.glob()` —— 每条路径都要独立保证排除逻辑。
+2. **fallback 路径容易被遗忘，也最容易出问题**：`if rg` 分支因为 `rg` 自带 `.gitignore` 支持，看起来"自然就对了"；而 `else` 分支（fallback 到 `grep`/`find`）需要手动补齐排除逻辑，很容易被开发者忽略——毕竟开发者自己的环境通常有 `rg`，测试时根本不会走到 fallback。
 
-3. **统一配置是必须的**：当多个工具需要相同的排除逻辑时，必须提取为统一的常量模块，避免各处硬编码不同的排除列表导致不一致。
+3. **不要隐式依赖外部工具的"默认行为"**：`rg` 默认读 `.gitignore` 是个好特性，但不能作为唯一的排除手段。工具的 `cwd`、环境变量、是否在 Git 仓库内等因素都可能让这个行为失效。显式排除参数应作为保底。
 
-4. **fallback 路径容易被遗忘**：`if rg` 分支通常会被仔细处理，但 `else`（fallback 到 `grep`/`find`）分支往往被忽视，成为安全漏洞。
+4. **每个搜索路径都必须有显式排除**：包括 `rg`、`grep`、`find`、`glob.glob()` —— 每条路径都要独立保证排除逻辑，不能指望某一层"帮忙"排除。
+
+5. **统一配置是必须的**：当多个工具需要相同的排除逻辑时，必须提取为统一的常量模块，避免各处硬编码不同的排除列表导致不一致。
+
+6. **考虑在启动时检测关键依赖**：对于像 `rg` 这样能显著影响功能质量的外部工具，可以在程序启动时检测并给出安装建议（如 `brew install ripgrep`），让用户意识到当前在使用降级模式。
