@@ -611,8 +611,12 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                             if err_line:
                                 console.print(Text(f"    {err_line}", style="red dim"))
 
-                        # Prepare fresh live for next events
+                        # Prepare fresh live for next iteration (auto-start thinking spinner)
                         live = Live(Spinner("dots", ""), console=console, refresh_per_second=10, transient=True)
+                        live.start()
+                        spinner = Spinner("dots", "")
+                        spinner.text = Text("Thinking...", style="dim italic")
+                        live.update(spinner)
 
                     elif event.type == "error":
                         if live.is_started:
@@ -678,10 +682,16 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 _print_context_bar(console, total_tokens_used, context_limit)
             console.print()
 
-            # Keep conversation history
-            conversation_history.append({"role": "user", "content": text})
-            if full_text:
-                conversation_history.append({"role": "assistant", "content": full_text})
+            # Keep conversation history (use full messages from prompt if available)
+            if done_data.get("messages"):
+                # Use the complete messages from the agentic loop (includes tool calls/results)
+                conversation_history.clear()
+                conversation_history.extend(done_data["messages"])
+            else:
+                # Fallback: simple text-only history
+                conversation_history.append({"role": "user", "content": text})
+                if full_text:
+                    conversation_history.append({"role": "assistant", "content": full_text})
 
             # --- Per-turn memory updates ---
             if session_memory.is_enabled:

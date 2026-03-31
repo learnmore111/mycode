@@ -247,6 +247,7 @@ async def prompt(
             },
             "iterations": iterations_done,
             "parts": len(all_parts),
+            "messages": messages,  # Full conversation including tool calls/results
         })
 
     except Exception as e:
