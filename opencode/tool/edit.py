@@ -4,6 +4,12 @@ Inspired by Anthropic's StrReplaceEditorTool best practices:
 - Returns surrounding context after edit so the agent can verify the change
 - Supports insert_after_line for line-based insertion
 - Empty old_string appends to end of file
+
+Enhancements:
+- Uniqueness check shows all match locations (line numbers) on failure
+- No-op detection (old_string == new_string)
+- Richer post-edit snippet with clear change markers
+- File summary header in output
 """
 from __future__ import annotations
 
@@ -20,7 +26,10 @@ _CONTEXT_LINES = 4
 
 
 def _snippet_around(lines: list[str], start: int, end: int, context: int = _CONTEXT_LINES) -> str:
-    """Return a numbered snippet around the [start, end) line range."""
+    """Return a numbered snippet around the [start, end) line range.
+
+    Lines inside the edited range are marked with '|', context lines with ' '.
+    """
     lo = max(0, start - context)
     hi = min(len(lines), end + context)
     parts: list[str] = []
@@ -28,6 +37,20 @@ def _snippet_around(lines: list[str], start: int, end: int, context: int = _CONT
         marker = " " if i < start or i >= end else "|"
         parts.append(f"{i + 1:6d}{marker}{lines[i]}")
     return "\n".join(parts)
+
+
+def _find_all_occurrences(content: str, needle: str) -> list[int]:
+    """Return 1-based line numbers of all occurrences of needle in content."""
+    positions: list[int] = []
+    start = 0
+    while True:
+        idx = content.find(needle, start)
+        if idx == -1:
+            break
+        line_no = content[:idx].count("\n") + 1
+        positions.append(line_no)
+        start = idx + 1
+    return positions
 
 
 class EditParams(BaseModel):
@@ -71,9 +94,10 @@ class EditTool(CallableTool[EditParams]):
             if insert_after_line is not None:
                 if insert_after_line < 0 or insert_after_line > total_before:
                     return ToolError(
-                        f"insert_after_line={insert_after_line} out of range (file has {total_before} lines). Use 0 to insert at the beginning.",
+                        f"insert_after_line={insert_after_line} out of range (file has {total_before} lines). "
+                        f"Valid range: 0..{total_before}. Use 0 to insert at the beginning.",
                         title=f"Edit {file_path}",
-                        metadata={"success": False},
+                        metadata={"success": False, "total_lines": total_before},
                     )
                 insert_lines = new_string.split("\n")
                 insert_pos = insert_after_line  # 0-based index after this line
@@ -82,7 +106,8 @@ class EditTool(CallableTool[EditParams]):
                 Path(full).write_text(new_content, encoding="utf-8")
                 snippet = _snippet_around(new_lines, insert_pos, insert_pos + len(insert_lines))
                 return ToolOk(
-                    f"Inserted {len(insert_lines)} line(s) after line {insert_after_line} in {file_path}\n\n{snippet}",
+                    f"Inserted {len(insert_lines)} line(s) after line {insert_after_line} in {file_path} "
+                    f"({total_before} → {len(new_lines)} lines)\n\n{snippet}",
                     title=f"Edit {file_path}",
                     metadata={"success": True, "lines_added": len(insert_lines), "total_lines": len(new_lines)},
                 )
@@ -101,24 +126,48 @@ class EditTool(CallableTool[EditParams]):
                 appended_count = len(new_string.split("\n"))
                 snippet = _snippet_around(new_lines, max(0, len(new_lines) - appended_count), len(new_lines))
                 return ToolOk(
-                    f"Appended to {file_path}\n\n{snippet}",
+                    f"Appended to {file_path} ({total_before} → {len(new_lines)} lines)\n\n{snippet}",
                     title=f"Edit {file_path}",
                     metadata={"success": True, "total_lines": len(new_lines)},
                 )
 
             # --- Mode 3: String replacement ---
-            count = content.count(old_string)
-            if count == 0:
+            # No-op detection
+            if old_string == new_string:
                 return ToolError(
-                    "old_string not found in file. Make sure it matches exactly including whitespace and indentation.",
+                    "old_string and new_string are identical. No changes needed.",
                     title=f"Edit {file_path}",
                     metadata={"success": False},
                 )
-            if count > 1:
+
+            count = content.count(old_string)
+            if count == 0:
+                # Provide helpful diagnostics: try case-insensitive or stripped match
+                hint = ""
+                stripped_old = old_string.strip()
+                if stripped_old and stripped_old != old_string:
+                    stripped_count = content.count(stripped_old)
+                    if stripped_count > 0:
+                        locs = _find_all_occurrences(content, stripped_old)
+                        hint = (f"\nHint: A stripped version was found {stripped_count} time(s) at line(s) "
+                                f"{', '.join(str(l) for l in locs[:10])}. "
+                                f"Check leading/trailing whitespace.")
+                if not hint and old_string.lower() in content.lower():
+                    hint = "\nHint: A case-insensitive match exists. Check exact casing."
                 return ToolError(
-                    f"old_string found {count} times. It must be unique. Add more surrounding context to make it unique.",
+                    f"old_string not found in file. Make sure it matches exactly "
+                    f"including whitespace and indentation.{hint}",
                     title=f"Edit {file_path}",
-                    metadata={"success": False},
+                    metadata={"success": False, "total_lines": total_before},
+                )
+            if count > 1:
+                locations = _find_all_occurrences(content, old_string)
+                loc_str = ", ".join(str(l) for l in locations[:20])
+                return ToolError(
+                    f"old_string found {count} times at line(s): {loc_str}. "
+                    f"It must be unique — include more surrounding lines to disambiguate.",
+                    title=f"Edit {file_path}",
+                    metadata={"success": False, "match_count": count, "match_lines": locations[:20]},
                 )
 
             # Find the line range of the replacement
@@ -138,9 +187,13 @@ class EditTool(CallableTool[EditParams]):
             delta = new_line_count - old_line_count
             delta_str = f" ({'+' if delta > 0 else ''}{delta} lines)" if delta != 0 else ""
             return ToolOk(
-                f"Edited {file_path}{delta_str}\n\n{snippet}",
+                f"Edited {file_path}{delta_str} ({total_before} → {len(new_lines)} lines)\n\n{snippet}",
                 title=f"Edit {file_path}",
-                metadata={"success": True, "total_lines": len(new_lines)},
+                metadata={
+                    "success": True,
+                    "total_lines": len(new_lines),
+                    "changed_range": [start_line + 1, end_line],
+                },
             )
         except Exception as e:
             return ToolError(f"Error: {e}", title=f"Edit {file_path}", metadata={"success": False})
