@@ -109,7 +109,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
     from opencode.provider import provider as providermod
-    from opencode.session.memory import InteractionLog, SessionMemory, save_session_note
+    from opencode.session.memory import SessionMemory
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
@@ -354,10 +354,9 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     # Initialize session memory
     session_memory = SessionMemory(abs_directory)
-    interaction_log: InteractionLog | None = None
     if session_memory.is_enabled:
         # Load recent notes for context (optional: can be used for context injection)
-        recent_notes = session_memory.load_recent_notes()
+        recent_notes = session_memory.load_recent_sessions()
         if recent_notes:
             console.print(Text(f"  📝 {len(recent_notes)} recent session notes available", style="grey50"))
 
@@ -462,10 +461,9 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
             if session_info is None:
                 session_info = create_session(title=text[:60])
-                # Initialize interaction log for this session
+                # Initialize session memory with session ID
                 if session_memory.is_enabled:
                     session_memory.session_id = session_info.id
-                    interaction_log = InteractionLog(abs_directory, session_info.id)
 
             inp = PromptInput(
                 session_id=session_info.id,
@@ -509,9 +507,9 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         output = event.data.get("output", "")
                         tool_input = event.data.get("input", {})
                         if status == "completed":
-                            # Record tool call to interaction log
-                            if interaction_log:
-                                interaction_log.record_tool_call(
+                            # Record tool call to session memory
+                            if session_memory.is_enabled:
+                                session_memory.record_tool_call(
                                     tool_name=tool_name,
                                     tool_input=tool_input if isinstance(tool_input, dict) else {},
                                     tool_output=output,
@@ -593,23 +591,13 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
             # --- Per-turn memory updates ---
             if session_memory.is_enabled:
-                turn = session_memory.tick_turn()
-
-                # 1. Record interaction log (every turn)
-                if interaction_log:
-                    interaction_log.record_turn(
+                try:
+                    await session_memory.record_turn(
                         user_query=text,
                         assistant_response=full_text,
-                    )
-
-                # 2. Rolling summary update (every N turns)
-                try:
-                    note_path = await session_memory.update_summary_if_due(
                         messages=conversation_history,
                         start_time=session_start_time,
                     )
-                    if note_path:
-                        pass  # rolling summary updated silently
                 except Exception:
                     pass  # Don't let memory failures break the main loop
 
@@ -617,16 +605,12 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         if session_memory.is_enabled and conversation_history:
             console.print(Text("  💾 Saving session memory...", style="grey50"))
             try:
-                # Force a final rolling summary update
-                note_path = await session_memory.update_summary_if_due(
+                note_path = await session_memory.finalize(
                     messages=conversation_history,
                     start_time=session_start_time,
-                    force=True,
                 )
                 if note_path:
                     console.print(Text(f"  ✓ Session note saved: {note_path.name}", style="green"))
-            except Exception as e:
-                console.print(Text(f"  ✗ Failed to save session note: {e}", style="red"))
             except Exception as e:
                 console.print(Text(f"  ✗ Failed to save session note: {e}", style="red"))
 
@@ -761,14 +745,14 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
             console.print("  [yellow]Session memory is disabled.[/yellow]")
             console.print("  [grey50]Enable it in config: sessionMemory.enabled = true[/grey50]")
             return ""
-        notes = memory.load_recent_notes(limit=5)
+        notes = memory.load_recent_sessions(limit=5)
         if not notes:
             console.print("  [grey50](no session notes found)[/grey50]")
         else:
             console.print(f"  [cyan]Recent session notes ({len(notes)}):[/cyan]")
             for note in notes:
                 date = note.get("date", "?")
-                duration = note.get("duration_minutes", 0)
+                duration = note.get("duration_min", 0)
                 topics = ", ".join(note.get("topics", [])) or "general"
                 console.print(f"    • {date} ({duration}min) - {topics}")
         return ""
@@ -784,7 +768,7 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
     from opencode.bus.bus import Bus
     from opencode.project.instance import provide
     from opencode.project.project import from_directory
-    from opencode.session.memory import InteractionLog, SessionMemory, save_session_note
+    from opencode.session.memory import SessionMemory
     from opencode.session.prompt import PromptInput, prompt
     from opencode.session.session import create as create_session
     from opencode.tool.registry import register_builtins
@@ -798,12 +782,10 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
         session = create_session(title=message[:60])
         session_start_time = datetime.now()
         conversation_history: list[dict] = []
-        interaction_log: InteractionLog | None = None
 
-        # Initialize interaction log if memory is enabled
+        # Initialize session memory with session ID
         if session_memory.is_enabled:
             session_memory.session_id = session.id
-            interaction_log = InteractionLog(abs_directory, session.id)
 
         bus = Bus()
         inp = PromptInput(
@@ -824,9 +806,9 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
                 tool_input = event.data.get("input", {})
                 output = event.data.get("output", "")
                 click.echo(f"\n[tool:{tool_name}] {status}", err=True)
-                # Record tool call to interaction log
-                if interaction_log and status == "completed":
-                    interaction_log.record_tool_call(
+                # Record tool call to session memory
+                if session_memory.is_enabled and status == "completed":
+                    session_memory.record_tool_call(
                         tool_name=tool_name,
                         tool_input=tool_input if isinstance(tool_input, dict) else {},
                         tool_output=output,
@@ -857,20 +839,18 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
         if full_response:
             conversation_history.append({"role": "assistant", "content": full_response})
 
-        # Record interaction turn
-        if interaction_log:
-            interaction_log.record_turn(
-                user_query=message,
-                assistant_response=full_response,
-            )
-
-        # Save session memory if enabled
+        # Record turn and save session memory
         if session_memory.is_enabled and conversation_history:
             try:
-                note_path = await session_memory.update_summary_if_due(
+                await session_memory.record_turn(
+                    user_query=message,
+                    assistant_response=full_response,
                     messages=conversation_history,
                     start_time=session_start_time,
-                    force=True,
+                )
+                note_path = await session_memory.finalize(
+                    messages=conversation_history,
+                    start_time=session_start_time,
                 )
                 if note_path:
                     click.echo(f"Session note saved: {note_path.name}", err=True)

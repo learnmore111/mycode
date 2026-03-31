@@ -1,4 +1,4 @@
-"""Tests for session memory module."""
+"""Tests for session memory module — unified JSONL single-file architecture."""
 
 from __future__ import annotations
 
@@ -12,12 +12,10 @@ import pytest
 
 from opencode.session.memory.memory import (
     InteractionEntry,
-    InteractionLog,
-    ParsedConversation,
     SessionMemory,
-    SessionNote,
+    SessionSummary,
+    create_session_memory,
     load_recent_notes,
-    save_session_note,
 )
 
 
@@ -30,320 +28,71 @@ def temp_memory_dir(tmp_path: Path):
 
 
 @pytest.fixture
-def sample_messages():
-    """Sample conversation messages for testing."""
-    return [
-        {"role": "user", "content": "Help me create a Python function"},
-        {"role": "assistant", "content": "Sure, I'll help you create a Python function."},
-        {"role": "tool", "name": "read", "input": {"path": "/src/main.py"}},
-        {"role": "tool", "name": "edit", "input": {"file_path": "/src/main.py"}},
-        {"role": "user", "content": "Now add tests"},
-        {"role": "assistant", "content": "I'll add tests for the function."},
-        {"role": "tool", "name": "write", "input": {"file_path": "/tests/test_main.py"}},
-    ]
+def memory(tmp_path: Path):
+    """Create a SessionMemory instance with temp directory."""
+    m = SessionMemory("/test/project", "test-session-123")
+    m.memory_dir = tmp_path / "memory"
+    return m
 
 
-class TestSessionMemory:
-    """Tests for SessionMemory class."""
+class TestSessionMemoryInit:
+    """Tests for SessionMemory initialization."""
 
-    def test_init(self, tmp_path: Path):
-        """Test SessionMemory initialization."""
-        memory = SessionMemory("/test/project", "test-session-123")
-        assert memory.project_path == "/test/project"
-        assert memory.session_id == "test-session-123"
+    def test_init_basic(self):
+        """Test SessionMemory initialization with explicit args."""
+        m = SessionMemory("/test/project", "test-session-123")
+        assert m.project_path == "/test/project"
+        assert m.session_id == "test-session-123"
 
-    def test_init_with_generated_session_id(self, tmp_path: Path):
+    def test_init_generates_session_id(self):
         """Test SessionMemory generates session ID if not provided."""
-        memory = SessionMemory("/test/project")
-        assert memory.session_id is not None
-        assert len(memory.session_id) > 0
+        m = SessionMemory("/test/project")
+        assert m.session_id is not None
+        assert len(m.session_id) > 0
 
-    def test_is_enabled_default_false(self, tmp_path: Path):
-        """Test session memory is disabled by default."""
-        memory = SessionMemory("/test/project")
-        # Without config, should be disabled
-        assert memory.is_enabled is False
-
-    def test_parse_conversation_basic(self, sample_messages):
-        """Test parsing conversation messages."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-
-        assert isinstance(parsed, ParsedConversation)
-        assert parsed.session_id == "test-session"
-        assert len(parsed.user_prompts) == 2
-        assert "Help me create a Python function" in parsed.user_prompts[0]
-        assert len(parsed.assistant_summaries) > 0
-
-    def test_parse_conversation_extracts_files(self, sample_messages):
-        """Test that file paths are extracted from tool calls."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-
-        assert "/src/main.py" in parsed.files_read or "/src/main.py" in parsed.files_modified
-        assert "/tests/test_main.py" in parsed.files_modified
-
-    def test_parse_conversation_counts_tools(self, sample_messages):
-        """Test that tool usage is counted."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-
-        tool_names = [t["name"] for t in parsed.tool_uses]
-        assert "read" in tool_names or "edit" in tool_names or "write" in tool_names
-
-    def test_infer_topics_python(self):
-        """Test topic inference for Python files."""
-        memory = SessionMemory("/test/project")
-        topics = memory._infer_topics({"/src/main.py", "/tests/test_main.py"})
-        assert "Python" in topics
-
-    def test_infer_topics_javascript(self):
-        """Test topic inference for JavaScript files."""
-        memory = SessionMemory("/test/project")
-        topics = memory._infer_topics({"/src/app.js", "/src/component.tsx"})
-        assert "JavaScript" in topics or "React/TypeScript" in topics
-
-    def test_infer_topics_documentation(self):
-        """Test topic inference for documentation files."""
-        memory = SessionMemory("/test/project")
-        topics = memory._infer_topics({"/README.md", "/docs/guide.md"})
-        assert "Documentation" in topics
-
-    def test_create_simple_summary(self, sample_messages):
-        """Test simple summary creation without AI (agent-oriented format)."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-        summary = memory._create_simple_summary(parsed)
-
-        assert "## what_was_done" in summary
-        assert "## technical_context" in summary
-        assert "## file_changes" in summary
-
-    def test_format_note_markdown_english(self):
-        """Test note formatting — agent-oriented structured format."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["note_language"] = "en"
-
-        note = SessionNote(
-            session_id="test-123",
-            project_path="/test/project",
-            start_time="2024-01-01T10:00:00",
-            end_time="2024-01-01T10:30:00",
-            duration_minutes=30,
-            summary="## what_was_done\n- Added retry logic\n\n## technical_context\n- Uses litellm",
-            files_modified=["/src/main.py"],
-            tool_uses={"read": 5, "edit": 3},
-            key_topics=["Python"],
-        )
-
-        markdown = memory._format_note_markdown(note, "en")
-        assert "# agent-memory" in markdown
-        assert "## meta" in markdown
-        assert "test-123" in markdown
-        assert "30min" in markdown
-        assert "Python" in markdown
-        assert "## what_was_done" in markdown
-
-    def test_format_note_markdown_chinese(self):
-        """Test note formatting — same agent format regardless of language."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["note_language"] = "zh"
-
-        note = SessionNote(
-            session_id="test-123",
-            project_path="/test/project",
-            start_time="2024-01-01T10:00:00",
-            end_time="2024-01-01T10:30:00",
-            duration_minutes=30,
-            summary="## what_was_done\n- 添加了重试逻辑\n\n## technical_context\n- 使用 litellm",
-            files_modified=["/src/main.py"],
-            tool_uses={"read": 5, "edit": 3},
-            key_topics=["Python"],
-        )
-
-        markdown = memory._format_note_markdown(note, "zh")
-        assert "# agent-memory" in markdown
-        assert "test-123" in markdown
-        assert "30min" in markdown
+    def test_is_enabled_default_false(self):
+        """Test session memory is disabled when config says so."""
+        m = SessionMemory("/test/project")
+        m._config["enabled"] = False
+        assert m.is_enabled is False
 
 
-class TestSessionMemoryAsync:
-    """Async tests for SessionMemory."""
+class TestToolCallBuffering:
+    """Tests for tool call recording."""
 
-    @pytest.mark.asyncio
-    async def test_save_note_disabled(self, sample_messages):
-        """Test that save_note returns None when disabled."""
-        memory = SessionMemory("/test/project", "test-session")
-        assert memory.is_enabled is False
-
-        result = await memory.save_note(sample_messages)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_save_note_too_short(self, sample_messages, temp_memory_dir):
-        """Test that short sessions are skipped."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = True
-        memory._config["min_duration_minutes"] = 60  # Require 60 minutes
-
-        with patch.object(memory, "memory_dir", temp_memory_dir):
-            result = await memory.save_note(sample_messages)
-            # Should be skipped due to short duration
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_save_note_too_few_prompts(self, temp_memory_dir):
-        """Test that sessions with too few prompts are skipped."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = True
-        memory._config["min_user_prompts"] = 10  # Require 10 prompts
-
-        messages = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"},
-        ]
-
-        with patch.object(memory, "memory_dir", temp_memory_dir):
-            result = await memory.save_note(messages)
-            # Should be skipped due to too few prompts
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_generate_summary_no_model(self, sample_messages):
-        """Test summary generation falls back to structured format without model config."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-
-        summary = await memory.generate_summary(parsed)
-        assert "## what_was_done" in summary
-        assert "## technical_context" in summary
-
-
-class TestConvenienceFunctions:
-    """Tests for convenience functions."""
-
-    def test_load_recent_notes_empty(self, tmp_path: Path):
-        """Test loading notes when no notes exist."""
-        notes = load_recent_notes("/nonexistent/project")
-        assert notes == []
-
-
-class TestIndexManagement:
-    """Tests for index management."""
-
-    def test_update_index_creates_file(self, temp_memory_dir):
-        """Test that update_index creates index file."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory.memory_dir = temp_memory_dir
-        memory.index_path = temp_memory_dir / "index.json"
-        memory.notes_dir = temp_memory_dir / "notes"
-
-        note = SessionNote(
-            session_id="test-123",
-            project_path="/test/project",
-            start_time="2024-01-01T10:00:00",
-            end_time="2024-01-01T10:30:00",
-            duration_minutes=30,
-            summary="Test summary",
-            key_topics=["Python"],
-        )
-        note_path = temp_memory_dir / "notes" / "2024-01-01" / "10-00-00_test.md"
-        note_path.parent.mkdir(parents=True, exist_ok=True)
-        note_path.write_text("# Test Note")
-
-        memory._update_index(note, note_path)
-
-        assert memory.index_path.exists()
-        index = json.loads(memory.index_path.read_text())
-        assert len(index) == 1
-        assert index[0]["session_id"] == "test-123"
-
-    def test_load_recent_notes_filters_by_project(self, temp_memory_dir):
-        """Test that load_recent_notes filters by project path."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory.memory_dir = temp_memory_dir
-        memory.index_path = temp_memory_dir / "index.json"
-
-        # Create index with notes from different projects
-        index = [
-            {"path": "/note1.md", "project": "/test/project", "date": "2024-01-01"},
-            {"path": "/note2.md", "project": "/other/project", "date": "2024-01-01"},
-            {"path": "/note3.md", "project": "/test/project", "date": "2024-01-02"},
-        ]
-        memory.index_path.write_text(json.dumps(index))
-
-        notes = memory.load_recent_notes()
-        assert len(notes) == 2
-        assert all(n["project"] == "/test/project" for n in notes)
-
-
-class TestBuildSummaryPrompt:
-    """Tests for summary prompt building."""
-
-    def test_build_summary_prompt_agent_oriented(self, sample_messages):
-        """Test that prompt generates agent-oriented technical memo instructions."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-
-        prompt = memory._build_summary_prompt(parsed, "en")
-        # Should contain structured section names for the agent memo
-        assert "## what_was_done" in prompt
-        assert "## technical_context" in prompt
-        assert "## problems_encountered" in prompt
-        assert "## unfinished_work" in prompt
-        assert "## file_changes" in prompt
-        # Should contain raw session data
-        assert "Raw Session Data" in prompt
-        assert "/test/project" in prompt
-
-    def test_build_summary_prompt_same_for_all_languages(self, sample_messages):
-        """Test that prompt is the same regardless of language — agent doesn't need i18n."""
-        memory = SessionMemory("/test/project", "test-session")
-        parsed = memory.parse_conversation(sample_messages)
-
-        prompt_en = memory._build_summary_prompt(parsed, "en")
-        prompt_zh = memory._build_summary_prompt(parsed, "zh")
-        assert prompt_en == prompt_zh
-
-
-class TestInteractionLog:
-    """Tests for the InteractionLog (near-lossless per-turn record)."""
-
-    def test_record_tool_call(self, tmp_path: Path):
+    def test_record_tool_call(self, memory):
         """Test that tool calls are buffered correctly."""
-        log = InteractionLog("/test/project", "test-session")
-        log.interactions_dir = tmp_path / "interactions"
-
-        log.record_tool_call(
+        memory.record_tool_call(
             tool_name="read_file",
             tool_input={"filePath": "/src/main.py", "offset": 10, "limit": 50},
             tool_output="def hello(): ...",
         )
-
-        assert len(log._current_tool_calls) == 1
-        tc = log._current_tool_calls[0]
+        assert len(memory._current_tool_calls) == 1
+        tc = memory._current_tool_calls[0]
         assert tc["tool"] == "read_file"
         assert tc["file"] == "/src/main.py"
         assert "offset=10" in tc["input"]
         assert tc["status"] == "completed"
 
-    def test_record_turn_writes_jsonl(self, tmp_path: Path):
-        """Test that record_turn writes a JSONL line."""
-        log = InteractionLog("/test/project", "test-sess")
-        log.interactions_dir = tmp_path / "interactions"
+    def test_record_multiple_tool_calls(self, memory):
+        """Test buffering multiple tool calls in a single turn."""
+        memory.record_tool_call("read_file", {"filePath": "/a.py"}, "content a")
+        memory.record_tool_call("search_content", {"pattern": "def foo"}, "Found 3 matches")
+        assert len(memory._current_tool_calls) == 2
+        assert memory._current_tool_calls[0]["tool"] == "read_file"
+        assert memory._current_tool_calls[1]["tool"] == "search_content"
 
-        log.record_tool_call(
-            tool_name="read_file",
-            tool_input={"filePath": "/src/main.py"},
-            tool_output="def hello(): pass",
-        )
-        log.record_tool_call(
-            tool_name="search_content",
-            tool_input={"pattern": "def hello"},
-            tool_output="Found 3 matches",
-        )
 
-        entry = log.record_turn(
+class TestTurnRecording:
+    """Tests for per-turn recording to JSONL."""
+
+    @pytest.mark.asyncio
+    async def test_record_turn_writes_jsonl(self, memory):
+        """Test that record_turn writes a JSONL line to file."""
+        memory.record_tool_call("read_file", {"filePath": "/src/main.py"}, "def hello(): pass")
+        memory.record_tool_call("search_content", {"pattern": "def hello"}, "Found 3 matches")
+
+        entry = await memory.record_turn(
             user_query="Show me the hello function",
             assistant_response="Here's the hello function defined in main.py...",
         )
@@ -353,185 +102,406 @@ class TestInteractionLog:
         assert entry.user_query == "Show me the hello function"
         assert "hello function" in entry.assistant_summary
 
-        # Verify JSONL file exists and has content
-        log_path = log._log_path()
-        assert log_path.exists()
-        lines = log_path.read_text().strip().split("\n")
+        # Verify JSONL file
+        path = memory._get_log_path()
+        assert path.exists()
+        lines = path.read_text().strip().split("\n")
         assert len(lines) == 1
         data = json.loads(lines[0])
+        assert data["type"] == "turn"
         assert data["turn"] == 1
         assert data["q"] == "Show me the hello function"
         assert len(data["tools"]) == 2
 
-    def test_record_multiple_turns(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_record_multiple_turns(self, memory):
         """Test that multiple turns append to the same JSONL file."""
-        log = InteractionLog("/test/project", "test-sess")
-        log.interactions_dir = tmp_path / "interactions"
-
         # Turn 1
-        log.record_tool_call("read_file", {"filePath": "/a.py"}, "content a")
-        log.record_turn("Read file a", "Here's file a")
+        memory.record_tool_call("read_file", {"filePath": "/a.py"}, "content a")
+        await memory.record_turn("Read file a", "Here's file a")
 
         # Turn 2
-        log.record_tool_call("write_file", {"filePath": "/b.py"}, "ok")
-        log.record_turn("Write file b", "Done writing")
+        memory.record_tool_call("write_file", {"filePath": "/b.py"}, "ok")
+        await memory.record_turn("Write file b", "Done writing")
 
         # Turn 3 — no tool calls
-        log.record_turn("What did I do?", "You read a.py and wrote b.py")
+        await memory.record_turn("What did I do?", "You read a.py and wrote b.py")
 
-        entries = log.load_log()
-        assert len(entries) == 3
-        assert entries[0]["turn"] == 1
-        assert entries[1]["turn"] == 2
-        assert entries[2]["turn"] == 3
-        assert len(entries[2]["tools"]) == 0
+        turns = memory._load_all_turns()
+        assert len(turns) == 3
+        assert turns[0]["turn"] == 1
+        assert turns[1]["turn"] == 2
+        assert turns[2]["turn"] == 3
+        assert len(turns[2]["tools"]) == 0
 
-    def test_format_for_context(self, tmp_path: Path):
-        """Test that format_for_context produces structured output."""
-        log = InteractionLog("/test/project", "test-sess")
-        log.interactions_dir = tmp_path / "interactions"
+    @pytest.mark.asyncio
+    async def test_tool_calls_cleared_after_turn(self, memory):
+        """Test that tool call buffer is cleared after recording a turn."""
+        memory.record_tool_call("read_file", {"filePath": "/a.py"}, "content")
+        await memory.record_turn("Read a", "Here's a")
+        assert len(memory._current_tool_calls) == 0
 
-        log.record_tool_call("read_file", {"filePath": "/src/main.py"}, "def foo(): pass")
-        log.record_turn("Show me foo", "Here's foo defined in main.py")
 
-        ctx = log.format_for_context()
-        assert "<interaction_log>" in ctx
-        assert "</interaction_log>" in ctx
-        assert "<turn n=" in ctx
-        assert "read_file" in ctx
-        assert "Show me foo" in ctx
+class TestInputSummarization:
+    """Tests for _summarize_input static method."""
 
-    def test_summarize_input_search(self):
-        """Test input summarization for search tools."""
-        result = InteractionLog._summarize_input("search_content", {"pattern": "def foo"})
+    def test_summarize_search_pattern(self):
+        result = SessionMemory._summarize_input("search_content", {"pattern": "def foo"})
         assert "pattern=" in result
         assert "def foo" in result
 
-    def test_summarize_input_file(self):
-        """Test input summarization for file tools."""
-        result = InteractionLog._summarize_input("read_file", {"filePath": "/a.py", "offset": 5, "limit": 10})
+    def test_summarize_file_path_with_offset(self):
+        result = SessionMemory._summarize_input("read_file", {"filePath": "/a.py", "offset": 5, "limit": 10})
         assert "offset=5" in result
         assert "limit=10" in result
 
-    def test_summarize_input_command(self):
-        """Test input summarization for command tools."""
-        result = InteractionLog._summarize_input("bash", {"command": "ls -la"})
+    def test_summarize_command(self):
+        result = SessionMemory._summarize_input("bash", {"command": "ls -la"})
         assert "cmd=" in result
         assert "ls -la" in result
 
-    def test_summarize_input_edit(self):
-        """Test input summarization for edit tools."""
-        result = InteractionLog._summarize_input("replace_in_file", {"old_str": "hello world"})
+    def test_summarize_edit(self):
+        result = SessionMemory._summarize_input("replace_in_file", {"old_str": "hello world"})
         assert "replacing:" in result
 
-    def test_load_log_empty(self, tmp_path: Path):
-        """Test loading from nonexistent log file."""
-        log = InteractionLog("/test/project", "test-sess")
-        log.interactions_dir = tmp_path / "interactions"
-        entries = log.load_log()
-        assert entries == []
-
-
-class TestRollingUpdate:
-    """Tests for session summary rolling update (every N turns)."""
-
-    def test_tick_turn(self):
-        """Test turn counter incrementing."""
-        memory = SessionMemory("/test/project", "test-session")
-        assert memory._turn_count == 0
-        assert memory.tick_turn() == 1
-        assert memory.tick_turn() == 2
-        assert memory._turn_count == 2
-
-    @pytest.mark.asyncio
-    async def test_update_summary_skips_when_not_due(self, sample_messages):
-        """Test that update_summary_if_due skips when turn is not a multiple of interval."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = True
-        memory._turn_count = 3  # Not a multiple of 5
-
-        result = await memory.update_summary_if_due(sample_messages)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_update_summary_runs_when_due(self, sample_messages, temp_memory_dir):
-        """Test that update_summary_if_due runs at interval multiples."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = True
-        memory._turn_count = 5  # Multiple of 5
-        memory.memory_dir = temp_memory_dir
-        memory.notes_dir = temp_memory_dir / "notes"
-        memory.index_path = temp_memory_dir / "index.json"
-
-        result = await memory.update_summary_if_due(sample_messages)
-        assert result is not None
-        assert result.exists()
-        # Should have set _last_summary_path
-        assert memory._last_summary_path == result
-
-    @pytest.mark.asyncio
-    async def test_update_summary_overwrites_same_file(self, sample_messages, temp_memory_dir):
-        """Test that rolling update overwrites the same file."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = True
-        memory.memory_dir = temp_memory_dir
-        memory.notes_dir = temp_memory_dir / "notes"
-        memory.index_path = temp_memory_dir / "index.json"
-
-        # First update at turn 5
-        memory._turn_count = 5
-        path1 = await memory.update_summary_if_due(sample_messages)
-        assert path1 is not None
-
-        # Second update at turn 10 — should overwrite same file
-        memory._turn_count = 10
-        path2 = await memory.update_summary_if_due(sample_messages)
-        assert path2 is not None
-        assert path1 == path2  # Same file path
-
-    @pytest.mark.asyncio
-    async def test_update_summary_force(self, sample_messages, temp_memory_dir):
-        """Test that force=True triggers update regardless of turn count."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = True
-        memory._turn_count = 3  # Not a multiple of 5
-        memory.memory_dir = temp_memory_dir
-        memory.notes_dir = temp_memory_dir / "notes"
-        memory.index_path = temp_memory_dir / "index.json"
-
-        result = await memory.update_summary_if_due(sample_messages, force=True)
-        assert result is not None
-        assert result.exists()
-
-    @pytest.mark.asyncio
-    async def test_update_summary_disabled(self, sample_messages):
-        """Test that rolling update does nothing when disabled."""
-        memory = SessionMemory("/test/project", "test-session")
-        memory._config["enabled"] = False
-        memory._turn_count = 5
-
-        result = await memory.update_summary_if_due(sample_messages)
-        assert result is None
-
-
-class TestFormatFullContext:
-    """Tests for format_full_context combining both memory types."""
-
-    def test_format_full_context_empty(self):
-        """Test with no notes and no interaction log."""
-        memory = SessionMemory("/test/project", "test-session")
-        result = memory.format_full_context([], None)
+    def test_summarize_empty_input(self):
+        result = SessionMemory._summarize_input("unknown", {})
         assert result == ""
 
-    def test_format_full_context_with_interaction_log(self, tmp_path: Path):
-        """Test that interaction log is included in full context."""
-        memory = SessionMemory("/test/project", "test-session")
-        log = InteractionLog("/test/project", "test-sess")
-        log.interactions_dir = tmp_path / "interactions"
 
-        log.record_tool_call("read_file", {"filePath": "/a.py"}, "content")
-        log.record_turn("Read a.py", "Here's the content")
+class TestFileIO:
+    """Tests for JSONL file I/O."""
 
-        result = memory.format_full_context([], log)
-        assert "<interaction_log>" in result
-        assert "read_file" in result
+    def test_append_and_load_records(self, memory):
+        """Test appending and loading records."""
+        memory._append_record({"type": "turn", "turn": 1, "q": "hello"})
+        memory._append_record({"type": "turn", "turn": 2, "q": "world"})
+        records = memory._load_all_records()
+        assert len(records) == 2
+        assert records[0]["q"] == "hello"
+        assert records[1]["q"] == "world"
+
+    def test_load_all_turns_filters(self, memory):
+        """Test that _load_all_turns only returns turn records."""
+        memory._append_record({"type": "summary", "text": "summary"})
+        memory._append_record({"type": "turn", "turn": 1, "q": "hello"})
+        memory._append_record({"type": "turn", "turn": 2, "q": "world"})
+        turns = memory._load_all_turns()
+        assert len(turns) == 2
+
+    def test_load_latest_summary(self, memory):
+        """Test that latest summary is found."""
+        memory._append_record({"type": "summary", "text": "old summary"})
+        memory._append_record({"type": "turn", "turn": 1})
+        memory._append_record({"type": "summary", "text": "new summary"})
+        s = memory._load_latest_summary()
+        assert s is not None
+        assert s["text"] == "new summary"
+
+    def test_load_latest_summary_empty(self, memory):
+        """Test loading summary when no records exist."""
+        s = memory._load_latest_summary()
+        assert s is None
+
+    def test_rewrite_file_updates_turns(self, memory):
+        """Test that _rewrite_file updates turn summaries and replaces summary."""
+        memory._append_record({"type": "turn", "turn": 1, "a": "old summary 1"})
+        memory._append_record({"type": "turn", "turn": 2, "a": "old summary 2"})
+        memory._append_record({"type": "summary", "text": "old session summary"})
+
+        memory._summary = SessionSummary(
+            session_id="test", project_path="/test", start_time="", end_time="",
+            duration_minutes=1, summary_text="new session summary",
+        )
+        memory._rewrite_file({1: "refined summary 1"})
+
+        records = memory._load_all_records()
+        turns = [r for r in records if r["type"] == "turn"]
+        summaries = [r for r in records if r["type"] == "summary"]
+        assert len(summaries) == 1
+        assert summaries[0]["text"] == "new session summary"
+        assert turns[0]["a"] == "refined summary 1"
+        assert turns[1]["a"] == "old summary 2"  # unchanged
+
+
+class TestLLMTrigger:
+    """Tests for LLM update triggering every SUMMARY_INTERVAL turns."""
+
+    @pytest.mark.asyncio
+    async def test_llm_triggers_at_interval(self, memory):
+        """Test that LLM update triggers at SUMMARY_INTERVAL multiples."""
+        memory._config["enabled"] = True
+        # Mock _llm_update to track calls
+        call_count = 0
+        original_llm_update = memory._llm_update
+
+        async def mock_llm_update(**kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        memory._llm_update = mock_llm_update
+
+        # Record 3 turns (SUMMARY_INTERVAL=3)
+        await memory.record_turn("q1", "a1")
+        await memory.record_turn("q2", "a2")
+        await memory.record_turn("q3", "a3")  # Should trigger LLM
+
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_does_not_trigger_off_interval(self, memory):
+        """Test that LLM update does NOT trigger at non-interval turns."""
+        memory._config["enabled"] = True
+        call_count = 0
+
+        async def mock_llm_update(**kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        memory._llm_update = mock_llm_update
+
+        await memory.record_turn("q1", "a1")
+        await memory.record_turn("q2", "a2")
+        # Only 2 turns, no trigger
+        assert call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_llm_does_not_trigger_when_disabled(self, memory):
+        """Test that LLM update is skipped when memory is disabled."""
+        memory._config["enabled"] = False
+        call_count = 0
+
+        async def mock_llm_update(**kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        memory._llm_update = mock_llm_update
+
+        await memory.record_turn("q1", "a1")
+        await memory.record_turn("q2", "a2")
+        await memory.record_turn("q3", "a3")
+        assert call_count == 0
+
+
+class TestFinalize:
+    """Tests for session finalization."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_when_disabled(self, memory):
+        """Test that finalize returns None when disabled."""
+        memory._config["enabled"] = False
+        result = await memory.finalize()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_finalize_when_no_turns(self, memory):
+        """Test that finalize returns None when no turns recorded."""
+        memory._config["enabled"] = True
+        result = await memory.finalize()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_finalize_calls_llm_update(self, memory):
+        """Test that finalize triggers LLM update."""
+        memory._config["enabled"] = True
+        memory._turn_counter = 2  # Simulate 2 turns recorded
+
+        called = False
+
+        async def mock_llm_update(**kwargs):
+            nonlocal called
+            called = True
+
+        memory._llm_update = mock_llm_update
+
+        result = await memory.finalize()
+        assert called
+
+
+class TestContextFormatting:
+    """Tests for format_for_context and format_history_context."""
+
+    def test_format_for_context_empty(self, memory):
+        """Test formatting when no records exist."""
+        result = memory.format_for_context()
+        assert result == ""
+
+    def test_format_for_context_with_data(self, memory):
+        """Test formatting with turns and summary."""
+        memory._append_record({"type": "summary", "text": "## what_was_done\n- Added login"})
+        memory._append_record({
+            "type": "turn", "turn": 1, "ts": "2024-01-01",
+            "q": "Add login", "tools": [{"tool": "edit", "file": "/login.py", "input": "", "output": ""}],
+            "a": "Added login functionality",
+        })
+
+        result = memory.format_for_context()
+        assert "<session_memory>" in result
+        assert "</session_memory>" in result
+        assert "<summary>" in result
+        assert "what_was_done" in result
+        assert "<turns>" in result
+        assert "<turn n=" in result
+        assert "Add login" in result
+
+    def test_format_for_context_limits_turns(self, memory):
+        """Test that format_for_context respects the limit parameter."""
+        for i in range(10):
+            memory._append_record({
+                "type": "turn", "turn": i + 1, "ts": "2024-01-01",
+                "q": f"query {i}", "tools": [], "a": f"answer {i}",
+            })
+
+        result = memory.format_for_context(limit=3)
+        # Should only contain the last 3 turns
+        assert "query 7" in result
+        assert "query 8" in result
+        assert "query 9" in result
+        assert "query 0" not in result
+
+    def test_format_history_context(self, memory):
+        """Test format_history_context with explicit sessions data."""
+        sessions = [
+            {"date": "2024-01-01", "duration_min": 30, "topics": ["Python"],
+             "text": "## what_was_done\n- Added tests"},
+        ]
+        result = memory.format_history_context(recent_sessions=sessions)
+        assert "<session_history>" in result
+        assert "2024-01-01" in result
+        assert "Added tests" in result
+
+
+class TestFallbackSummary:
+    """Tests for fallback (non-LLM) summary generation."""
+
+    def test_fallback_combined_basic(self, memory):
+        """Test fallback summary generation."""
+        all_turns = [
+            {"turn": 1, "q": "Read main.py", "tools": [{"tool": "read_file", "file": "/main.py"}], "a": "content"},
+            {"turn": 2, "q": "Edit it", "tools": [{"tool": "edit", "file": "/main.py"}], "a": "done"},
+        ]
+        result = memory._fallback_combined(all_turns, all_turns, datetime.now())
+
+        assert "summary" in result
+        assert "## what_was_done" in result["summary"]
+        assert "## technical_context" in result["summary"]
+        assert "refined_turns" in result
+
+
+class TestParseResponse:
+    """Tests for _parse_llm_response."""
+
+    def test_parse_response_basic(self, memory):
+        """Test parsing LLM response with summary and refined turns."""
+        raw = """## what_was_done
+- Added login feature
+
+## technical_context
+- Python Flask app
+
+TURN_1: Added login endpoint using Flask
+TURN_2: Created login template"""
+
+        result = memory._parse_llm_response(raw, [])
+        assert "what_was_done" in result["summary"]
+        assert "Added login feature" in result["summary"]
+        assert 1 in result["refined_turns"]
+        assert 2 in result["refined_turns"]
+        assert "login endpoint" in result["refined_turns"][1]
+
+    def test_parse_response_no_refinements(self, memory):
+        """Test parsing response with no TURN_ lines."""
+        raw = """## what_was_done
+- Explored codebase"""
+
+        result = memory._parse_llm_response(raw, [])
+        assert "what_was_done" in result["summary"]
+        assert len(result["refined_turns"]) == 0
+
+
+class TestHelpers:
+    """Tests for static helper methods."""
+
+    def test_extract_files_write(self):
+        turns = [
+            {"tools": [{"tool": "edit", "file": "/a.py"}, {"tool": "read_file", "file": "/b.py"}]},
+            {"tools": [{"tool": "write_to_file", "file": "/c.py"}]},
+        ]
+        files = SessionMemory._extract_files(turns, "write")
+        assert "/a.py" in files
+        assert "/c.py" in files
+        assert "/b.py" not in files
+
+    def test_extract_files_read(self):
+        turns = [
+            {"tools": [{"tool": "read_file", "file": "/b.py"}, {"tool": "edit", "file": "/a.py"}]},
+        ]
+        files = SessionMemory._extract_files(turns, "read")
+        assert "/b.py" in files
+        assert "/a.py" not in files
+
+    def test_count_tools(self):
+        turns = [
+            {"tools": [{"tool": "read_file"}, {"tool": "read_file"}, {"tool": "edit"}]},
+            {"tools": [{"tool": "bash"}]},
+        ]
+        counts = SessionMemory._count_tools(turns)
+        assert counts["read_file"] == 2
+        assert counts["edit"] == 1
+        assert counts["bash"] == 1
+
+    def test_infer_topics_python(self):
+        topics = SessionMemory._infer_topics({"/src/main.py", "/tests/test_main.py"})
+        assert "Python" in topics
+
+    def test_infer_topics_javascript(self):
+        topics = SessionMemory._infer_topics({"/src/app.js", "/src/component.tsx"})
+        assert "JavaScript" in topics or "React/TypeScript" in topics
+
+    def test_infer_topics_documentation(self):
+        topics = SessionMemory._infer_topics({"/README.md", "/docs/guide.md"})
+        assert "Documentation" in topics
+
+
+class TestConvenienceFunctions:
+    """Tests for module-level convenience functions."""
+
+    def test_create_session_memory(self):
+        m = create_session_memory("/test/project", "sess-1")
+        assert isinstance(m, SessionMemory)
+        assert m.project_path == "/test/project"
+        assert m.session_id == "sess-1"
+
+    def test_load_recent_notes_empty(self):
+        notes = load_recent_notes("/nonexistent/project")
+        assert notes == []
+
+
+class TestBuildCombinedPrompt:
+    """Tests for _build_combined_prompt."""
+
+    def test_prompt_contains_required_sections(self, memory):
+        """Test that the combined prompt includes all required sections."""
+        all_turns = [
+            {"turn": 1, "q": "Help me", "tools": [{"tool": "read_file", "file": "/a.py", "input": "", "output": ""}], "a": "Sure"},
+        ]
+        recent_turns = all_turns
+        prompt_text = memory._build_combined_prompt(all_turns, recent_turns, datetime.now())
+
+        assert "## what_was_done" in prompt_text
+        assert "## technical_context" in prompt_text
+        assert "## problems_encountered" in prompt_text
+        assert "## unfinished_work" in prompt_text
+        assert "## key_files" in prompt_text
+        assert "TASK 1" in prompt_text
+        assert "TASK 2" in prompt_text
+        assert "TURN_" in prompt_text
+
+    def test_prompt_includes_existing_summary(self, memory):
+        """Test that existing summary is included in the prompt."""
+        memory._summary = SessionSummary(
+            session_id="test", project_path="/test", start_time="", end_time="",
+            duration_minutes=1, summary_text="Previous session work",
+        )
+        prompt_text = memory._build_combined_prompt([], [], datetime.now())
+        assert "Previous session work" in prompt_text
