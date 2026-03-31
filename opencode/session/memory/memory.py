@@ -75,7 +75,7 @@ class SessionMemory:
     def __init__(self, project_path: str, session_id: str | None = None):
         self.project_path = project_path
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.memory_dir = MEMORY_DIR
+        self.memory_dir = Path(project_path) / ".opencode" / "memory"
         self._config = self._load_config()
         self._turn_counter = 0
         self._current_tool_calls: list[dict[str, Any]] = []

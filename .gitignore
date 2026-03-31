@@ -11,5 +11,6 @@ build/
 .env
 opencode.json
 opencode.jsonc
+.opencode/
 kimi-cli
 agent-mem-note
