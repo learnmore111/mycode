@@ -716,28 +716,37 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 if full_text:
                     conversation_history.append({"role": "assistant", "content": full_text})
 
-            # --- Per-turn memory updates ---
+            # --- Per-turn memory updates (non-blocking) ---
             if session_memory.is_enabled:
-                try:
-                    await session_memory.record_turn(
-                        user_query=text,
-                        assistant_response=full_text,
-                        messages=conversation_history,
-                        start_time=session_start_time,
-                    )
-                except Exception:
-                    pass  # Don't let memory failures break the main loop
+                import asyncio as _mem_aio
+                async def _bg_record():
+                    try:
+                        await session_memory.record_turn(
+                            user_query=text,
+                            assistant_response=full_text,
+                            messages=conversation_history,
+                            start_time=session_start_time,
+                        )
+                    except Exception:
+                        pass
+                _mem_aio.ensure_future(_bg_record())
 
-        # --- Session end: save memory note if enabled ---
+        # --- Session end: save memory note if enabled (with timeout) ---
         if session_memory.is_enabled and conversation_history:
             console.print(Text("  Saving session...", style="dim"))
             try:
-                note_path = await session_memory.finalize(
-                    messages=conversation_history,
-                    start_time=session_start_time,
+                import asyncio as _fin_aio
+                note_path = await _fin_aio.wait_for(
+                    session_memory.finalize(
+                        messages=conversation_history,
+                        start_time=session_start_time,
+                    ),
+                    timeout=5.0,
                 )
                 if note_path:
                     console.print(Text(f"  ✓ Saved: {note_path.name}", style="green"))
+            except TimeoutError:
+                console.print(Text("  ⚠ Save timed out (skipped LLM summary)", style="yellow dim"))
             except Exception as e:
                 console.print(Text(f"  ✗ Save failed: {e}", style="red dim"))
 

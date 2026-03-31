@@ -277,11 +277,8 @@ async def prompt(
                 yield PromptEvent(type="compact", data={"session_id": session_id})
                 continue
 
-        # Finalize
+        # Finalize — persist in background (don't block the done event)
         assistant_msg.time_completed = int(time.time() * 1000)
-        save_message(assistant_msg)
-        save_parts(all_parts)
-        touch(session_id)
 
         yield PromptEvent(type="done", data={
             "session_id": session_id,
@@ -303,6 +300,12 @@ async def prompt(
             "stop_reason": stop_reason,
             "checkpoint": guard.checkpoint,
         })
+
+        # Persist after yielding done (user sees result immediately)
+        import asyncio as _aio
+        await _aio.to_thread(save_message, assistant_msg)
+        await _aio.to_thread(save_parts, all_parts)
+        await _aio.to_thread(touch, session_id)
 
     except Exception as e:
         logger.error("prompt failed", error=str(e))
