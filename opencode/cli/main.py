@@ -81,7 +81,6 @@ def run(directory: str, model: str | None, agent: str | None, message: str | Non
 async def _interactive(directory: str, model: str | None, agent: str | None) -> None:
     """Run the interactive CLI REPL with Rich-powered UI."""
     import shlex
-    import shutil
     import time
     from datetime import datetime
     from pathlib import Path
@@ -100,9 +99,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     from rich.console import Console
     from rich.live import Live
     from rich.markdown import Markdown
-    from rich.panel import Panel
     from rich.spinner import Spinner
-    from rich.table import Table
     from rich.text import Text
 
     from opencode.bus.bus import Bus
@@ -135,40 +132,27 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     except Exception:
         pass  # Will be populated lazily if needed
 
-    # --- Welcome Panel ---
-    blue = "dodger_blue1"
-    logo = Text.from_markup(f"[{blue} bold]▐█▛█▛█▌\n▐█████▌[/{blue} bold]")
-    head = Text.from_markup(f"[bold]Welcome to OpenCode v{__version__}![/bold]")
-    help_text = Text.from_markup("[grey50]Type /help for commands, Ctrl+D to exit.[/grey50]")
-    header_table = Table(show_header=False, show_edge=False, box=None, padding=(0, 1), expand=False)
-    header_table.add_column(justify="left")
-    header_table.add_column(justify="left")
-    header_table.add_row(logo, Text.assemble(head, "\n", help_text))
-
-    info_items = [
-        ("Directory", abs_directory, "grey50"),
-        ("Model", model_ref[0] or "default", "grey50"),
-        ("Agent", agent or "build", "grey50"),
-    ]
-    info_lines = [header_table, Text("")]
-    for name, value, color in info_items:
-        info_lines.append(Text(f"{name}: {value}", style=color))
-    info_lines.append(Text(""))
-    tips = [
-        ("Ctrl+J", "newline"),
-        ("Ctrl+D", "exit"),
-        ("/clear", "reset"),
-        ("!cmd", "shell"),
-    ]
-    tip_text = "  ".join(f"{k}: {v}" for k, v in tips)
-    info_lines.append(Text(tip_text, style="grey50"))
-
-    from rich.console import Group
-    console.print(Panel(
-        Group(*info_lines),
-        border_style=blue,
-        expand=False,
-        padding=(1, 2),
+    # --- Welcome (Claude Code style: clean, minimal) ---
+    console.print()
+    console.print(Text.assemble(
+        ("╭ ", "dim"),
+        ("OpenCode", "bold"),
+        (f" v{__version__}", "dim"),
+    ))
+    console.print(Text.assemble(
+        ("│ ", "dim"),
+        ("model: ", "dim"),
+        (model_ref[0] or "default", ""),
+        ("  cwd: ", "dim"),
+        (abs_directory, ""),
+    ))
+    console.print(Text.assemble(
+        ("╰ ", "dim"),
+        ("Type ", "dim"),
+        ("/help", "bold"),
+        (" for commands · ", "dim"),
+        ("Ctrl+D", "bold"),
+        (" to exit", "dim"),
     ))
     console.print()
 
@@ -309,23 +293,16 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     completer = merge_completers([_SlashCompleter(), _ShellCompleter(), _FileMentionCompleter()])
 
-    # --- Prompt setup ---
-    def _get_border_width() -> int:
-        """Get border inner width based on terminal size."""
-        tw = shutil.get_terminal_size((80, 24)).columns
-        return max(tw - 6, 20)  # leave margin for ┌/└ + spaces
-
+    # --- Prompt setup (Claude Code style: clean ❯ prompt) ---
     def _bottom_toolbar():
-        """Bottom toolbar = lower border + status info."""
-        bw = _get_border_width()
+        """Subtle bottom status bar."""
         cwd_display = shell_cwd[0]
         home = os.path.expanduser("~")
         if cwd_display.startswith(home):
             cwd_display = "~" + cwd_display[len(home):]
         return HTML(
-            f'<style fg="#555555">  └{"─" * bw}┘</style>\n'
-            f'  <b>cwd:</b> <style fg="#888888">{cwd_display}</style>'
-            f'  <style fg="#555555">Ctrl+D: exit | !cd &lt;dir&gt;</style>'
+            f'  <style fg="#555555">{cwd_display}</style>'
+            f'  <style fg="#444444">Ctrl+D: exit</style>'
         )
 
     pt_style = PtStyle.from_dict({
@@ -340,9 +317,18 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         completer=completer,
         complete_while_typing=True,
         reserve_space_for_menu=4,
-        placeholder=HTML('<style fg="#666666">(message, /help, !cmd, @file)</style>'),
+        placeholder=HTML('<style fg="#555555">Send a message...</style>'),
         bottom_toolbar=_bottom_toolbar,
     )
+
+
+    # --- Token formatting helper ---
+    def _fmt_tokens(n: int) -> str:
+        if n >= 100_000:
+            return f"{n // 1000}K"
+        if n >= 1000:
+            return f"{n / 1000:.1f}K"
+        return str(n)
 
 
     session_info = None
@@ -358,21 +344,17 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         # Load recent notes for context (optional: can be used for context injection)
         recent_notes = session_memory.load_recent_sessions()
         if recent_notes:
-            console.print(Text(f"  📝 {len(recent_notes)} recent session notes available", style="grey50"))
+            console.print(Text(f"  ℹ {len(recent_notes)} recent session notes", style="dim"))
 
     async def _run_loop() -> None:
         nonlocal session_info, conversation_history, total_tokens_used, context_limit, session_start_time
 
         while True:
-            # Prompt symbol
-            prompt_symbol = "✨ " if not (agent and agent == "plan") else "📋 "
+            # Claude Code style prompt: simple ❯
+            prompt_symbol = "❯ "
 
-            # Build prompt message with upper border embedded
-            bw = _get_border_width()
-            # prompt message = top border line + input line prefix
             prompt_msg = HTML(
-                f'<style fg="#555555">  ┌{"─" * bw}┐</style>\n'
-                f'<style fg="#555555">  │</style> {prompt_symbol}'
+                f'<style fg="#6366f1"><b>{prompt_symbol}</b></style>'
             )
 
             try:
@@ -396,34 +378,34 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                     if len(parts_cmd) < 2:
                         # No argument — list available models
                         if _available_models:
-                            console.print(f"  [cyan]Current model:[/cyan] {model_ref[0] or 'default'}")
-                            console.print(f"  [cyan]Available models ({len(_available_models)}):[/cyan]")
+                            console.print(f"  [bold]Current:[/bold] {model_ref[0] or 'default'}")
+                            console.print(f"  [bold]Available ({len(_available_models)}):[/bold]")
                             for m in _available_models:
                                 marker = " ←" if m == model_ref[0] else ""
-                                console.print(f"    • {m}[green]{marker}[/green]")
+                                console.print(f"    {m}[green]{marker}[/green]")
                         else:
-                            console.print("  [grey50]No models found. Set an API key env var.[/grey50]")
-                        console.print("  [grey50]Usage: /model <provider/model>[/grey50]")
+                            console.print("  [dim]No models found. Set an API key env var.[/dim]")
+                        console.print("  [dim]Usage: /model <provider/model>[/dim]")
                     else:
                         new_model = parts_cmd[1].strip()
                         if new_model in _available_models:
                             old_model = model_ref[0] or "default"
                             model_ref[0] = new_model
-                            console.print(f"  [green]✓ Model switched: {old_model} → {new_model}[/green]")
+                            console.print(f"  [green]✓ Model: {old_model} → {new_model}[/green]")
                         else:
                             # Try fuzzy match
                             matches = [m for m in _available_models if new_model.lower() in m.lower()]
                             if len(matches) == 1:
                                 old_model = model_ref[0] or "default"
                                 model_ref[0] = matches[0]
-                                console.print(f"  [green]✓ Model switched: {old_model} → {matches[0]}[/green]")
+                                console.print(f"  [green]✓ Model: {old_model} → {matches[0]}[/green]")
                             elif matches:
-                                console.print(f"  [yellow]Ambiguous model name '{new_model}'. Matches:[/yellow]")
+                                console.print(f"  [yellow]Ambiguous: '{new_model}'. Matches:[/yellow]")
                                 for m in matches:
-                                    console.print(f"    • {m}")
+                                    console.print(f"    {m}")
                             else:
                                 console.print(f"  [red]✗ Unknown model: {new_model}[/red]")
-                                console.print("  [grey50]Use /model to list available models.[/grey50]")
+                                console.print("  [dim]Use /model to list available models.[/dim]")
                     continue
 
                 handled = _handle_command(text, conversation_history, console, abs_directory)
@@ -472,17 +454,15 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 agent=agent,
             )
 
-            # --- Stream AI response with real-time interleaved rendering ---
-            # Text and tool output are rendered inline as they arrive,
-            # matching the experience of Claude Code / Cursor / aider.
+            # --- Stream AI response (Claude Code style) ---
             console.print()
             full_text = ""
             done_data: dict = {}
             start_time = time.monotonic()
-            # Track current text segment (flushed when a tool event arrives)
             _text_buf = ""
-            _in_text = False  # Whether we're currently accumulating text
-            _started = False  # Whether the spinner has been shown
+            _in_text = False
+            _started = False
+            _tool_count = 0  # Track tool calls in this turn
 
             def _flush_text() -> None:
                 """Render accumulated text as Markdown and reset buffer."""
@@ -492,7 +472,44 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 _text_buf = ""
                 _in_text = False
 
-            # Initial spinner while waiting for first token
+            def _tool_label(tool_name: str, tool_input: dict | None = None) -> str:
+                """Generate Claude Code style tool label: verb + target."""
+                ti = tool_input or {}
+                # Map tool IDs to human-friendly verbs + extract key arg
+                name_map = {
+                    "read": ("Read", ("file_path", "filePath", "path")),
+                    "read_file": ("Read", ("file_path", "filePath", "path")),
+                    "write": ("Write", ("file_path", "filePath", "path")),
+                    "write_file": ("Write", ("file_path", "filePath", "path")),
+                    "write_to_file": ("Write", ("file_path", "filePath", "path")),
+                    "edit": ("Edit", ("file_path", "filePath", "path")),
+                    "replace_in_file": ("Edit", ("file_path", "filePath", "path")),
+                    "bash": ("Bash", ("command",)),
+                    "glob": ("Glob", ("pattern",)),
+                    "grep": ("Grep", ("pattern",)),
+                    "search_content": ("Search", ("pattern",)),
+                    "codebase_search": ("Search", ("query",)),
+                    "list": ("List", ("path",)),
+                    "list_dir": ("List", ("path", "target_directory")),
+                    "webfetch": ("Fetch", ("url",)),
+                    "websearch": ("Search", ("query",)),
+                    "task": ("Task", ("description",)),
+                    "todowrite": ("Todo", ()),
+                }
+                verb, keys = name_map.get(tool_name, (tool_name, ()))
+                target = ""
+                for k in keys:
+                    if k in ti:
+                        val = str(ti[k])
+                        # Shorten file paths: show just filename or last 2 segments
+                        if "/" in val and len(val) > 50:
+                            parts = val.rstrip("/").split("/")
+                            val = "/".join(parts[-2:]) if len(parts) > 2 else val
+                        target = val[:60]
+                        break
+                return f"{verb} {target}" if target else verb
+
+            # Initial "thinking" spinner
             spinner = Spinner("dots", "")
             live = Live(spinner, console=console, refresh_per_second=10, transient=True)
             live.start()
@@ -503,13 +520,11 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         _started = True
                         model_name = event.data.get("model", "?")
                         spinner.text = Text.assemble(
-                            ("Composing... ", ""),
-                            ("<1s", "grey50"),
-                            (f" · {model_name}", "grey50"),
+                            ("Thinking", "dim italic"),
+                            (f"  ({model_name})", "dim"),
                         )
 
                     elif event.type == "text_delta":
-                        # First text token → stop spinner
                         if _started and live.is_started:
                             live.stop()
                             _started = False
@@ -517,22 +532,20 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         full_text += content
                         _text_buf += content
                         _in_text = True
-                        # Real-time: print each delta immediately (raw text, not Markdown)
-                        # We'll do a final Markdown render per text segment when a tool interrupts
-                        # For now, just accumulate — the flush happens on tool events or done
 
                     elif event.type == "tool_start":
-                        # A tool call was identified — flush any pending text as Markdown
                         if live.is_started:
                             live.stop()
                             _started = False
                         _flush_text()
+                        _tool_count += 1
                         tool_name = event.data.get("tool", "?")
-                        # Show a spinner for this tool
+                        label = _tool_label(tool_name)
+                        # Show spinner with tool label
                         tool_spinner = Spinner("dots", "")
                         tool_spinner.text = Text.assemble(
-                            ("⚡ ", "yellow"),
-                            (tool_name, "blue"),
+                            ("  ", ""),
+                            (label, "dim"),
                         )
                         live = Live(tool_spinner, console=console, refresh_per_second=10, transient=True)
                         live.start()
@@ -540,27 +553,16 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                     elif event.type == "tool_running":
                         tool_name = event.data.get("tool", "?")
                         tool_input = event.data.get("input", {})
-                        # Update spinner with brief input info
                         if live.is_started:
+                            label = _tool_label(tool_name, tool_input)
                             tool_spinner = Spinner("dots", "")
-                            # Show a compact summary of the tool input
-                            input_preview = ""
-                            if isinstance(tool_input, dict):
-                                # Show the first meaningful value
-                                for k in ("command", "file_path", "pattern", "query", "path", "content"):
-                                    if k in tool_input:
-                                        val = str(tool_input[k])[:60]
-                                        input_preview = f" {val}"
-                                        break
                             tool_spinner.text = Text.assemble(
-                                ("⚡ ", "yellow"),
-                                (tool_name, "blue"),
-                                (input_preview, "grey50"),
+                                ("  ", ""),
+                                (label, "dim"),
                             )
                             live.update(tool_spinner)
 
                     elif event.type == "tool_done":
-                        # Tool execution completed — render result
                         if live.is_started:
                             live.stop()
                         tool_name = event.data.get("tool", "?")
@@ -577,38 +579,55 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                                 status=status,
                             )
 
-                        # Status icon
+                        label = _tool_label(tool_name, tool_input)
+
+                        # Claude Code style: ✓/✗ + tool label
                         if status == "completed":
-                            icon = ("✓ ", "green")
+                            console.print(Text.assemble(
+                                ("  ✓ ", "green"),
+                                (label, ""),
+                            ))
                         elif status == "error":
-                            icon = ("✗ ", "red")
+                            console.print(Text.assemble(
+                                ("  ✗ ", "red"),
+                                (label, ""),
+                            ))
                         else:
-                            icon = ("• ", "yellow")
+                            console.print(Text.assemble(
+                                ("  • ", "yellow"),
+                                (label, ""),
+                            ))
 
-                        console.print(Text.assemble(
-                            icon,
-                            (tool_name, "blue"),
-                        ))
-                        if output:
-                            preview = output[:300].strip()
+                        # Show brief output preview (Claude Code shows compact result)
+                        if output and status == "completed":
+                            preview = output[:200].strip()
                             if preview:
-                                console.print(Text(f"  {preview[:150]}", style="grey50"))
+                                # Show first meaningful line only
+                                first_line = preview.split("\n")[0][:80]
+                                if first_line:
+                                    console.print(Text(f"    {first_line}", style="dim"))
+                        elif output and status == "error":
+                            err_line = output[:120].strip().split("\n")[0]
+                            if err_line:
+                                console.print(Text(f"    {err_line}", style="red dim"))
 
-                        # Prepare a fresh live for next events (text or tool)
+                        # Prepare fresh live for next events
                         live = Live(Spinner("dots", ""), console=console, refresh_per_second=10, transient=True)
-                        # Don't start yet — will start if needed
 
                     elif event.type == "error":
                         if live.is_started:
                             live.stop()
                         _flush_text()
-                        console.print(Text(f"✗ Error: {event.data.get('message', 'unknown')}", style="red bold"))
+                        console.print(Text.assemble(
+                            ("\n✗ Error: ", "red bold"),
+                            (event.data.get("message", "unknown"), "red"),
+                        ))
 
                     elif event.type == "compact":
                         if not live.is_started:
                             live.start()
                         spinner = Spinner("dots", "")
-                        spinner.text = Text("↻ Compacting context...", style="yellow")
+                        spinner.text = Text("  Compacting context...", style="yellow dim")
                         live.update(spinner)
 
                     elif event.type == "done":
@@ -623,7 +642,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # Flush any remaining text
             _flush_text()
 
-            # Status line with tokens, cost, and context progress bar
+            # Status line (Claude Code style: compact single line)
             elapsed = time.monotonic() - start_time
             tokens = done_data.get("tokens", {}) if done_data else {}
             cost = done_data.get("cost", 0.0) if done_data else 0.0
@@ -638,22 +657,23 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             if ctx_info.get("limit", 0) > 0:
                 context_limit = ctx_info["limit"]
 
-            parts_list = [f"{elapsed:.1f}s"]
+            # Format: ─ 3.2s · in:1234 out:567 · $0.0012
+            stat_parts = [f"{elapsed:.1f}s"]
             if t_in or t_out:
-                parts_list.append(f"in:{t_in} out:{t_out}")
+                stat_parts.append(f"in:{_fmt_tokens(t_in)} out:{_fmt_tokens(t_out)}")
             if t_reason:
-                parts_list.append(f"reasoning:{t_reason}")
+                stat_parts.append(f"reasoning:{_fmt_tokens(t_reason)}")
             if t_cache_r:
-                parts_list.append(f"cached:{t_cache_r}")
+                stat_parts.append(f"cached:{_fmt_tokens(t_cache_r)}")
             if cost > 0:
-                parts_list.append(f"${cost:.4f}")
+                stat_parts.append(f"${cost:.4f}")
 
             console.print(Text(
-                f"  ─ {' · '.join(parts_list)}",
-                style="grey50",
+                f"  ─ {' · '.join(stat_parts)}",
+                style="dim",
             ))
 
-            # Context window progress bar
+            # Context window bar
             if context_limit > 0:
                 _print_context_bar(console, total_tokens_used, context_limit)
             console.print()
@@ -677,16 +697,16 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
         # --- Session end: save memory note if enabled ---
         if session_memory.is_enabled and conversation_history:
-            console.print(Text("  💾 Saving session memory...", style="grey50"))
+            console.print(Text("  Saving session...", style="dim"))
             try:
                 note_path = await session_memory.finalize(
                     messages=conversation_history,
                     start_time=session_start_time,
                 )
                 if note_path:
-                    console.print(Text(f"  ✓ Session note saved: {note_path.name}", style="green"))
+                    console.print(Text(f"  ✓ Saved: {note_path.name}", style="green"))
             except Exception as e:
-                console.print(Text(f"  ✗ Failed to save session note: {e}", style="red"))
+                console.print(Text(f"  ✗ Save failed: {e}", style="red dim"))
 
         await bus.close()
 
@@ -694,7 +714,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
 
 def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> None:
-    """Print a context window usage progress bar."""
+    """Print a context window usage bar (Claude Code style)."""
     from rich.text import Text
 
     ratio = min(used / limit, 1.0) if limit > 0 else 0
@@ -702,7 +722,7 @@ def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> N
     empty = bar_width - filled
     pct = ratio * 100
 
-    # Color based on usage level
+    # Color gradient based on usage
     if pct < 50:
         bar_color = "green"
     elif pct < 75:
@@ -712,7 +732,6 @@ def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> N
     else:
         bar_color = "red"
 
-    # Format token counts: 1234 → 1.2K, 123456 → 123K
     def _fmt(n: int) -> str:
         if n >= 100_000:
             return f"{n // 1000}K"
@@ -721,12 +740,12 @@ def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> N
         return str(n)
 
     bar = Text.assemble(
-        ("  Context ", "grey50"),
-        ("▐", "grey30"),
+        ("  Context ", "dim"),
+        ("▐", "dim"),
         ("█" * filled, bar_color),
         ("░" * empty, "grey23"),
-        ("▌", "grey30"),
-        (f" {_fmt(used)}/{_fmt(limit)} ", "grey50"),
+        ("▌", "dim"),
+        (f" {_fmt(used)}/{_fmt(limit)} ", "dim"),
         (f"({pct:.0f}%)", bar_color),
     )
     console.print(bar)
@@ -743,7 +762,7 @@ async def _run_shell(console, command: str, cwd: str) -> None:
     if os.path.basename(shell) in ("fish", "nu"):
         shell = shutil.which("bash") or shutil.which("zsh") or "/bin/sh"
 
-    console.print(Text(f"  $ {command}", style="cyan"))
+    console.print(Text(f"  $ {command}", style="dim"))
     try:
         proc = await _aio.create_subprocess_exec(
             shell, "-c", command,
@@ -756,9 +775,9 @@ async def _run_shell(console, command: str, cwd: str) -> None:
         if output:
             console.print(output.rstrip())
         if proc.returncode and proc.returncode != 0:
-            console.print(Text(f"  exit code: {proc.returncode}", style="red"))
+            console.print(Text(f"  exit code: {proc.returncode}", style="red dim"))
     except TimeoutError:
-        console.print(Text("  ⏱ Command timed out (30s)", style="red"))
+        console.print(Text("  ✗ Command timed out (30s)", style="red"))
     except Exception as e:
         console.print(Text(f"  ✗ {e}", style="red"))
     console.print()
@@ -783,15 +802,15 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
     if cmd == "/help":
         from rich.table import Table
         table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column(style="cyan")
-        table.add_column(style="grey50")
+        table.add_column(style="bold")
+        table.add_column(style="dim")
         table.add_row("/help", "Show this help")
         table.add_row("/clear", "Clear conversation history")
         table.add_row("/model", "List models or switch: /model <provider/model>")
         table.add_row("/history", "Show conversation turns")
         table.add_row("/memory", "Show recent session notes")
         table.add_row("/quit", "Exit")
-        table.add_row("!<cmd>", "Execute a shell command directly")
+        table.add_row("!<cmd>", "Execute a shell command")
         table.add_row("", "")
         table.add_row("Ctrl+J", "Insert newline")
         table.add_row("Ctrl+D", "Exit")
@@ -800,35 +819,35 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
 
     if cmd == "/history":
         if not history:
-            console.print("  [grey50](empty)[/grey50]")
+            console.print("  [dim](empty)[/dim]")
         else:
             for i, msg in enumerate(history):
                 role = msg["role"]
                 content = msg.get("content", "")[:80]
-                style = "green" if role == "user" else "blue"
+                style = "green" if role == "user" else "dim"
                 console.print(f"  [{style}][{i}] {role}:[/{style}] {content}")
         return ""
 
     if cmd == "/memory":
         from opencode.session.memory import SessionMemory
         if not project_path:
-            console.print("  [grey50](no project path)[/grey50]")
+            console.print("  [dim](no project path)[/dim]")
             return ""
         memory = SessionMemory(project_path)
         if not memory.is_enabled:
             console.print("  [yellow]Session memory is disabled.[/yellow]")
-            console.print("  [grey50]Enable it in config: sessionMemory.enabled = true[/grey50]")
+            console.print("  [dim]Enable: sessionMemory.enabled = true[/dim]")
             return ""
         notes = memory.load_recent_sessions(limit=5)
         if not notes:
-            console.print("  [grey50](no session notes found)[/grey50]")
+            console.print("  [dim](no session notes found)[/dim]")
         else:
-            console.print(f"  [cyan]Recent session notes ({len(notes)}):[/cyan]")
+            console.print(f"  [bold]Session notes ({len(notes)}):[/bold]")
             for note in notes:
                 date = note.get("date", "?")
                 duration = note.get("duration_min", 0)
                 topics = ", ".join(note.get("topics", [])) or "general"
-                console.print(f"    • {date} ({duration}min) - {topics}")
+                console.print(f"    {date} ({duration}min) — {topics}")
         return ""
 
     console.print(f"  [red]Unknown command: {cmd}. Type /help[/red]")
