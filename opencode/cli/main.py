@@ -336,6 +336,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     conversation_history: list[dict] = []
     total_tokens_used = 0
     context_limit = 0
+    last_checkpoint: dict = {}
     session_start_time = datetime.now()  # Track when session started
 
     # Initialize session memory
@@ -347,7 +348,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             console.print(Text(f"  ℹ {len(recent_notes)} recent session notes", style="dim"))
 
     async def _run_loop() -> None:
-        nonlocal session_info, conversation_history, total_tokens_used, context_limit, session_start_time
+        nonlocal session_info, conversation_history, total_tokens_used, context_limit, last_checkpoint, session_start_time
 
         while True:
             # Claude Code style prompt: simple ❯
@@ -408,7 +409,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                                 console.print("  [dim]Use /model to list available models.[/dim]")
                     continue
 
-                handled = _handle_command(text, conversation_history, console, abs_directory)
+                handled = _handle_command(text, conversation_history, console, abs_directory, last_checkpoint=last_checkpoint)
                 if handled == "quit":
                     console.print("[grey50]Bye![/grey50]")
                     break
@@ -655,6 +656,9 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
                     elif event.type == "done":
                         done_data = event.data
+                        # Save checkpoint for /steps command
+                        if done_data.get("checkpoint"):
+                            last_checkpoint = done_data["checkpoint"]
                         if live.is_started:
                             live.stop()
 
@@ -812,14 +816,18 @@ async def _run_shell(console, command: str, cwd: str) -> None:
     console.print()
 
 
-def _handle_command(text: str, history: list, console=None, project_path: str | None = None) -> str | None:
-    """Handle slash commands. Returns 'quit', 'clear', or None."""
+def _handle_command(text: str, history: list, console=None, project_path: str | None = None, **extra) -> str | None:
+    """Handle slash commands. Returns 'quit', 'clear', or None.
+
+    extra may contain:
+      - last_checkpoint: dict from loop guard checkpoint
+    """
     if console is None:
         from rich.console import Console
         console = Console(highlight=False)
 
-    parts = text.lower().split()
-    cmd = parts[0]
+    parts_cmd = text.split()
+    cmd = parts_cmd[0].lower()
 
     if cmd in ("/quit", "/exit", "/q"):
         return "quit"
@@ -837,6 +845,8 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
         table.add_row("/clear", "Clear conversation history")
         table.add_row("/model", "List models or switch: /model <provider/model>")
         table.add_row("/history", "Show conversation turns")
+        table.add_row("/history N", "Show full detail for message #N")
+        table.add_row("/steps", "Show agentic loop step states from last turn")
         table.add_row("/memory", "Show recent session notes")
         table.add_row("/quit", "Exit")
         table.add_row("!<cmd>", "Execute a shell command")
@@ -849,12 +859,93 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
     if cmd == "/history":
         if not history:
             console.print("  [dim](empty)[/dim]")
-        else:
-            for i, msg in enumerate(history):
-                role = msg["role"]
-                content = msg.get("content", "")[:80]
-                style = "green" if role == "user" else "dim"
-                console.print(f"  [{style}][{i}] {role}:[/{style}] {content}")
+            return ""
+
+        # /history N → show detail for message N
+        if len(parts_cmd) >= 2:
+            try:
+                idx = int(parts_cmd[1])
+            except ValueError:
+                console.print(f"  [red]Invalid index: {parts_cmd[1]}[/red]")
+                return ""
+            if idx < 0 or idx >= len(history):
+                console.print(f"  [red]Index {idx} out of range (0-{len(history)-1})[/red]")
+                return ""
+
+            msg = history[idx]
+            role = msg.get("role", "?")
+            _print_message_detail(console, idx, msg, role)
+            return ""
+
+        # /history → overview of all turns
+        turn_num = 0
+        for i, msg in enumerate(history):
+            role = msg.get("role", "?")
+            if role == "user":
+                turn_num += 1
+                content = msg.get("content", "") or ""
+                console.print(f"\n  [bold green]Turn {turn_num}[/bold green]")
+                console.print(f"  [green][{i}] user:[/green] {content[:100]}")
+            elif role == "assistant":
+                content = msg.get("content", "") or ""
+                tool_calls = msg.get("tool_calls", [])
+                preview = content[:100] if content else "(no text)"
+                if tool_calls:
+                    tool_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+                    console.print(f"  [dim][{i}] assistant:[/dim] {preview}")
+                    console.print(f"       [dim]tools: {', '.join(tool_names)}[/dim]")
+                else:
+                    console.print(f"  [dim][{i}] assistant:[/dim] {preview}")
+            elif role == "tool":
+                tool_id = msg.get("tool_call_id", "?")[:12]
+                content = msg.get("content", "") or ""
+                first_line = content.split("\n")[0][:80] if content else "(empty)"
+                console.print(f"  [cyan][{i}] tool ({tool_id}):[/cyan] {first_line}")
+
+        console.print(f"\n  [dim]{len(history)} messages total. Use /history N for detail.[/dim]")
+        return ""
+
+    if cmd == "/steps":
+        checkpoint = extra.get("last_checkpoint")
+        if not checkpoint or not checkpoint.get("steps"):
+            console.print("  [dim](no step data — run a query first)[/dim]")
+            return ""
+
+        steps = checkpoint["steps"]
+        console.print(f"\n  [bold]Agentic Loop Steps[/bold] ({len(steps)} iterations)")
+        console.print(f"  [dim]Cache: {checkpoint.get('cache_stats', {}).get('size', 0)} entries[/dim]")
+        console.print()
+
+        for s in steps:
+            it = s.get("iteration", "?")
+            status = s.get("status", "?")
+            duration = s.get("duration", 0)
+            text_len = s.get("text_length", 0)
+            tools = s.get("tool_calls", [])
+            cached = s.get("cached_calls", 0)
+            retry = s.get("retry_count", 0)
+
+            # Status icon
+            icon = {"completed": "✅", "failed": "❌", "running": "🔶", "pending": "⬜"}.get(status, "•")
+
+            console.print(f"  {icon} Step {it}  [dim]{duration:.1f}s[/dim]", end="")
+            if text_len > 0:
+                console.print(f"  [green]text:{text_len}[/green]", end="")
+            if tools:
+                tool_summary = ", ".join(
+                    f"{t['tool']}{'✓' if t.get('status') == 'completed' else '✗'}"
+                    + (" 📦" if t.get("cached") else "")
+                    for t in tools
+                )
+                console.print(f"  tools:[{tool_summary}]", end="")
+            if cached:
+                console.print(f"  [cyan]cached:{cached}[/cyan]", end="")
+            if retry:
+                console.print(f"  [yellow]retries:{retry}[/yellow]", end="")
+            if s.get("error"):
+                console.print(f"  [red]{s['error'][:60]}[/red]", end="")
+            console.print()  # newline
+
         return ""
 
     if cmd == "/memory":
@@ -881,6 +972,85 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
 
     console.print(f"  [red]Unknown command: {cmd}. Type /help[/red]")
     return ""
+
+
+def _print_message_detail(console, idx: int, msg: dict, role: str) -> None:
+    """Print full detail for a single conversation message."""
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.text import Text
+
+    if role == "user":
+        content = msg.get("content", "") or ""
+        console.print(Panel(
+            Markdown(content) if content else Text("(empty)", style="dim"),
+            title=f"[green][{idx}] user[/green]",
+            border_style="green",
+            expand=False,
+        ))
+
+    elif role == "assistant":
+        content = msg.get("content", "") or ""
+        tool_calls = msg.get("tool_calls", [])
+
+        parts = []
+        if content:
+            parts.append(Markdown(content))
+
+        if tool_calls:
+            tc_lines = []
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                name = fn.get("name", "?")
+                args = fn.get("arguments", "{}")
+                # Pretty-print arguments
+                try:
+                    import json as _json
+                    args_pretty = _json.dumps(_json.loads(args), indent=2, ensure_ascii=False)
+                except Exception:
+                    args_pretty = args
+                tc_lines.append(f"  🔧 {name}({args_pretty[:200]})")
+            tool_text = "\n".join(tc_lines)
+            console.print(Panel(
+                Text.assemble(
+                    (content[:500] + "\n\n" if content else ""),
+                    ("Tool calls:\n", "bold"),
+                    (tool_text, "cyan"),
+                ),
+                title=f"[dim][{idx}] assistant[/dim]",
+                border_style="blue",
+                expand=False,
+            ))
+        else:
+            console.print(Panel(
+                Markdown(content) if content else Text("(no text output)", style="dim"),
+                title=f"[dim][{idx}] assistant[/dim]",
+                border_style="blue",
+                expand=False,
+            ))
+
+    elif role == "tool":
+        tool_id = msg.get("tool_call_id", "?")
+        content = msg.get("content", "") or ""
+        # Show up to 2000 chars of tool output
+        display = content[:2000]
+        if len(content) > 2000:
+            display += f"\n\n... ({len(content)} chars total)"
+        console.print(Panel(
+            Text(display) if display else Text("(empty)", style="dim"),
+            title=f"[cyan][{idx}] tool result ({tool_id[:16]})[/cyan]",
+            border_style="cyan",
+            expand=False,
+        ))
+
+    elif role == "system":
+        content = msg.get("content", "") or ""
+        console.print(Panel(
+            Text(content[:500], style="dim"),
+            title=f"[yellow][{idx}] system[/yellow]",
+            border_style="yellow",
+            expand=False,
+        ))
 
 
 async def _headless(directory: str, model: str | None, agent: str | None, message: str) -> None:
