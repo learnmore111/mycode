@@ -221,11 +221,18 @@ async def prompt(
 
             # === Debug: dump input before LLM call ===
             if debug:
+                # Collect cached tool_call_ids from previous iteration's parts
+                cached_call_ids = []
+                if iteration > 0 and all_parts:
+                    for p in all_parts:
+                        if isinstance(p, ToolPart) and p.state.get("metadata", {}).get("cached", False):
+                            cached_call_ids.append(p.tool_call_id)
                 debug_file = _debug_dump(
                     session_id, iteration, "input",
                     messages=messages, system=system,
                     model=f"{provider_id}/{model_id}",
                     tool_count=len(tools) if tools else 0,
+                    cached_tool_call_ids=cached_call_ids,
                 )
                 yield PromptEvent(type="debug_iter", data={
                     "iteration": iteration, "phase": "input",
@@ -283,6 +290,7 @@ async def prompt(
                             "input": p.state.get("input", {}),
                             "output": p.state.get("output", "")[:2000],
                             "status": p.state.get("status", "?"),
+                            "cached": p.state.get("metadata", {}).get("cached", False),
                         })
                 debug_file = _debug_dump(
                     session_id, iteration, "output",
