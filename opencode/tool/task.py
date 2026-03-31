@@ -1,12 +1,16 @@
 """Task tool — spawn a sub-agent for complex multi-step work. Equivalent to src/tool/task.ts.
 
-Key improvement: supports a multi-turn agentic loop (up to MAX_TURNS) so the
-sub-agent can perform multi-step reasoning (e.g. search → read → analyze)
-instead of being limited to a single LLM call.
+Enhancements:
+- Multi-turn agentic loop (up to MAX_TURNS)
+- Abort signal support (checks ctx.abort between turns)
+- Capability declarations
+- Clean type annotations (no bottom-of-file import hack)
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -17,10 +21,22 @@ from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
 from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 
-MAX_TURNS = 8  # Maximum agentic loop iterations to prevent runaway
+MAX_TURNS = 8
 
-# Tools excluded from sub-agent to prevent recursion or side effects
 _EXCLUDED_TOOLS = frozenset({"task", "todo", "question", "batch"})
+
+
+def _is_aborted(ctx: ToolContext) -> bool:
+    """Check if the abort signal has been set."""
+    abort = ctx.abort
+    if abort is None:
+        return False
+    if isinstance(abort, asyncio.Event):
+        return abort.is_set()
+    # Support callable abort check
+    if callable(abort):
+        return bool(abort())
+    return False
 
 
 class TaskParams(BaseModel):
@@ -36,6 +52,12 @@ class TaskTool(CallableTool[TaskParams]):
         "and can perform multi-step reasoning (search, read, edit, etc.). "
         "Use this when you need to research, explore, or execute multi-step work in parallel."
     )
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return False  # Sub-agents can perform writes
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True  # Each sub-agent has independent context
 
     async def call(self, params: TaskParams, ctx: ToolContext) -> ToolResult:
         description = params.description
@@ -57,8 +79,14 @@ class TaskTool(CallableTool[TaskParams]):
 
         builder = ToolResultBuilder(max_chars=50_000)
         total_tool_calls = 0
+        turn = 0
 
         for turn in range(MAX_TURNS):
+            # Check abort signal before each turn
+            if _is_aborted(ctx):
+                builder.add("\n\n(Sub-agent aborted by user)")
+                break
+
             stream_input = llmmod.StreamInput(
                 model=model,
                 messages=messages,
@@ -67,12 +95,20 @@ class TaskTool(CallableTool[TaskParams]):
                 temperature=agent.temperature,
             )
 
-            # Accumulate this turn's response
             text_parts: list[str] = []
             pending_tool_calls: list[llmmod.ToolCallDelta] = []
             finish_reason = "stop"
 
             async for event in llmmod.stream(stream_input):
+                # Check abort during streaming
+                if _is_aborted(ctx):
+                    builder.add("\n\n(Sub-agent aborted by user)")
+                    return ToolOk(
+                        builder.build() or "Sub-agent aborted.",
+                        title=f"Task: {description[:60]}",
+                        metadata={"agent": agent_name, "tool_calls": total_tool_calls, "turns": turn + 1, "aborted": True},
+                    )
+
                 if isinstance(event, llmmod.TextDelta):
                     text_parts.append(event.text)
                 elif isinstance(event, llmmod.ToolCallDelta):
@@ -91,11 +127,9 @@ class TaskTool(CallableTool[TaskParams]):
             if assistant_text:
                 builder.add(assistant_text)
 
-            # If no tool calls, the sub-agent is done
             if not pending_tool_calls or finish_reason != "tool-calls":
                 break
 
-            # Build the assistant message with tool_calls for the conversation
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": assistant_text or None}
             assistant_msg["tool_calls"] = [
                 {
@@ -107,9 +141,18 @@ class TaskTool(CallableTool[TaskParams]):
             ]
             messages.append(assistant_msg)
 
-            # Execute tool calls and add results to messages
             for tc in pending_tool_calls:
                 total_tool_calls += 1
+
+                # Check abort before each tool execution
+                if _is_aborted(ctx):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "content": "Aborted by user",
+                    })
+                    continue
+
                 tool_impl = tool_registry.get(tc.tool_name)
                 tool_output = ""
                 if tool_impl:
@@ -134,10 +177,6 @@ class TaskTool(CallableTool[TaskParams]):
             title=f"Task: {description[:60]}",
             metadata={"agent": agent_name, "tool_calls": total_tool_calls, "turns": min(turn + 1, MAX_TURNS)},
         )
-
-
-# Need this import at module level for type annotation in the loop
-from typing import Any  # noqa: E402
 
 
 tool = TaskTool()

@@ -1,8 +1,15 @@
-"""WebFetch tool — fetch and extract content from URLs. Equivalent to src/tool/webfetch.ts."""
+"""WebFetch tool — fetch and extract content from URLs. Equivalent to src/tool/webfetch.ts.
+
+Enhancements:
+- JSON content-type detection and formatting
+- XML content-type passthrough
+- Capability declarations (is_read_only=True)
+"""
 from __future__ import annotations
 
 import html
 import re
+from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field
@@ -92,6 +99,12 @@ class WebFetchTool(CallableTool[WebFetchParams]):
     id = "webfetch"
     description = "Fetch content from a URL. Returns the page content as markdown-formatted text. HTTP URLs are upgraded to HTTPS."
 
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
     async def call(self, params: WebFetchParams, ctx: ToolContext) -> ToolResult:
         url = params.url
         if url.startswith("http://"):
@@ -106,7 +119,21 @@ class WebFetchTool(CallableTool[WebFetchParams]):
                 resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")
-            text = _html_to_markdown(resp.text) if "text/html" in content_type else resp.text
+
+            # Format based on content type
+            if "application/json" in content_type:
+                import json as _json
+                try:
+                    parsed = _json.loads(resp.text)
+                    text = _json.dumps(parsed, indent=2, ensure_ascii=False)
+                except (ValueError, TypeError):
+                    text = resp.text
+            elif "text/html" in content_type:
+                text = _html_to_markdown(resp.text)
+            elif "application/xml" in content_type or "text/xml" in content_type:
+                text = resp.text  # XML as-is (already structured)
+            else:
+                text = resp.text
 
             builder = ToolResultBuilder(max_chars=50_000)
             builder.add(text or "(empty page)")
@@ -114,7 +141,7 @@ class WebFetchTool(CallableTool[WebFetchParams]):
             return ToolOk(
                 builder.build(),
                 title=f"Fetch {url[:60]}",
-                metadata={"url": url, "status": resp.status_code, "length": len(text)},
+                metadata={"url": url, "status": resp.status_code, "content_type": content_type, "length": len(text)},
             )
         except httpx.HTTPStatusError as e:
             return ToolError(f"HTTP {e.response.status_code}: {e}", title=f"Fetch {url[:60]}")

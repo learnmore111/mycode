@@ -5,10 +5,15 @@ Inspired by kimi-cli's dual-layer tool architecture:
 - Structured return values (ToolOk / ToolError) with separate output/display
 - Unified error hierarchy (ToolNotFoundError / ToolParseError / ToolValidateError / ToolRuntimeError)
 - ToolResultBuilder for output truncation management
+- Capability declarations (is_read_only / is_destructive / is_concurrency_safe)
+- Path safety validation (prevent directory escape)
+- Atomic file write helper
 """
 from __future__ import annotations
 
 import contextlib
+import os
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -178,6 +183,12 @@ class ToolInfo(ABC):
 
     Subclasses must define `id` and `description` as class attributes,
     and implement `parameters_schema()` and `execute()`.
+
+    Capability declarations (override in subclasses):
+        is_read_only(args)       — True if the operation only reads (no side effects)
+        is_destructive(args)     — True if the operation is irreversible (delete, overwrite, send)
+        is_concurrency_safe(args)— True if safe to run in parallel with other tool calls
+        is_enabled()             — True if the tool is currently available
     """
     id: str = ""
     description: str = ""
@@ -191,6 +202,35 @@ class ToolInfo(ABC):
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         """Execute the tool with the given arguments."""
         ...
+
+    # ── Capability declarations ──────────────────────────────────────
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        """Whether this tool call only reads data (no side effects).
+
+        Used by the permission system: plan mode auto-allows read-only tools.
+        """
+        return False
+
+    def is_destructive(self, args: dict[str, Any] | None = None) -> bool:
+        """Whether this tool call is irreversible (delete, overwrite, send).
+
+        Destructive tools may require extra confirmation.
+        """
+        return False
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        """Whether this tool can safely run in parallel with other calls.
+
+        Tools that modify files are generally NOT concurrency-safe.
+        """
+        return True
+
+    def is_enabled(self) -> bool:
+        """Whether the tool is currently available."""
+        return True
+
+    # ── LLM format ───────────────────────────────────────────────────
 
     def to_llm_tool(self) -> dict[str, Any]:
         """Convert to litellm/OpenAI function calling format.
@@ -309,3 +349,63 @@ def load_description(tool_id: str, **kwargs: str) -> str:
         with contextlib.suppress(KeyError):
             text = text.format_map(kwargs)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Path safety validation
+# ---------------------------------------------------------------------------
+
+
+def validate_path_safety(file_path: str, base_dir: str) -> str | None:
+    """Validate that a resolved path stays within the project directory.
+
+    Returns an error message string if the path is unsafe, or None if safe.
+    This prevents directory traversal attacks (e.g. ``../../etc/passwd``).
+    """
+    try:
+        resolved = os.path.realpath(os.path.join(base_dir, file_path) if not os.path.isabs(file_path) else file_path)
+        base_real = os.path.realpath(base_dir)
+        if not resolved.startswith(base_real + os.sep) and resolved != base_real:
+            return (
+                f"Path '{file_path}' resolves to '{resolved}' which is outside the project directory "
+                f"'{base_real}'. For safety, file operations are restricted to the project directory."
+            )
+    except (ValueError, OSError) as e:
+        return f"Invalid path '{file_path}': {e}"
+    return None
+
+
+def resolve_tool_path(file_path: str, base_dir: str) -> tuple[str, str | None]:
+    """Resolve a file path relative to the project base and validate safety.
+
+    Returns:
+        (resolved_absolute_path, error_message_or_none)
+    """
+    full = os.path.join(base_dir, file_path) if not os.path.isabs(file_path) else file_path
+    error = validate_path_safety(file_path, base_dir)
+    return full, error
+
+
+# ---------------------------------------------------------------------------
+# Atomic file write
+# ---------------------------------------------------------------------------
+
+
+def atomic_write(file_path: str, content: str, encoding: str = "utf-8") -> None:
+    """Write content to a file atomically using a temporary file + rename.
+
+    This prevents file corruption if the process is interrupted mid-write.
+    The temporary file is created in the same directory as the target to
+    ensure they are on the same filesystem (required for atomic rename).
+    """
+    target = Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise

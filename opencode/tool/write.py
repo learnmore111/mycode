@@ -1,21 +1,31 @@
 """Write file tool. Equivalent to src/tool/write.ts.
 
 Enhancements:
+- Path safety validation (prevent writing outside project directory)
+- Atomic write (temp file + rename to prevent corruption)
 - Returns a preview snippet of the written content (first/last lines)
 - Shows file size and line count summary
-- Better metadata (file_size, created/overwritten)
+- Capability declarations (is_destructive=True, is_concurrency_safe=False)
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
+from opencode.tool.base import (
+    CallableTool,
+    ToolContext,
+    ToolError,
+    ToolOk,
+    ToolResult,
+    atomic_write,
+    resolve_tool_path,
+)
 
-# Max preview lines to show after write
 _PREVIEW_LINES = 10
 
 
@@ -29,36 +39,44 @@ class WriteTool(CallableTool[WriteParams]):
     id = "write"
     description = "Write content to a file. Creates the file and parent directories if they don't exist. Overwrites existing content."
 
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return False
+
+    def is_destructive(self, args: dict[str, Any] | None = None) -> bool:
+        return True  # Overwrites are irreversible
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return False  # File writes are not concurrency-safe
+
     async def call(self, params: WriteParams, ctx: ToolContext) -> ToolResult:
         file_path = params.file_path
         content = params.content
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
-        full = os.path.join(base, file_path) if not os.path.isabs(file_path) else file_path
+
+        full, path_error = resolve_tool_path(file_path, base)
+        if path_error:
+            return ToolError(path_error, title=f"Write {file_path}", metadata={"success": False})
+
         try:
             existed = os.path.exists(full)
             old_lines = 0
             if existed:
                 old_lines = Path(full).read_text(encoding="utf-8", errors="replace").count("\n") + 1
 
-            Path(full).parent.mkdir(parents=True, exist_ok=True)
-            Path(full).write_text(content, encoding="utf-8")
+            atomic_write(full, content)
             new_lines = content.count("\n") + 1
             file_size = Path(full).stat().st_size
 
-            # Build summary message
             if existed:
                 msg = f"Overwrote {file_path} ({old_lines} → {new_lines} lines, {_human_size(file_size)})"
             else:
                 msg = f"Created {file_path} ({new_lines} lines, {_human_size(file_size)})"
 
-            # Build a preview snippet
             lines = content.split("\n")
             if new_lines <= _PREVIEW_LINES * 2:
-                # Small file: show all
                 preview = "\n".join(f"{i + 1:6d}:{line}" for i, line in enumerate(lines))
             else:
-                # Large file: show first and last N lines
                 head = "\n".join(f"{i + 1:6d}:{line}" for i, line in enumerate(lines[:_PREVIEW_LINES]))
                 tail_start = new_lines - _PREVIEW_LINES
                 tail = "\n".join(

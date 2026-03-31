@@ -10,6 +10,7 @@ from __future__ import annotations
 import glob as globmod
 import os
 from collections import Counter
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +30,12 @@ class GlobParams(BaseModel):
 class GlobTool(CallableTool[GlobParams]):
     id = "glob"
     description = "Find files matching a glob pattern. Returns relative file paths with a summary."
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
 
     async def call(self, params: GlobParams, ctx: ToolContext) -> ToolResult:
         pattern = params.pattern

@@ -2,15 +2,19 @@
 
 Enhancements:
 - ToolResultBuilder for output truncation control
-- Context lines (-C 2) for better match understanding
+- Context lines (-C 1) for better match understanding
 - Structured match count and file count in metadata
 - Clear truncation message when results exceed limits
+- Binary file exclusion (--no-binary / -I)
+- File size limit (--max-filesize 1M)
+- Capability declarations (is_read_only=True)
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import shutil
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +37,12 @@ class GrepTool(CallableTool[GrepParams]):
     id = "grep"
     description = "Search file contents using a regex pattern. Uses ripgrep. Returns matching lines with file paths and line numbers."
 
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
     async def call(self, params: GrepParams, ctx: ToolContext) -> ToolResult:
         pattern = params.pattern
         path = params.path
@@ -49,7 +59,9 @@ class GrepTool(CallableTool[GrepParams]):
 
         rg = shutil.which("rg")
         if rg:
-            cmd = [rg, "-rn", "--no-heading", "-C", "1", "-m", str(_MAX_MATCHES)]
+            cmd = [rg, "-rn", "--no-heading", "-C", "1", "-m", str(_MAX_MATCHES),
+                   "--no-binary",  # Skip binary files
+                   "--max-filesize", "1M"]  # Skip files larger than 1MB
             for glob_pattern in RG_EXCLUDE_GLOBS:
                 cmd += ["--glob", glob_pattern]
             if include:
@@ -58,7 +70,8 @@ class GrepTool(CallableTool[GrepParams]):
             cmd.append(".")
             exec_cwd = cwd
         else:
-            cmd = ["grep", "-rn", "-m", str(_MAX_MATCHES)]
+            cmd = ["grep", "-rn", "-I",  # -I: skip binary files
+                   "-m", str(_MAX_MATCHES)]
             for d in sorted(IGNORED_DIRS):
                 if "*" not in d:
                     cmd += ["--exclude-dir", d]

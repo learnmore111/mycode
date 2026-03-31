@@ -4,6 +4,7 @@ Enhanced with:
 - Tool hiding/showing (dynamic visibility control)
 - ToolNotFoundError for lookup failures
 - Clear/reset for testing
+- Sorted tool output for prompt cache stability
 """
 from __future__ import annotations
 
@@ -76,8 +77,15 @@ def is_hidden(tool_id: str) -> bool:
 
 
 def to_llm_tools() -> list[dict[str, Any]]:
-    """Convert all visible tools to litellm format."""
-    return [t.to_llm_tool() for t in _tools.values() if t.id not in _hidden]
+    """Convert all visible tools to litellm format.
+
+    Tools are sorted by name for **prompt cache stability** — a consistent
+    ordering ensures the tool definitions don't shift between calls, allowing
+    the API's prompt cache to hit more often.
+    """
+    visible = [t for t in _tools.values() if t.id not in _hidden]
+    visible.sort(key=lambda t: t.id)
+    return [t.to_llm_tool() for t in visible]
 
 
 def clear() -> None:

@@ -12,7 +12,10 @@ from opencode.tool.base import (
     ToolResultBuilder,
     ToolRuntimeError,
     ToolValidateError,
+    atomic_write,
     load_description,
+    resolve_tool_path,
+    validate_path_safety,
 )
 
 __all__ = [
@@ -28,5 +31,8 @@ __all__ = [
     "ToolResultBuilder",
     "ToolRuntimeError",
     "ToolValidateError",
+    "atomic_write",
     "load_description",
+    "resolve_tool_path",
+    "validate_path_safety",
 ]

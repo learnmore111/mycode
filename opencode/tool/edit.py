@@ -1,35 +1,38 @@
 """Edit file tool — string replacement based editing. Equivalent to src/tool/edit.ts.
 
-Inspired by Anthropic's StrReplaceEditorTool best practices:
-- Returns surrounding context after edit so the agent can verify the change
-- Supports insert_after_line for line-based insertion
-- Empty old_string appends to end of file
-
 Enhancements:
+- Path safety validation (prevent editing outside project directory)
+- Atomic write (temp file + rename to prevent corruption)
 - Uniqueness check shows all match locations (line numbers) on failure
 - No-op detection (old_string == new_string)
 - Richer post-edit snippet with clear change markers
-- File summary header in output
+- insert_after_line for line-based insertion
+- File not found suggests using write tool
+- Capability declarations (is_concurrency_safe=False)
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from opencode.project.instance import current_or_none
-from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
+from opencode.tool.base import (
+    CallableTool,
+    ToolContext,
+    ToolError,
+    ToolOk,
+    ToolResult,
+    atomic_write,
+    resolve_tool_path,
+)
 
-# Number of context lines to show around the edit
 _CONTEXT_LINES = 4
 
 
 def _snippet_around(lines: list[str], start: int, end: int, context: int = _CONTEXT_LINES) -> str:
-    """Return a numbered snippet around the [start, end) line range.
-
-    Lines inside the edited range are marked with '|', context lines with ' '.
-    """
+    """Return a numbered snippet around the [start, end) line range."""
     lo = max(0, start - context)
     hi = min(len(lines), end + context)
     parts: list[str] = []
@@ -68,6 +71,15 @@ class EditTool(CallableTool[EditParams]):
         "Returns the edited region with surrounding context so you can verify the change."
     )
 
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return False
+
+    def is_destructive(self, args: dict[str, Any] | None = None) -> bool:
+        return False  # Edits are reversible (can be undone with another edit)
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return False  # File edits are not concurrency-safe
+
     async def call(self, params: EditParams, ctx: ToolContext) -> ToolResult:
         file_path = params.file_path
         old_string = params.old_string
@@ -76,17 +88,21 @@ class EditTool(CallableTool[EditParams]):
 
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
-        full = os.path.join(base, file_path) if not os.path.isabs(file_path) else file_path
+
+        full, path_error = resolve_tool_path(file_path, base)
+        if path_error:
+            return ToolError(path_error, title=f"Edit {file_path}", metadata={"success": False})
 
         if not os.path.exists(full):
             return ToolError(
-                f"File not found: {file_path}",
+                f"File not found: {file_path}. Use the write tool to create new files.",
                 title=f"Edit {file_path}",
                 metadata={"success": False},
             )
 
         try:
-            content = Path(full).read_text(encoding="utf-8")
+            from pathlib import Path as _Path
+            content = _Path(full).read_text(encoding="utf-8")
             lines = content.split("\n")
             total_before = len(lines)
 
@@ -100,10 +116,10 @@ class EditTool(CallableTool[EditParams]):
                         metadata={"success": False, "total_lines": total_before},
                     )
                 insert_lines = new_string.split("\n")
-                insert_pos = insert_after_line  # 0-based index after this line
+                insert_pos = insert_after_line
                 new_lines = lines[:insert_pos] + insert_lines + lines[insert_pos:]
                 new_content = "\n".join(new_lines)
-                Path(full).write_text(new_content, encoding="utf-8")
+                atomic_write(full, new_content)
                 snippet = _snippet_around(new_lines, insert_pos, insert_pos + len(insert_lines))
                 return ToolOk(
                     f"Inserted {len(insert_lines)} line(s) after line {insert_after_line} in {file_path} "
@@ -121,7 +137,7 @@ class EditTool(CallableTool[EditParams]):
                         metadata={"success": False},
                     )
                 new_content = content + new_string
-                Path(full).write_text(new_content, encoding="utf-8")
+                atomic_write(full, new_content)
                 new_lines = new_content.split("\n")
                 appended_count = len(new_string.split("\n"))
                 snippet = _snippet_around(new_lines, max(0, len(new_lines) - appended_count), len(new_lines))
@@ -132,7 +148,6 @@ class EditTool(CallableTool[EditParams]):
                 )
 
             # --- Mode 3: String replacement ---
-            # No-op detection
             if old_string == new_string:
                 return ToolError(
                     "old_string and new_string are identical. No changes needed.",
@@ -142,7 +157,6 @@ class EditTool(CallableTool[EditParams]):
 
             count = content.count(old_string)
             if count == 0:
-                # Provide helpful diagnostics: try case-insensitive or stripped match
                 hint = ""
                 stripped_old = old_string.strip()
                 if stripped_old and stripped_old != old_string:
@@ -170,16 +184,14 @@ class EditTool(CallableTool[EditParams]):
                     metadata={"success": False, "match_count": count, "match_lines": locations[:20]},
                 )
 
-            # Find the line range of the replacement
             pos = content.index(old_string)
             start_line = content[:pos].count("\n")
             old_line_count = old_string.count("\n") + 1
             new_line_count = new_string.count("\n") + 1
 
             new_content = content.replace(old_string, new_string, 1)
-            Path(full).write_text(new_content, encoding="utf-8")
+            atomic_write(full, new_content)
 
-            # Build snippet of the edited region
             new_lines = new_content.split("\n")
             end_line = start_line + new_line_count
             snippet = _snippet_around(new_lines, start_line, end_line)
