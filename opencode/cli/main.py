@@ -472,20 +472,35 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 agent=agent,
             )
 
-            # --- Stream AI response with Rich Live ---
+            # --- Stream AI response with real-time interleaved rendering ---
+            # Text and tool output are rendered inline as they arrive,
+            # matching the experience of Claude Code / Cursor / aider.
             console.print()
             full_text = ""
             done_data: dict = {}
             start_time = time.monotonic()
+            # Track current text segment (flushed when a tool event arrives)
+            _text_buf = ""
+            _in_text = False  # Whether we're currently accumulating text
+            _started = False  # Whether the spinner has been shown
+
+            def _flush_text() -> None:
+                """Render accumulated text as Markdown and reset buffer."""
+                nonlocal _text_buf, _in_text
+                if _text_buf.strip():
+                    console.print(Markdown(_text_buf.strip()))
+                _text_buf = ""
+                _in_text = False
+
+            # Initial spinner while waiting for first token
             spinner = Spinner("dots", "")
+            live = Live(spinner, console=console, refresh_per_second=10, transient=True)
+            live.start()
 
-            with Live(spinner, console=console, refresh_per_second=10, transient=True) as live:
-                def elapsed_fn(_st=start_time):  # noqa: B023
-                    e = time.monotonic() - _st
-                    return f"{e:.0f}s" if e >= 1 else "<1s"
-
+            try:
                 async for event in prompt(inp, bus, history=conversation_history):
                     if event.type == "started":
+                        _started = True
                         model_name = event.data.get("model", "?")
                         spinner.text = Text.assemble(
                             ("Composing... ", ""),
@@ -493,61 +508,120 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                             (f" · {model_name}", "grey50"),
                         )
 
-                    elif event.type == "text":
+                    elif event.type == "text_delta":
+                        # First text token → stop spinner
+                        if _started and live.is_started:
+                            live.stop()
+                            _started = False
                         content = event.data.get("content", "")
                         full_text += content
-                        spinner.text = Text.assemble(
-                            ("Composing... ", ""),
-                            (f"{elapsed_fn()}", "grey50"),
-                        )
+                        _text_buf += content
+                        _in_text = True
+                        # Real-time: print each delta immediately (raw text, not Markdown)
+                        # We'll do a final Markdown render per text segment when a tool interrupts
+                        # For now, just accumulate — the flush happens on tool events or done
 
-                    elif event.type == "tool":
+                    elif event.type == "tool_start":
+                        # A tool call was identified — flush any pending text as Markdown
+                        if live.is_started:
+                            live.stop()
+                            _started = False
+                        _flush_text()
+                        tool_name = event.data.get("tool", "?")
+                        # Show a spinner for this tool
+                        tool_spinner = Spinner("dots", "")
+                        tool_spinner.text = Text.assemble(
+                            ("⚡ ", "yellow"),
+                            (tool_name, "blue"),
+                        )
+                        live = Live(tool_spinner, console=console, refresh_per_second=10, transient=True)
+                        live.start()
+
+                    elif event.type == "tool_running":
+                        tool_name = event.data.get("tool", "?")
+                        tool_input = event.data.get("input", {})
+                        # Update spinner with brief input info
+                        if live.is_started:
+                            tool_spinner = Spinner("dots", "")
+                            # Show a compact summary of the tool input
+                            input_preview = ""
+                            if isinstance(tool_input, dict):
+                                # Show the first meaningful value
+                                for k in ("command", "file_path", "pattern", "query", "path", "content"):
+                                    if k in tool_input:
+                                        val = str(tool_input[k])[:60]
+                                        input_preview = f" {val}"
+                                        break
+                            tool_spinner.text = Text.assemble(
+                                ("⚡ ", "yellow"),
+                                (tool_name, "blue"),
+                                (input_preview, "grey50"),
+                            )
+                            live.update(tool_spinner)
+
+                    elif event.type == "tool_done":
+                        # Tool execution completed — render result
+                        if live.is_started:
+                            live.stop()
                         tool_name = event.data.get("tool", "?")
                         status = event.data.get("status", "?")
                         output = event.data.get("output", "")
                         tool_input = event.data.get("input", {})
-                        if status == "completed":
-                            # Record tool call to session memory
-                            if session_memory.is_enabled:
-                                session_memory.record_tool_call(
-                                    tool_name=tool_name,
-                                    tool_input=tool_input if isinstance(tool_input, dict) else {},
-                                    tool_output=output,
-                                    status=status,
-                                )
-                            # Print tool result permanently
-                            live.update(Text(""))
-                            console.print(Text.assemble(
-                                ("• ", "green"),
-                                ("Used ", ""),
-                                (tool_name, "blue"),
-                            ))
-                            if output:
-                                preview = output[:300].strip()
-                                if preview:
-                                    console.print(Text(f"  {preview[:150]}", style="grey50"))
-                        else:
-                            tool_spinner = Spinner("dots", "")
-                            tool_spinner.text = Text.assemble(
-                                ("Using ", ""),
-                                (tool_name, "blue"),
+
+                        # Record tool call to session memory
+                        if session_memory.is_enabled:
+                            session_memory.record_tool_call(
+                                tool_name=tool_name,
+                                tool_input=tool_input if isinstance(tool_input, dict) else {},
+                                tool_output=output,
+                                status=status,
                             )
-                            live.update(tool_spinner)
+
+                        # Status icon
+                        if status == "completed":
+                            icon = ("✓ ", "green")
+                        elif status == "error":
+                            icon = ("✗ ", "red")
+                        else:
+                            icon = ("• ", "yellow")
+
+                        console.print(Text.assemble(
+                            icon,
+                            (tool_name, "blue"),
+                        ))
+                        if output:
+                            preview = output[:300].strip()
+                            if preview:
+                                console.print(Text(f"  {preview[:150]}", style="grey50"))
+
+                        # Prepare a fresh live for next events (text or tool)
+                        live = Live(Spinner("dots", ""), console=console, refresh_per_second=10, transient=True)
+                        # Don't start yet — will start if needed
 
                     elif event.type == "error":
-                        live.update(Text(""))
+                        if live.is_started:
+                            live.stop()
+                        _flush_text()
                         console.print(Text(f"✗ Error: {event.data.get('message', 'unknown')}", style="red bold"))
 
                     elif event.type == "compact":
+                        if not live.is_started:
+                            live.start()
+                        spinner = Spinner("dots", "")
                         spinner.text = Text("↻ Compacting context...", style="yellow")
+                        live.update(spinner)
 
                     elif event.type == "done":
                         done_data = event.data
-                        live.update(Text(""))
+                        if live.is_started:
+                            live.stop()
 
-            # Render the full AI response as Markdown
-            if full_text.strip():
-                console.print(Markdown(full_text.strip()))
+            finally:
+                if live.is_started:
+                    live.stop()
+
+            # Flush any remaining text
+            _flush_text()
 
             # Status line with tokens, cost, and context progress bar
             elapsed = time.monotonic() - start_time
@@ -796,16 +870,22 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
         )
         full_response = ""
         async for event in prompt(inp, bus):
-            if event.type == "text":
+            if event.type == "text_delta":
                 content = event.data.get("content", "")
                 full_response += content
                 click.echo(content, nl=False)
-            elif event.type == "tool":
+            elif event.type == "tool_start":
+                tool_name = event.data.get("tool", "?")
+                click.echo(f"\n[tool:{tool_name}] starting", err=True)
+            elif event.type == "tool_running":
+                tool_name = event.data.get("tool", "?")
+                click.echo(f"[tool:{tool_name}] running", err=True)
+            elif event.type == "tool_done":
                 tool_name = event.data.get("tool", "?")
                 status = event.data.get("status", "?")
                 tool_input = event.data.get("input", {})
                 output = event.data.get("output", "")
-                click.echo(f"\n[tool:{tool_name}] {status}", err=True)
+                click.echo(f"[tool:{tool_name}] {status}", err=True)
                 # Record tool call to session memory
                 if session_memory.is_enabled and status == "completed":
                     session_memory.record_tool_call(

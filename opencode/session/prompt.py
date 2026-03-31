@@ -2,6 +2,10 @@
 
 This is the core orchestrator equivalent to src/session/prompt.ts.
 Flow: validate → create messages → build system prompt → load tools → run agentic loop
+
+Streaming: Events are yielded in real-time as the LLM generates text and tools execute.
+The CLI receives text_delta events for incremental text rendering and tool events
+for interleaved tool display — matching the experience of Claude Code / Cursor.
 """
 from __future__ import annotations
 
@@ -50,7 +54,19 @@ class PromptInput:
 
 @dataclass
 class PromptEvent:
-    type: str  # "text", "tool_start", "tool_end", "done", "error"
+    """Event yielded to the CLI layer.
+
+    Types:
+      - "started":    Session started. data has model/agent info.
+      - "text_delta": Incremental text from LLM. data["content"] is the delta.
+      - "tool_start": A tool call identified. data["tool"], data["call_id"].
+      - "tool_running": Tool execution started. data["tool"], data["call_id"], data["input"].
+      - "tool_done":  Tool finished. data["tool"], data["status"], data["output"], data["input"].
+      - "error":      Error occurred. data["message"].
+      - "compact":    Context compaction in progress.
+      - "done":       All iterations finished. data has tokens/cost/context stats.
+    """
+    type: str  # "text_delta", "tool_start", "tool_running", "tool_done", "done", "error", etc.
     data: dict[str, Any] = field(default_factory=dict)
 
 
@@ -63,7 +79,8 @@ async def prompt(
     """Send a message and stream the AI response.
 
     This is the main entry point for the agentic loop.
-    Yields PromptEvent as the model generates responses and executes tools.
+    Yields PromptEvent in real-time as the model generates text and executes tools.
+    Text deltas and tool events are interleaved — the CLI can render them immediately.
     """
     session_id = prompt_input.session_id
 
@@ -163,27 +180,38 @@ async def prompt(
                 api_base=model.api.url or None,
             )
 
-            result, parts = await proc.process(ctx, stream_input)
-            all_parts.extend(parts)
+            # Stream events from processor in real-time
+            result: proc.Result = "stop"
+            iteration_parts: list[Part] = []
 
-            # Yield events for each part
-            for part in parts:
-                if isinstance(part, TextPart):
-                    yield PromptEvent(type="text", data={"content": part.content, "part_id": part.id})
-                elif hasattr(part, "tool"):
-                    yield PromptEvent(type="tool", data={
-                        "tool": part.tool, "call_id": part.tool_call_id,
-                        "status": part.state.get("status", "unknown"),
-                        "input": part.state.get("input", {}),
-                        "output": part.state.get("output", "")[:500],
-                    })
+            async for event in proc.process_stream(ctx, stream_input):
+                if event.type == "text_delta":
+                    yield PromptEvent(type="text_delta", data=event.data)
+
+                elif event.type == "tool_start":
+                    yield PromptEvent(type="tool_start", data=event.data)
+
+                elif event.type == "tool_running":
+                    yield PromptEvent(type="tool_running", data=event.data)
+
+                elif event.type == "tool_done":
+                    yield PromptEvent(type="tool_done", data=event.data)
+
+                elif event.type == "error":
+                    yield PromptEvent(type="error", data=event.data)
+
+                elif event.type == "finish":
+                    result = event.data.get("result", "stop")
+                    iteration_parts = event.data.get("parts", [])
+
+            all_parts.extend(iteration_parts)
 
             if result == "stop":
                 break
 
             if result == "continue":
                 # Add tool results to messages for next iteration
-                tool_messages = proc.build_tool_results_messages(parts)
+                tool_messages = proc.build_tool_results_messages(iteration_parts)
                 messages.extend(tool_messages)
                 continue
 
