@@ -25,6 +25,7 @@ from opencode.session.loop_guard import GuardAction, LoopGuard, LoopGuardConfig
 from opencode.session.message import (
     Part,
     TextPart,
+    ToolPart,
     create_assistant_message,
     create_user_message,
     save_message,
