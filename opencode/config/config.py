@@ -108,7 +108,20 @@ def get(directory: str | None = None, worktree: str | None = None) -> Config:
     3. Project local configs
     4. .opencode directory configs
     5. OPENCODE_CONFIG_CONTENT env
+
+    If directory is not provided, attempts to infer it from the current
+    project context (set by ``opencode.project.instance.provide``).
     """
+    # Auto-resolve directory from project context if not provided
+    if directory is None:
+        try:
+            from opencode.project.instance import current_or_none
+            ctx = current_or_none()
+            if ctx:
+                directory = ctx.directory
+        except Exception:
+            pass
+
     cache_key = directory or "__global__"
     if cache_key in _cache:
         return _cache[cache_key]
