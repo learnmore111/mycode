@@ -122,39 +122,10 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     # --- Mutable model reference (allows runtime switching via /model) ---
     model_ref = [model]  # Use list to allow mutation in nested scope
 
-    # --- Pre-fetch available models for /model completion ---
+    # --- Pre-fetch available models (will be populated inside provide() context) ---
     _available_models: list[str] = []
-    try:
-        provs = await providermod.list_providers()
-        for pid, p in provs.items():
-            for mid in p.models:
-                _available_models.append(f"{pid}/{mid}")
-    except Exception:
-        pass  # Will be populated lazily if needed
 
-    # --- Welcome (Claude Code style: clean, minimal) ---
-    console.print()
-    console.print(Text.assemble(
-        ("╭ ", "dim"),
-        ("OpenCode", "bold"),
-        (f" v{__version__}", "dim"),
-    ))
-    console.print(Text.assemble(
-        ("│ ", "dim"),
-        ("model: ", "dim"),
-        (model_ref[0] or "default", ""),
-        ("  cwd: ", "dim"),
-        (abs_directory, ""),
-    ))
-    console.print(Text.assemble(
-        ("╰ ", "dim"),
-        ("Type ", "dim"),
-        ("/help", "bold"),
-        (" for commands · ", "dim"),
-        ("Ctrl+D", "bold"),
-        (" to exit", "dim"),
-    ))
-    console.print()
+    # --- Welcome will be printed inside _run_loop (after provide() sets project context) ---
 
     # --- Completer: slash commands, !shell commands, @file paths ---
     _slash_commands = {
@@ -349,6 +320,50 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     async def _run_loop() -> None:
         nonlocal session_info, conversation_history, total_tokens_used, context_limit, last_checkpoint, session_start_time
+
+        # Pre-fetch models (now inside provide() context, project config is available)
+        try:
+            providermod.invalidate()  # Clear stale provider state
+            provs = await providermod.list_providers()
+            for pid, p in provs.items():
+                for mid in p.models:
+                    _available_models.append(f"{pid}/{mid}")
+        except Exception:
+            pass
+
+        # Resolve display model name
+        display_model = model_ref[0]
+        if not display_model:
+            try:
+                from opencode.config import config as configmod
+                cfg = configmod.get()
+                display_model = cfg.model or "default"
+            except Exception:
+                display_model = "default"
+
+        # Welcome (Claude Code style: clean, minimal)
+        console.print()
+        console.print(Text.assemble(
+            ("╭ ", "dim"),
+            ("OpenCode", "bold"),
+            (f" v{__version__}", "dim"),
+        ))
+        console.print(Text.assemble(
+            ("│ ", "dim"),
+            ("model: ", "dim"),
+            (display_model, ""),
+            ("  cwd: ", "dim"),
+            (abs_directory, ""),
+        ))
+        console.print(Text.assemble(
+            ("╰ ", "dim"),
+            ("Type ", "dim"),
+            ("/help", "bold"),
+            (" for commands · ", "dim"),
+            ("Ctrl+D", "bold"),
+            (" to exit", "dim"),
+        ))
+        console.print()
 
         while True:
             # Claude Code style prompt: simple ❯
