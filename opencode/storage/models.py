@@ -1,10 +1,4 @@
-"""SQLAlchemy table definitions.
-
-Maps from the original Drizzle ORM schemas in:
-- src/session/session.sql.ts
-- src/project/project.sql.ts
-- src/session/message-v2.ts (message/part tables)
-"""
+"""SQLAlchemy table definitions."""
 
 from __future__ import annotations
 

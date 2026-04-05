@@ -1,7 +1,6 @@
 """SQLite database connection management.
 
 Provides both sync and async access to the SQLite database.
-Equivalent to src/storage/db.ts.
 """
 
 from __future__ import annotations

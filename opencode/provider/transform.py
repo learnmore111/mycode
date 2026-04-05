@@ -1,4 +1,4 @@
-"""Provider-specific parameter transformations. Equivalent to src/provider/transform.ts.
+"""Provider-specific parameter transformations.
 
 Handles provider-specific options like max output tokens, reasoning settings,
 cache control, and tool choice adjustments.

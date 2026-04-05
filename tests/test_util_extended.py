@@ -152,22 +152,22 @@ def test_logger_clone():
 
 def test_global_paths_data():
     p = GlobalPaths.data()
-    assert "opencode" in str(p)
+    assert "mycode" in str(p)
 
 
 def test_global_paths_config():
     p = GlobalPaths.config()
-    assert "opencode" in str(p)
+    assert "mycode" in str(p)
 
 
 def test_global_paths_state():
     p = GlobalPaths.state()
-    assert "opencode" in str(p)
+    assert "mycode" in str(p)
 
 
 def test_global_paths_cache():
     p = GlobalPaths.cache()
-    assert "opencode" in str(p)
+    assert "mycode" in str(p)
 
 
 def test_global_paths_home():

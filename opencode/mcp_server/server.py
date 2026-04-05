@@ -1,10 +1,10 @@
-"""OpenCode MCP Server — wraps the opencode HTTP API as MCP tools.
+"""MyCode MCP Server — wraps the mycode HTTP API as MCP tools.
 
 This allows external AI agents (e.g., CodeBuddy, Claude Desktop) to interact with
-opencode's AI coding agent through the MCP protocol, supporting multi-turn conversations.
+mycode's AI coding agent through the MCP protocol, supporting multi-turn conversations.
 
 Usage:
-    # Start opencode HTTP server first:
+    # Start mycode HTTP server first:
     uv run opencode serve --port 4096
 
     # Then run this MCP server (stdio transport for IDE integration):
@@ -34,18 +34,18 @@ OPENCODE_DIRECTORY = os.environ.get("OPENCODE_DIRECTORY", ".")
 # ---------------------------------------------------------------------------
 
 mcp = FastMCP(
-    "opencode",
+    "mycode",
     instructions=(
-        "OpenCode AI Coding Agent — an MCP server that exposes opencode's capabilities "
+        "MyCode AI Coding Agent — an MCP server that exposes mycode's capabilities "
         "as tools. You can create sessions, send messages for multi-turn conversations, "
-        "list models/providers, read files, and manage the opencode agent. "
+        "list models/providers, read files, and manage the mycode agent. "
         "Start by creating a session, then send messages to it."
     ),
 )
 
 
 def _client() -> httpx.AsyncClient:
-    """Create an async HTTP client pointing at the opencode server."""
+    """Create an async HTTP client pointing at the mycode server."""
     return httpx.AsyncClient(base_url=OPENCODE_BASE_URL, timeout=300.0)
 
 
@@ -142,7 +142,7 @@ def _process_sse_event(
 
 @mcp.tool()
 async def create_session(title: str = "New Session") -> str:
-    """Create a new opencode conversation session.
+    """Create a new mycode conversation session.
 
     Call this first before sending messages. Returns the session ID
     which you'll need for all subsequent interactions.
@@ -172,7 +172,7 @@ async def send_message(
     model: str | None = None,
     agent: str | None = None,
 ) -> str:
-    """Send a message to an opencode session and get the AI agent's response.
+    """Send a message to a mycode session and get the AI agent's response.
 
     This is the core interaction tool. The opencode agent will process your message,
     potentially using tools (file editing, code search, shell commands, etc.),
@@ -224,7 +224,7 @@ async def abort_session(session_id: str) -> str:
 
 @mcp.tool()
 async def list_sessions(limit: int = 20) -> str:
-    """List recent opencode sessions.
+    """List recent mycode sessions.
 
     Args:
         limit: Maximum number of sessions to return.
@@ -247,7 +247,7 @@ async def list_sessions(limit: int = 20) -> str:
 
 @mcp.tool()
 async def delete_session(session_id: str) -> str:
-    """Delete an opencode session.
+    """Delete a mycode session.
 
     Args:
         session_id: The session ID to delete.
@@ -267,7 +267,7 @@ async def delete_session(session_id: str) -> str:
 
 @mcp.tool()
 async def list_models() -> str:
-    """List all available AI models that opencode can use.
+    """List all available AI models that mycode can use.
 
     Returns provider/model pairs that can be passed as the 'model' parameter
     to send_message.
@@ -285,7 +285,7 @@ async def list_models() -> str:
 
 @mcp.tool()
 async def get_config() -> str:
-    """Get the current opencode configuration.
+    """Get the current mycode configuration.
 
     Returns model, provider settings, and other configuration.
     """
@@ -304,7 +304,7 @@ async def get_config() -> str:
 
 @mcp.tool()
 async def read_file(path: str) -> str:
-    """Read a file from the opencode project directory.
+    """Read a file from the mycode project directory.
 
     Args:
         path: Path to the file (relative to the project directory or absolute).
@@ -320,7 +320,7 @@ async def read_file(path: str) -> str:
 
 @mcp.tool()
 async def list_files(path: str | None = None) -> str:
-    """List files in the opencode project directory.
+    """List files in the mycode project directory.
 
     Args:
         path: Optional subdirectory path. Lists the root if not specified.
@@ -337,7 +337,7 @@ async def list_files(path: str | None = None) -> str:
 
 @mcp.tool()
 async def search_files(query: str, limit: int = 30) -> str:
-    """Search for files in the opencode project.
+    """Search for files in the mycode project.
 
     Args:
         query: Search query string.
@@ -358,7 +358,7 @@ async def search_files(query: str, limit: int = 30) -> str:
 
 @mcp.tool()
 async def server_status() -> str:
-    """Check if the opencode server is running and healthy.
+    """Check if the mycode server is running and healthy.
 
     Returns server status and version information.
     Call this first to verify the connection before using other tools.

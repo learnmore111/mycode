@@ -1,6 +1,5 @@
 """Batch tool — application-level explicit parallel tool execution.
 
-Equivalent to src/tool/batch.ts. Allows LLM to submit up to 25 tool calls
 in a single batch, which are then executed in parallel via asyncio.gather.
 This is an experimental feature, enabled via `experimental.batch_tool: true`.
 

@@ -1,7 +1,6 @@
 """Wildcard pattern matching.
 
 Provides glob-style pattern matching used by the permission system.
-Equivalent to src/util/wildcard.ts.
 """
 
 from __future__ import annotations

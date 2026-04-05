@@ -1,4 +1,4 @@
-"""System prompt assembly. Equivalent to src/session/system.ts.
+"""System prompt assembly.
 
 Selects model-specific system prompts and builds environment info.
 """

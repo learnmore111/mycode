@@ -2,7 +2,6 @@
 
 Evaluates permission rules using wildcard matching.
 Last matching rule wins (bottom of ruleset has highest priority).
-Equivalent to src/permission/evaluate.ts.
 """
 
 from __future__ import annotations

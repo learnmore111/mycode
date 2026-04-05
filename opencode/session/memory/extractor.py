@@ -1,6 +1,5 @@
 """Memory extractor — automatic memory extraction from conversations.
 
-Inspired by Claude Code's services/extractMemories/:
 - Analyzes conversation history to extract memorable information
 - Classifies into four memory types (user/feedback/project/reference)
 - Skips extraction when agent has already written memories

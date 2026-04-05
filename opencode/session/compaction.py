@@ -1,6 +1,5 @@
 """Session compaction — context compression and pruning.
 
-Equivalent to src/session/compaction.ts.
 Handles context overflow detection, old tool output pruning, and summary generation.
 """
 from __future__ import annotations

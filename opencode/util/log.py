@@ -1,7 +1,6 @@
 """Structured logging module.
 
 Wraps structlog to provide a consistent logging interface across the project.
-Equivalent to the original src/util/log.ts.
 """
 
 from __future__ import annotations

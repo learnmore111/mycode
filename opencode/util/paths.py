@@ -2,7 +2,6 @@
 
 Follows XDG Base Directory specification on Linux,
 uses platform-specific directories on macOS and Windows.
-Equivalent to src/global/ in the original.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_NAME = "opencode"
+APP_NAME = "mycode"
 
 
 def _xdg(env: str, fallback: str) -> Path:
@@ -30,7 +29,7 @@ class GlobalPaths:
 
     @staticmethod
     def data() -> Path:
-        """~/.local/share/opencode (Linux) or ~/Library/Application Support/opencode (macOS)."""
+        """~/.local/share/mycode (Linux) or ~/Library/Application Support/mycode (macOS)."""
         if sys.platform == "darwin":
             return Path.home() / "Library" / "Application Support" / APP_NAME
         if sys.platform == "win32":
@@ -39,7 +38,7 @@ class GlobalPaths:
 
     @staticmethod
     def config() -> Path:
-        """~/.config/opencode (Linux) or ~/Library/Application Support/opencode (macOS)."""
+        """~/.config/mycode (Linux) or ~/Library/Application Support/mycode (macOS)."""
         if sys.platform == "darwin":
             return Path.home() / ".config" / APP_NAME
         if sys.platform == "win32":
@@ -48,7 +47,7 @@ class GlobalPaths:
 
     @staticmethod
     def state() -> Path:
-        """~/.local/state/opencode."""
+        """~/.local/state/mycode."""
         if sys.platform == "darwin":
             return Path.home() / ".local" / "state" / APP_NAME
         if sys.platform == "win32":
@@ -57,7 +56,7 @@ class GlobalPaths:
 
     @staticmethod
     def cache() -> Path:
-        """~/.cache/opencode."""
+        """~/.cache/mycode."""
         if sys.platform == "darwin":
             return Path.home() / "Library" / "Caches" / APP_NAME
         if sys.platform == "win32":

@@ -1,6 +1,6 @@
-"""Glob file search tool. Equivalent to src/tool/glob.ts.
+"""Glob file search tool.
 
-Enhancements:
+Features:
 - Returns file type breakdown summary (e.g. 10 .py, 3 .ts)
 - ToolResultBuilder for output truncation control
 - Clearer truncation messages with actionable advice

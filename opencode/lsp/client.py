@@ -1,4 +1,3 @@
-"""LSP client — JSON-RPC communication with language servers. Equivalent to src/lsp/client.ts."""
 from __future__ import annotations
 
 import asyncio

@@ -2,7 +2,6 @@
 
 Manages the current project context, providing directory/worktree/project info
 to all services via contextvars.
-Equivalent to src/project/instance.ts.
 """
 
 from __future__ import annotations
@@ -86,8 +85,7 @@ async def provide[T](
 ) -> T:
     """Run an async function within a project instance context.
 
-    This is the primary way to establish context, equivalent to
-    the original Instance.provide({ directory, init, fn }).
+    This is the primary way to establish context for project operations.
     """
     resolved = str(Path(directory).resolve())
 

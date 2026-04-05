@@ -1,6 +1,6 @@
-"""Grep tool using ripgrep. Equivalent to src/tool/grep.ts.
+"""Grep tool using ripgrep.
 
-Enhancements:
+Features:
 - ToolResultBuilder for output truncation control
 - Context lines (-C 1) for better match understanding
 - Structured match count and file count in metadata

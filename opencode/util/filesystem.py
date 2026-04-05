@@ -1,6 +1,5 @@
 """Filesystem utilities.
 
-Provides async and sync file operations, mirroring src/util/filesystem.ts.
 """
 
 from __future__ import annotations

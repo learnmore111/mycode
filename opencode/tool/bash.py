@@ -1,6 +1,6 @@
-"""Bash tool — execute shell commands. Equivalent to src/tool/bash.ts.
+"""Bash tool — execute shell commands.
 
-Enhancements over minimal version:
+Features:
 - Separate stderr capture (distinct from stdout in output)
 - Custom environment variable passing
 - Working directory safety validation (prevent directory escape)

@@ -1,8 +1,7 @@
 """AI Provider management.
 
 Manages AI providers, model discovery, and LLM instantiation.
-Uses litellm as the unified LLM SDK (replacing Vercel AI SDK).
-Equivalent to src/provider/provider.ts.
+Uses litellm as the unified LLM SDK.
 """
 
 from __future__ import annotations

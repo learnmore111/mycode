@@ -1,4 +1,3 @@
-"""Shell utilities — process management and shell detection. Equivalent to src/shell/shell.ts."""
 from __future__ import annotations
 
 import asyncio

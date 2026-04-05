@@ -1,4 +1,4 @@
-"""WebSearch tool — search the web. Equivalent to src/tool/websearch.ts.
+"""WebSearch tool — search the web.
 
 Uses DuckDuckGo HTML (no API key needed) with multiple parsing strategies
 for resilience against HTML structure changes.
@@ -34,7 +34,7 @@ class WebSearchTool(CallableTool[WebSearchParams]):
                 resp = await client.get(
                     "https://html.duckduckgo.com/html/",
                     params={"q": query},
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; OpenCode/1.0)"},
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; MyCode/1.0)"},
                 )
                 resp.raise_for_status()
 

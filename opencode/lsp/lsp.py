@@ -1,4 +1,3 @@
-"""LSP integration manager. Equivalent to src/lsp/index.ts."""
 from __future__ import annotations
 
 import asyncio

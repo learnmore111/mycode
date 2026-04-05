@@ -1,12 +1,11 @@
 """Memory directory management — structured memory system.
 
-Inspired by Claude Code's memdir/ architecture:
 - Four memory types: user, feedback, project, reference
 - Frontmatter-based memory files (YAML header + markdown body)
 - MEMORY.md index file as entry point
 - Path safety validation (prevents directory traversal)
 - Memory file scanning with frontmatter parsing
-- Memory freshness tracking (per memoryAge.ts)
+- Memory freshness tracking
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ from opencode.util import log as logmod
 logger = logmod.create(service="session.memory.memdir")
 
 # ---------------------------------------------------------------------------
-# Memory types (per memoryTypes.ts)
+# Memory types
 # ---------------------------------------------------------------------------
 
 MemoryType = Literal["user", "feedback", "project", "reference"]
@@ -96,7 +95,7 @@ class MemoryIndex:
 
 
 # ---------------------------------------------------------------------------
-# Path management (per paths.ts)
+# Path management
 # ---------------------------------------------------------------------------
 
 
@@ -162,7 +161,7 @@ def sanitize_memory_name(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Frontmatter parsing (per memoryScan.ts)
+# Frontmatter parsing
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +210,7 @@ type: {memory_type}
 
 
 # ---------------------------------------------------------------------------
-# Memory file scanning (per memoryScan.ts)
+# Memory file scanning
 # ---------------------------------------------------------------------------
 
 

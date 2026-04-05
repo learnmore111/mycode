@@ -1,6 +1,5 @@
 """CLI entry point using Click.
 
-Equivalent to the original src/index.ts yargs CLI.
 """
 
 from __future__ import annotations
@@ -13,12 +12,12 @@ from opencode import __version__
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version=__version__, prog_name="opencode")
+@click.version_option(version=__version__, prog_name="mycode")
 @click.option("--print-logs", is_flag=True, help="Print logs to stderr")
 @click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARN", "ERROR"]), default=None)
 @click.pass_context
 def cli(ctx: click.Context, print_logs: bool, log_level: str | None) -> None:
-    """OpenCode — The open source AI coding agent."""
+    """MyCode — AI coding agent."""
     from opencode.util import log as logmod
     from opencode.util.paths import GlobalPaths
 
@@ -33,7 +32,7 @@ def cli(ctx: click.Context, print_logs: bool, log_level: str | None) -> None:
 
     if ctx.invoked_subcommand is None:
         # Default: start interactive TUI / headless mode
-        click.echo(f"OpenCode v{__version__}")
+        click.echo(f"MyCode v{__version__}")
         click.echo("Use --help for available commands.")
 
 
@@ -64,7 +63,7 @@ def serve(port: int, host: str) -> None:
 @click.option("--agent", "-a", default=None, help="Agent to use")
 @click.option("--message", "-p", default=None, help="Message to send (headless mode)")
 def run(directory: str, model: str | None, agent: str | None, message: str | None) -> None:
-    """Start OpenCode in a directory (default: interactive mode)."""
+    """Start MyCode in a directory (default: interactive mode)."""
     import asyncio
 
     from opencode.util import log as logmod
@@ -266,7 +265,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     completer = merge_completers([_SlashCompleter(), _ShellCompleter(), _FileMentionCompleter()])
 
-    # --- Prompt setup (Claude Code style: clean ❯ prompt) ---
+    # --- Prompt setup ---
     def _bottom_toolbar():
         """Subtle bottom status bar."""
         cwd_display = shell_cwd[0]
@@ -343,11 +342,11 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             except Exception:
                 display_model = "default"
 
-        # Welcome (Claude Code style: clean, minimal)
+        # Welcome
         console.print()
         console.print(Text.assemble(
             ("╭ ", "dim"),
-            ("OpenCode", "bold"),
+            ("MyCode", "bold"),
             (f" v{__version__}", "dim"),
         ))
         console.print(Text.assemble(
@@ -368,7 +367,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         console.print()
 
         while True:
-            # Claude Code style prompt: simple ❯
+            # simple ❯ prompt
             prompt_symbol = "❯ "
 
             prompt_msg = HTML(
@@ -472,7 +471,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 agent=agent,
             )
 
-            # --- Stream AI response (Claude Code style) ---
+            # --- Stream AI response ---
             console.print()
             full_text = ""
             done_data: dict = {}
@@ -491,7 +490,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 _in_text = False
 
             def _tool_label(tool_name: str, tool_input: dict | None = None) -> str:
-                """Generate Claude Code style tool label: verb + target."""
+                """Generate Generate tool label: verb + target."""
                 ti = tool_input or {}
                 # Map tool IDs to human-friendly verbs + extract key arg
                 name_map = {
@@ -599,7 +598,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
                         label = _tool_label(tool_name, tool_input)
 
-                        # Claude Code style: ✓/✗ + tool label
+                        # ✓/✗ + tool label
                         if status == "completed":
                             console.print(Text.assemble(
                                 ("  ✓ ", "green"),
@@ -616,7 +615,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                                 (label, ""),
                             ))
 
-                        # Show brief output preview (Claude Code shows compact result)
+                        # Show brief output preview (show compact result)
                         if output and status == "completed":
                             preview = output[:200].strip()
                             if preview:
@@ -711,7 +710,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                     style="yellow dim",
                 ))
 
-            # Status line (Claude Code style: compact single line)
+            # Status line
             elapsed = time.monotonic() - start_time
             tokens = done_data.get("tokens", {}) if done_data else {}
             cost = done_data.get("cost", 0.0) if done_data else 0.0
@@ -822,7 +821,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
 
 def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> None:
-    """Print a context window usage bar (Claude Code style)."""
+    """Print a context window usage bar."""
     from rich.text import Text
 
     ratio = used / limit if limit > 0 else 0
@@ -1412,13 +1411,13 @@ def mcp_list() -> None:
 
 
 @mcp.command("serve")
-@click.option("--opencode-url", default="http://127.0.0.1:4096", help="OpenCode HTTP server URL")
+@click.option("--opencode-url", default="http://127.0.0.1:4096", help="MyCode HTTP server URL")
 @click.option("--directory", "-d", default=".", help="Project directory")
 def mcp_serve(opencode_url: str, directory: str) -> None:
-    """Start the opencode MCP server (stdio transport).
+    """Start the mycode MCP server (stdio transport).
 
-    This exposes opencode as MCP tools for external AI agents.
-    Make sure the opencode HTTP server is running first:
+    This exposes mycode as MCP tools for external AI agents.
+    Make sure the mycode HTTP server is running first:
 
         opencode serve --port 4096
     """

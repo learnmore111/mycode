@@ -1,6 +1,5 @@
 """Models.dev database loader — fetches provider/model metadata from models.dev.
 
-Equivalent to src/provider/models.ts. Provides the model catalog that maps
 provider IDs to their available models with capabilities, costs, and limits.
 """
 from __future__ import annotations

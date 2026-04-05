@@ -1,4 +1,4 @@
-"""Session processor — the core agentic loop. Equivalent to src/session/processor.ts.
+"""Session processor — the core agentic loop.
 
 Streaming architecture: process_stream() is an async generator that yields
 ProcessorEvent objects in real-time as the LLM generates text and tools execute.

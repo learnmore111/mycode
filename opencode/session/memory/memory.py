@@ -636,7 +636,7 @@ def load_recent_notes(project_path: str, limit: int = 5) -> list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
-# Memory freshness management (inspired by memdir/memoryAge.ts)
+# Memory freshness management
 # ---------------------------------------------------------------------------
 
 

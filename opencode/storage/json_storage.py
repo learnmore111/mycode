@@ -1,7 +1,6 @@
 """JSON file-based storage.
 
 Provides key-value storage backed by JSON files on disk.
-Equivalent to src/storage/storage.ts.
 """
 
 from __future__ import annotations

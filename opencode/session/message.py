@@ -1,6 +1,6 @@
-"""Message data models. Equivalent to src/session/message-v2.ts.
+"""Message data models.
 
-Enhanced with:
+Features:
 - SystemMessage (info/warning/error/compact_boundary subtypes)
 - Message metadata: isMeta (hidden from UI but sent to model), origin tracking
 - Message normalization pipeline (normalizeMessagesForAPI)

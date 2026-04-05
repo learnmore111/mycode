@@ -1,6 +1,6 @@
-"""Write file tool. Equivalent to src/tool/write.ts.
+"""Write file tool.
 
-Enhancements:
+Features:
 - Path safety validation (prevent writing outside project directory)
 - Atomic write (temp file + rename to prevent corruption)
 - Returns a preview snippet of the written content (first/last lines)

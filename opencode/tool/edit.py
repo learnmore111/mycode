@@ -1,6 +1,6 @@
-"""Edit file tool — string replacement based editing. Equivalent to src/tool/edit.ts.
+"""Edit file tool — string replacement based editing.
 
-Enhancements:
+Features:
 - Path safety validation (prevent editing outside project directory)
 - Atomic write (temp file + rename to prevent corruption)
 - Uniqueness check shows all match locations (line numbers) on failure

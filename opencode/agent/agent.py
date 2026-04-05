@@ -1,6 +1,5 @@
 """Agent system — defines built-in and custom agents.
 
-Equivalent to src/agent/agent.ts. Defines the build, plan, general, explore,
 compaction, title, and summary agents with their permission rulesets.
 """
 

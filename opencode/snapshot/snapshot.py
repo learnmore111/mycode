@@ -1,4 +1,3 @@
-"""Snapshot system — shadow git repo for undo/redo. Equivalent to src/snapshot/index.ts."""
 from __future__ import annotations
 
 import asyncio
@@ -59,8 +58,8 @@ class Snapshot:
                 ("core.autocrlf", "false"),
                 ("core.longpaths", "true"),
                 ("core.fsmonitor", "false"),
-                ("user.email", "opencode@snapshot"),
-                ("user.name", "opencode"),
+                ("user.email", "mycode@snapshot"),
+                ("user.name", "mycode"),
             ]:
                 await _git(["--git-dir", self.gitdir, "config", k, v])
         self._initialized = True

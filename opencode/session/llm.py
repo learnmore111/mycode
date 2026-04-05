@@ -1,7 +1,6 @@
 """LLM streaming interface using litellm.
 
 Wraps litellm.acompletion to provide a unified streaming interface.
-Equivalent to src/session/llm.ts.
 """
 
 from __future__ import annotations

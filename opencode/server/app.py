@@ -1,4 +1,3 @@
-"""FastAPI application — complete API. Equivalent to src/server/server.ts + routes/."""
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
@@ -10,7 +9,7 @@ from opencode.server.routes import config, event, file, mcp, permission, project
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="opencode", version=__version__, description="OpenCode AI coding agent API")
+    app = FastAPI(title="mycode", version=__version__, description="MyCode AI coding agent API")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
     # Shared bus for SSE events
@@ -20,7 +19,7 @@ def create_app() -> FastAPI:
     # --- Health ---
     @app.get("/")
     async def root():
-        return {"name": "opencode", "version": __version__}
+        return {"name": "mycode", "version": __version__}
 
     @app.get("/health")
     async def health():

@@ -1,6 +1,5 @@
 """Permission system data types.
 
-Equivalent to src/permission/schema.ts + src/permission/index.ts type definitions.
 """
 
 from __future__ import annotations

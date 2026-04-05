@@ -1,6 +1,5 @@
 """Memory retrieval — find relevant memories for the current context.
 
-Inspired by Claude Code's findRelevantMemories.ts:
 - Keyword-based fast matching (no LLM needed)
 - LLM-assisted retrieval for complex queries (sideQuery to select from manifest)
 - Configurable max results

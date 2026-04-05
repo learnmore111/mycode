@@ -1,6 +1,6 @@
-"""WebFetch tool — fetch and extract content from URLs. Equivalent to src/tool/webfetch.ts.
+"""WebFetch tool — fetch and extract content from URLs.
 
-Enhancements:
+Features:
 - JSON content-type detection and formatting
 - XML content-type passthrough
 - Capability declarations (is_read_only=True)
@@ -113,7 +113,7 @@ class WebFetchTool(CallableTool[WebFetchParams]):
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
                 resp = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; OpenCode/1.0)",
+                    "User-Agent": "Mozilla/5.0 (compatible; MyCode/1.0)",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 })
                 resp.raise_for_status()

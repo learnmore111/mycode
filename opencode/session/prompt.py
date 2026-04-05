@@ -1,9 +1,8 @@
 """Session prompt — message sending entry point and agentic loop orchestration.
 
-This is the core orchestrator equivalent to src/session/prompt.ts.
 Flow: validate → create messages → build system prompt → load tools → run agentic loop
 
-Enhanced with:
+Features:
 - Three-layer loop guard (hard limit, pattern detection, near-limit intelligence)
 - Per-step atomic state with checkpoint data
 - Result caching for read-only tool deduplication

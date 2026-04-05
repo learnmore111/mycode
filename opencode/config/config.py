@@ -1,7 +1,6 @@
 """Configuration loading and management.
 
 Handles JSONC parsing, multi-layer config merging, and config file watching.
-Equivalent to the core logic in src/config/config.ts.
 """
 
 from __future__ import annotations

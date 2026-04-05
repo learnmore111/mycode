@@ -1,3 +1,3 @@
-"""OpenCode - Open source AI coding agent (Python edition)."""
+"""MyCode - AI coding agent."""
 
 __version__ = "0.1.0"

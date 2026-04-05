@@ -1,4 +1,3 @@
-"""Project discovery — find project root via git. Equivalent to src/project/project.ts."""
 from __future__ import annotations
 
 import asyncio

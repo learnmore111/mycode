@@ -1,6 +1,5 @@
 """Configuration Pydantic models.
 
-Maps 1:1 from the original Zod schemas in src/config/config.ts.
 """
 
 from __future__ import annotations

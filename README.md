@@ -1,8 +1,10 @@
-# OpenCode (Python)
+# MyCode
 
-**Open source AI coding agent — Python edition.**
+**AI coding agent — Python edition.**
 
-Python 重写版 [OpenCode](https://github.com/anomalyco/opencode)，一个不绑定特定 AI 提供商的开源编程 Agent 平台。
+基于 [OpenCode](https://github.com/anomalyco/opencode) 架构设计，使用 Python 重写实现。一个不绑定特定 AI 提供商的开源编程 Agent 平台。
+
+> **架构引用说明**：本项目的整体架构设计参考了 [OpenCode](https://github.com/anomalyco/opencode)（TypeScript 版），包括 session/processor agentic loop、tool 系统、permission 模型、memory 系统、event bus、config 多层合并等核心设计。在此基础上使用 Python 生态工具链（litellm、FastAPI、SQLAlchemy、Click+Rich 等）进行了完整重写，并添加了三层循环保护、读写分离工具执行、两层记忆系统等增强特性。
 
 ---
 
@@ -125,7 +127,7 @@ uv run pytest tests/ -v
 |------|------|
 | **`lsp/`** | LSP 集成。JSON-RPC 客户端 + 26 种预定义语言服务器（TypeScript/Python/Go/Rust/C++/Java/C#/Ruby/PHP/Kotlin/Swift 等）+ 自动 spawn + diagnostics 收集 |
 | **`mcp/`** | MCP 协议。支持 stdio/HTTP 传输，自动重连（最多 3 次），工具缓存刷新 |
-| **`mcp_server/`** | 内置 MCP Server。将 OpenCode 暴露为 MCP 服务供其他工具调用 |
+| **`mcp_server/`** | 内置 MCP Server。将 MyCode 暴露为 MCP 服务供其他工具调用 |
 | **`plugin/`** | 插件系统。Python 模块动态加载 + 7 种 hook 类型（before/after_tool、before/after_prompt 等）+ 链式传递 |
 
 ### 应用层 (Application)
@@ -205,7 +207,7 @@ opencode snapshot diff HASH [DIR]   # 查看快照 diff
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ ▐█▛█▛█▌ Welcome to OpenCode v0.1.0!             │
+│ ▐█▛█▛█▌ Welcome to MyCode v0.1.0!             │
 │ ▐█████▌ Type /help for commands, Ctrl+D to exit. │
 │                                                  │
 │ Directory: .                                     │
@@ -415,4 +417,4 @@ MIT
 
 ---
 
-*完整重构计划和进度追踪见 [PLAN.md](./PLAN.md)*
+*完整计划和进度追踪见 [PLAN.md](./PLAN.md)*

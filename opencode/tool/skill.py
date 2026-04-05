@@ -1,6 +1,6 @@
-"""Skill tool — load and use skill files (.md instructions). Equivalent to src/tool/skill.ts.
+"""Skill tool — load and use skill files (.md instructions).
 
-Enhanced with:
+Features:
 - User home directory skill search (~/.opencode/skills/)
 - Lists available skills when name not found
 """

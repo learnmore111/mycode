@@ -1,7 +1,6 @@
 """Event bus — asyncio-based pub/sub system.
 
 Provides typed event publishing and subscription.
-Equivalent to src/bus/index.ts (Effect PubSub → asyncio.Queue).
 """
 
 from __future__ import annotations

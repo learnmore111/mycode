@@ -1,4 +1,3 @@
-"""MCP (Model Context Protocol) support. Equivalent to src/mcp/index.ts."""
 from __future__ import annotations
 
 import asyncio

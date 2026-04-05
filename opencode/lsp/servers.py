@@ -1,4 +1,3 @@
-"""Predefined LSP server configurations. Equivalent to src/lsp/server.ts."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +10,7 @@ class LspServerDef:
     command: list[str]
 
 
-# 20+ LSP servers matching the original TypeScript version
+# Predefined LSP server configurations
 SERVERS: dict[str, LspServerDef] = {
     # --- Web / JavaScript / TypeScript ---
     "typescript": LspServerDef(

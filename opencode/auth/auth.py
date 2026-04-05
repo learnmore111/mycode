@@ -5,7 +5,6 @@ Enhanced with:
 - Environment variable auto-discovery for provider keys
 - Authentication status helpers (is_authenticated, auth_source)
 - Stores provider credentials in the global data directory.
-Equivalent to src/auth/ in the original.
 """
 
 from __future__ import annotations

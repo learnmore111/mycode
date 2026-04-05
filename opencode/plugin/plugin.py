@@ -1,4 +1,3 @@
-"""Plugin system. Equivalent to src/plugin/index.ts."""
 from __future__ import annotations
 
 import importlib

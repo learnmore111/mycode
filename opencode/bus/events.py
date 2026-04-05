@@ -1,6 +1,5 @@
 """Event definitions for the bus system.
 
-Equivalent to src/bus/bus-event.ts — a typed event registry.
 """
 
 from __future__ import annotations

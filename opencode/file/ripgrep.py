@@ -1,4 +1,3 @@
-"""Ripgrep integration for fast file listing and content search. Equivalent to src/file/ripgrep.ts."""
 from __future__ import annotations
 
 import asyncio

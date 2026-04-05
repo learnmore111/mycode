@@ -6,7 +6,6 @@ Handles the interactive permission flow:
 3. If "ask" → block, publish event, wait for user reply
 4. User replies → reply() → unblock tool
 
-Equivalent to src/permission/index.ts.
 """
 
 from __future__ import annotations
@@ -192,7 +191,6 @@ def from_config(permission_config: dict[str, Any]) -> Ruleset:
     """Convert a config permission dict to a Ruleset.
 
     Handles both simple ("allow") and pattern-based ({"*.ts": "allow"}) formats.
-    Equivalent to Permission.fromConfig() in the original.
     """
     ruleset: Ruleset = []
     for key, value in permission_config.items():

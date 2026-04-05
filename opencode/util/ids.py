@@ -1,6 +1,6 @@
 """ID generation utilities.
 
-Provides ordered ID generation using ULID, matching the original src/id/ module.
+Provides ordered ID generation using ULID.
 Session IDs are descending (newest first), Message/Part IDs are ascending.
 """
 

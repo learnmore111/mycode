@@ -1,4 +1,3 @@
-"""Question tool — ask the user a question. Equivalent to src/tool/question.ts."""
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

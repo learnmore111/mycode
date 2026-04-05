@@ -1,4 +1,3 @@
-"""Todo tool — manage a task list. Equivalent to src/tool/todo.ts."""
 from __future__ import annotations
 
 from typing import Any

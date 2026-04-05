@@ -1,4 +1,3 @@
-"""Session CRUD with SQLite persistence. Equivalent to src/session/index.ts."""
 from __future__ import annotations
 
 import contextlib

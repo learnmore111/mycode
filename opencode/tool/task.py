@@ -1,6 +1,6 @@
-"""Task tool — spawn a sub-agent for complex multi-step work. Equivalent to src/tool/task.ts.
+"""Task tool — spawn a sub-agent for complex multi-step work.
 
-Enhancements:
+Features:
 - Multi-turn agentic loop (up to MAX_TURNS)
 - Abort signal support (checks ctx.abort between turns)
 - Capability declarations

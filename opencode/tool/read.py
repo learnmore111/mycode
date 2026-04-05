@@ -1,6 +1,6 @@
-"""Read file tool. Equivalent to src/tool/read.ts.
+"""Read file tool.
 
-Enhancements:
+Features:
 - Path safety validation (prevent reading outside project directory)
 - Encoding detection (charset-normalizer / chardet fallback)
 - Image file support (returns file info + base64 hint)

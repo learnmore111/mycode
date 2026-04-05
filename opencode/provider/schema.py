@@ -1,7 +1,6 @@
 """Provider and Model schema types.
 
 Branded types and Pydantic models for Provider/Model identification.
-Equivalent to src/provider/schema.ts + src/provider/provider.ts Model/Info schemas.
 """
 
 from __future__ import annotations

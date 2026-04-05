@@ -1,12 +1,11 @@
 """Configuration file path discovery.
 
 Discovers config files in the following priority order (low to high):
-1. Global config (~/.config/opencode/)
+1. Global config (~/.config/mycode/)
 2. OPENCODE_CONFIG env var
 3. Project local config (opencode.json / .opencode/)
 4. OPENCODE_CONFIG_CONTENT env var
 
-Equivalent to src/config/paths.ts.
 """
 
 from __future__ import annotations
