@@ -120,6 +120,9 @@ async def prompt(
         if prompt_input.system:
             system.append(prompt_input.system)
 
+        # Inject relevant memories into system prompt
+        _inject_memory_context(system, prompt_input)
+
         # Load tools
         tool_registry.register_builtins()
         tools = tool_registry.to_llm_tools()
@@ -336,7 +339,10 @@ async def prompt(
             },
             "cost": assistant_msg.cost,
             "context": {
-                "used": assistant_msg.tokens_input + assistant_msg.tokens_output,
+                # "used" = estimated tokens of the current message history
+                # This represents how much of the context window is occupied,
+                # NOT the cumulative API token consumption across iterations.
+                "used": compaction.estimate_messages_tokens(messages),
                 "limit": model.limit.context,
             },
             "iterations": iterations_done,
@@ -397,3 +403,40 @@ def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str
         logger.warn("debug dump failed", error=str(e))
 
     return str(filepath)
+
+
+def _inject_memory_context(system: list[str], prompt_input: PromptInput) -> None:
+    """Inject relevant memories into the system prompt.
+
+    Looks up structured memdir memories based on user query keywords.
+    Only adds if memories are found and non-empty.
+    """
+    try:
+        from opencode.project.instance import current_or_none
+        from opencode.session.memory.memdir import format_memories_for_context
+        from opencode.session.memory.retrieval import find_relevant_memories
+
+        inst = current_or_none()
+        if not inst:
+            return
+
+        # Extract query text from prompt parts
+        query = ""
+        for part in prompt_input.parts:
+            if part.get("type") == "text":
+                query += part.get("content", "")
+
+        if not query:
+            return
+
+        # Find relevant memories (keyword-based, no LLM call)
+        memories = find_relevant_memories(inst.directory, query, max_results=5)
+        if not memories:
+            return
+
+        context = format_memories_for_context(memories, include_freshness=True)
+        if context:
+            system.append(context)
+            logger.debug("injected memories into system prompt", count=len(memories))
+    except Exception:
+        pass  # Memory injection is best-effort, never block the main flow

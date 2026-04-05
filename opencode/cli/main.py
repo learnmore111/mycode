@@ -721,10 +721,15 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             t_reason = tokens.get("reasoning", 0)
             t_cache_r = tokens.get("cache_read", 0)
 
-            # Accumulate total tokens for context bar
-            total_tokens_used += t_in + t_out
+            # Context usage for this turn (not cumulative across turns)
+            # ctx_info["used"] is the actual context used in this agentic loop
+            # iteration (input + output tokens for the final LLM call)
+            current_context_used = ctx_info.get("used", t_in + t_out)
             if ctx_info.get("limit", 0) > 0:
                 context_limit = ctx_info["limit"]
+
+            # Also track cumulative for stats (but don't use for bar)
+            total_tokens_used += t_in + t_out
 
             # Format: ─ 3.2s · in:1234 out:567 · $0.0012
             stat_parts = [f"{elapsed:.1f}s"]
@@ -742,9 +747,9 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 style="dim",
             ))
 
-            # Context window bar
+            # Context window bar — shows THIS turn's usage, not cumulative
             if context_limit > 0:
-                _print_context_bar(console, total_tokens_used, context_limit)
+                _print_context_bar(console, current_context_used, context_limit)
             console.print()
 
             # Keep conversation history (use full messages from prompt if available)
@@ -792,6 +797,25 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             except Exception as e:
                 console.print(Text(f"  ✗ Save failed: {e}", style="red dim"))
 
+        # --- Session end: extract long-term memories (best-effort) ---
+        if conversation_history and len(conversation_history) >= 4:
+            try:
+                import asyncio as _ext_aio
+                from opencode.session.memory.extractor import extract_memories, save_extracted_memories
+
+                result = await _ext_aio.wait_for(
+                    extract_memories(abs_directory, conversation_history),
+                    timeout=3.0,
+                )
+                if result.extracted:
+                    saved = save_extracted_memories(abs_directory, result)
+                    if saved:
+                        console.print(Text(f"  ✓ Extracted {len(saved)} memories", style="green dim"))
+            except TimeoutError:
+                pass  # Don't block exit
+            except Exception:
+                pass  # Best effort
+
         await bus.close()
 
     await provide(directory, _run_loop, project)
@@ -801,8 +825,9 @@ def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> N
     """Print a context window usage bar (Claude Code style)."""
     from rich.text import Text
 
-    ratio = min(used / limit, 1.0) if limit > 0 else 0
-    filled = int(bar_width * ratio)
+    ratio = used / limit if limit > 0 else 0
+    # Cap the visual fill at bar_width, but show real percentage
+    filled = min(int(bar_width * ratio), bar_width)
     empty = bar_width - filled
     pct = ratio * 100
 
@@ -1016,24 +1041,40 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
 
     if cmd == "/memory":
         from opencode.session.memory import SessionMemory
+        from opencode.session.memory.memdir import scan_memory_files
+        from opencode.session.memory.memory import memory_age_text
         if not project_path:
             console.print("  [dim](no project path)[/dim]")
             return ""
+
+        # Section 1: Structured memories (memdir)
+        memories = scan_memory_files(project_path)
+        if memories:
+            console.print(f"  [bold]Structured memories ({len(memories)}):[/bold]")
+            for mem in memories:
+                age = memory_age_text(mem.mtime_ms) if mem.mtime_ms > 0 else "?"
+                desc = mem.description[:60] if mem.description else "(no description)"
+                console.print(f"    [{mem.memory_type}] {mem.name} — {desc} [dim]({age})[/dim]")
+            console.print()
+
+        # Section 2: Session notes
         memory = SessionMemory(project_path)
-        if not memory.is_enabled:
-            console.print("  [yellow]Session memory is disabled.[/yellow]")
-            console.print("  [dim]Enable: sessionMemory.enabled = true[/dim]")
-            return ""
-        notes = memory.load_recent_sessions(limit=5)
-        if not notes:
-            console.print("  [dim](no session notes found)[/dim]")
+        if memory.is_enabled:
+            notes = memory.load_recent_sessions(limit=5)
+            if notes:
+                console.print(f"  [bold]Session notes ({len(notes)}):[/bold]")
+                for note in notes:
+                    date = note.get("date", "?")
+                    duration = note.get("duration_min", 0)
+                    topics = ", ".join(note.get("topics", [])) or "general"
+                    console.print(f"    {date} ({duration}min) — {topics}")
+            else:
+                console.print("  [dim](no session notes)[/dim]")
         else:
-            console.print(f"  [bold]Session notes ({len(notes)}):[/bold]")
-            for note in notes:
-                date = note.get("date", "?")
-                duration = note.get("duration_min", 0)
-                topics = ", ".join(note.get("topics", [])) or "general"
-                console.print(f"    {date} ({duration}min) — {topics}")
+            console.print("  [dim]Session notes: disabled (enable: sessionMemory.enabled = true)[/dim]")
+
+        if not memories and not (memory.is_enabled and memory.load_recent_sessions(limit=1)):
+            console.print("  [dim](no memories found)[/dim]")
         return ""
 
     console.print(f"  [red]Unknown command: {cmd}. Type /help[/red]")

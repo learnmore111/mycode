@@ -47,6 +47,7 @@ uv run pytest tests/ -v
 │  │ Agent 选择   │  │ System Prompt│  │  Tool 加载     │  │
 │  └──────┬──────┘  └──────┬───────┘  └───────┬───────┘  │
 │         └────────────────┼──────────────────┘           │
+│                    Memory 注入                           │
 │                          ▼                              │
 │              ┌─── Agentic Loop ───┐                     │
 │              │                    │                     │
@@ -54,8 +55,11 @@ uv run pytest tests/ -v
 │              │     │              │  ↓                   │
 │              │     ▼              │  AI Provider API     │
 │              │  Tool 执行         │                     │
+│              │  (R/O 并行,W 串行) │                     │
 │              │     │              │                     │
 │              │  Permission 检查   │                     │
+│              │     │              │                     │
+│              │  Loop Guard (3层)  │                     │
 │              │     │              │                     │
 │              │  Compaction 检测 ──┤                     │
 │              │     │              │                     │
@@ -78,10 +82,30 @@ uv run pytest tests/ -v
 
 | 模块 | 说明 |
 |------|------|
-| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`llm.py` litellm 流式调用 + token 统计（input/output/reasoning/cache）+ cost 计算 |
+| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + 记忆注入 + 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + 读写分离（基于能力声明）+ doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`loop_guard.py` 三层循环保护（硬限制 + 模式检测 + 智能判断）+ 结果缓存 + 重试逻辑，`llm.py` litellm 流式调用 + token 统计 + cost 计算 |
+| **`session/memory/`** | **两层记忆系统**。`memory.py` 会话级记忆（JSONL 滚动摘要 + 每轮记录 + LLM 精炼），`memdir.py` 结构化长期记忆（四类：user/feedback/project/reference + frontmatter 格式 + MEMORY.md 索引），`retrieval.py` 相关记忆检索（关键词 + LLM 辅助），`extractor.py` 后台自动记忆提取 + 新鲜度管理 |
 | **`provider/`** | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，`transform.py` 按模型类型调整参数（temperature/reasoning/max_tokens），通过 litellm 统一调用 14+ 种 LLM |
 | **`agent/`** | Agent 系统。内置 7 个 agent：`build`(默认全权限)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
-| **`tool/`** | 工具系统。12 个内置工具 + 注册表：bash、read、edit、write、glob、grep、task、webfetch、websearch、question、todo、skill |
+| **`tool/`** | **14 个内置工具** + 注册表。所有工具具有能力声明（`is_read_only`/`is_destructive`/`is_concurrency_safe`），路径安全验证（防目录逃逸），原子写入。按名称排序保证 prompt cache 稳定性 |
+
+### 工具系统
+
+| 工具 | 说明 | 特性 |
+|------|------|------|
+| `bash` | Shell 命令执行 | stderr 分离、自定义环境变量、cwd 安全验证 |
+| `read` | 文件读取 | 编码自动检测、图片/PDF 识别、二进制文件检测、路径安全 |
+| `edit` | 文件编辑（搜索替换） | 原子写入、路径安全、文件不存在提示用 write |
+| `write` | 文件写入 | 原子写入、路径安全、标记为 destructive |
+| `glob` | 文件名匹配搜索 | 忽略 .gitignore 模式 |
+| `grep` | 内容正则搜索 (ripgrep) | 二进制排除 (`--no-binary`)、文件大小限制 |
+| `listdir` | 目录列表 | 树形结构输出 |
+| `task` | 子 Agent 任务 | abort 信号支持、独立工具集 |
+| `webfetch` | URL 内容获取 | JSON/XML content-type 自动格式化 |
+| `websearch` | 网页搜索 | 多引擎支持 |
+| `question` | 向用户提问 | 阻塞等待回复 |
+| `todo` | 任务列表管理 | 会话内 in-memory 状态 |
+| `skill` | 技能文件加载 | 项目 + `~/.opencode/skills/` 搜索、列出可用技能 |
+| `batch` | 并行工具执行 (实验性) | 多工具同时调用 |
 
 ### 基础设施 (Infrastructure)
 
@@ -92,7 +116,7 @@ uv run pytest tests/ -v
 | **`bus/`** | asyncio pub/sub 事件总线，17 种事件类型，支持类型化订阅、通配符订阅和全局广播 |
 | **`permission/`** | 权限系统。Wildcard 规则评估 + ask/reply 阻塞流（allow/deny/ask），集成到 processor 的 tool 执行中 |
 | **`project/`** | 项目发现（git root commit → ID）+ contextvars 实例管理 |
-| **`auth/`** | API Key / OAuth / WellKnown 认证持久化 |
+| **`auth/`** | API Key / OAuth / WellKnown 认证持久化 + Token 过期检测 + 环境变量自动发现（9 个主流 Provider）+ 认证状态判断 |
 | **`snapshot/`** | Shadow git repo，支持 track/diff/patch/restore + commit 历史追踪 |
 
 ### 集成 (Integrations)
@@ -101,6 +125,7 @@ uv run pytest tests/ -v
 |------|------|
 | **`lsp/`** | LSP 集成。JSON-RPC 客户端 + 26 种预定义语言服务器（TypeScript/Python/Go/Rust/C++/Java/C#/Ruby/PHP/Kotlin/Swift 等）+ 自动 spawn + diagnostics 收集 |
 | **`mcp/`** | MCP 协议。支持 stdio/HTTP 传输，自动重连（最多 3 次），工具缓存刷新 |
+| **`mcp_server/`** | 内置 MCP Server。将 OpenCode 暴露为 MCP 服务供其他工具调用 |
 | **`plugin/`** | 插件系统。Python 模块动态加载 + 7 种 hook 类型（before/after_tool、before/after_prompt 等）+ 链式传递 |
 
 ### 应用层 (Application)
@@ -108,18 +133,31 @@ uv run pytest tests/ -v
 | 模块 | 说明 |
 |------|------|
 | **`server/`** | FastAPI 应用。8 个路由模块（session/provider/config/file/permission/mcp/event/project），26 个 API 端点 + SSE 流式消息 + SSE 全局事件订阅 |
-| **`cli/`** | Click CLI + Rich 交互式 REPL。欢迎面板 + Markdown 渲染 + Spinner 动画 + 上下文进度条 + Token/Cost 统计。命令：`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
+| **`cli/`** | Click CLI + Rich 交互式 REPL。欢迎面板 + Markdown 渲染 + Spinner 动画 + 上下文进度条 + Token/Cost 统计 + Debug 模式（`/debug` dump LLM I/O）。命令：`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
 | **`shell/`** | Shell 检测（排除 fish/nu）+ 进程树 kill |
 | **`file/`** | 文件读取/模糊搜索/列目录 + ripgrep 集成 |
+| **`cache/`** | LRU 缓存 + 过期策略 |
 | **`util/`** | 通用工具：log (structlog)、filesystem (aiofiles)、error、hash、ids (ULID)、wildcard、context、paths (XDG)、slug |
+
+## 消息系统
+
+三种消息类型贯穿全系统：
+
+| 类型 | 用途 |
+|------|------|
+| **UserMessage** | 用户输入 + `is_meta`（对 UI 隐藏但发给模型）+ `origin` 来源追踪（human/api/cron/bridge/teammate/system/proactive）|
+| **AssistantMessage** | 模型输出 + token 统计 + cost + API 错误标记 + 调用耗时 |
+| **SystemMessage** | 系统内部消息：`info`/`warning`/`error`/`compact_boundary`/`local_command` 子类型 |
+
+消息规范化管线：`normalizeMessagesForAPI()` 过滤 local_command、转换系统消息；`getMessagesAfterCompactBoundary()` 截取压缩边界。
 
 ## 项目统计
 
 ```
-Python 文件:      91
-代码行数:       7,593
-单元测试:        165 (全部通过)
-内置工具:         12
+Python 文件:      104
+代码行数:      13,558
+单元测试:        373 (全部通过)
+内置工具:         14
 API 路由:         26
 LSP 语言:         26
 CLI 命令:         13
@@ -181,12 +219,16 @@ opencode snapshot diff HASH [DIR]   # 查看快照 diff
   Context ▐██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░▌ 3.5K/96.0K (4%)
 ```
 
-- **Rich Markdown 渲染** — AI 回复自动渲染代码高亮、列表、标题
-- **Spinner 动画** — 等待 AI 时显示 dots spinner + 耗时
-- **Token 统计** — 每轮显示 input/output/reasoning/cache token 数
-- **Cost 计算** — 基于 litellm 定价数据自动计算费用
-- **上下文进度条** — 颜色编码显示上下文窗口使用率（绿→黄→橙→红）
-- **斜杠命令** — `/help` `/clear` `/history` `/quit`
+| 特性 | 说明 |
+|------|------|
+| Rich Markdown 渲染 | AI 回复自动渲染代码高亮、列表、标题 |
+| Spinner 动画 | 等待 AI 时显示 dots spinner + 耗时 |
+| Token 统计 | 每轮显示 input/output/reasoning/cache token 数 |
+| Cost 计算 | 基于 litellm 定价数据自动计算费用 |
+| 上下文进度条 | 颜色编码显示当前消息列表的上下文窗口占用率（绿→黄→橙→红）|
+| 斜杠命令 | `/help` `/clear` `/model` `/history` `/steps` `/debug` `/memory` `/quit` |
+| Debug 模式 | `/debug` 将每轮 LLM 输入输出 dump 到 `.opencode/debug/` |
+| 会话记忆 | `/memory` 查看结构化记忆 + 会话笔记 |
 
 ## API 端点
 
@@ -242,11 +284,12 @@ POST   /log                        # 写日志
 | Anthropic | `ANTHROPIC_API_KEY` |
 | OpenAI | `OPENAI_API_KEY` |
 | Google | `GOOGLE_API_KEY` / `GEMINI_API_KEY` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
 | xAI | `XAI_API_KEY` |
 | Groq | `GROQ_API_KEY` |
 | Mistral | `MISTRAL_API_KEY` |
 | DeepInfra | `DEEPINFRA_API_KEY` |
-| Cohere | `COHERE_API_KEY` |
+| Cohere | `COHERE_API_KEY` / `CO_API_KEY` |
 | Perplexity | `PERPLEXITY_API_KEY` |
 | Together AI | `TOGETHERAI_API_KEY` |
 | AWS Bedrock | `AWS_ACCESS_KEY_ID` |
@@ -300,8 +343,15 @@ uv run opencode run --message "hello"
 |------|------|
 | 交互式 CLI (Rich + prompt_toolkit) | ✅ 已完成 |
 | Token 统计 + Cost 计算 + 上下文进度条 | ✅ 已完成 |
+| 三层循环保护 (Loop Guard) | ✅ 已完成 |
+| 工具读写分离（R/O 并行，Mutating 串行）| ✅ 已完成 |
+| 结果缓存 + 重试逻辑 | ✅ 已完成 |
+| 工具能力声明 + 路径安全 + 原子写入 | ✅ 已完成 |
+| 两层记忆系统（会话 JSONL + 结构化 memdir）| ✅ 已完成 |
+| 消息类型系统（System/Meta/Origin）| ✅ 已完成 |
+| 认证增强（Token 过期、环境变量发现）| ✅ 已完成 |
+| Debug 模式 (`/debug` dump LLM I/O) | ✅ 已完成 |
 | 会话恢复（从 DB 加载历史继续对话） | 待实现 |
-| 工具并行执行 | 待实现 |
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
 | LSP didChange 通知 | 待实现 |
 | Python SDK (`opencode-sdk`) | 待评估 |
@@ -335,13 +385,15 @@ uv run mypy opencode/
 ```
 opencode/
 ├── agent/          # Agent 定义 (7 内置 agent)
-├── auth/           # API Key / OAuth 持久化
-├── bus/            # 事件总线 (asyncio pub/sub)
-├── cli/            # CLI 入口 (Click, 13 命令)
+├── auth/           # 认证持久化 + Token 过期检测 + 环境变量发现
+├── bus/            # 事件总线 (asyncio pub/sub, 17 种事件)
+├── cache/          # LRU 缓存 + 过期策略
+├── cli/            # CLI 入口 (Click, 13 命令, Debug 模式)
 ├── config/         # JSONC 配置 + Pydantic 模型
 ├── file/           # 文件操作 + ripgrep
 ├── lsp/            # LSP 集成 (26 语言)
 ├── mcp/            # MCP 协议 (stdio/HTTP, 自动重连)
+├── mcp_server/     # 内置 MCP Server
 ├── permission/     # 权限系统 (allow/deny/ask)
 ├── plugin/         # 插件系统 (7 hook 类型)
 ├── project/        # 项目发现 + contextvars
@@ -349,11 +401,12 @@ opencode/
 ├── server/         # FastAPI (8 路由模块, 26 端点)
 │   └── routes/     # session/provider/config/file/permission/mcp/event/project
 ├── session/        # 核心 agentic loop + 消息持久化 + compaction
+│   └── memory/     # 两层记忆 (JSONL会话 + memdir结构化 + 检索 + 提取)
 ├── shell/          # Shell 检测
 ├── snapshot/       # Shadow git (track/diff/restore/history)
 ├── storage/        # SQLite + JSON 存储
-├── tool/           # 12 内置工具 + 注册表
-└── util/           # 通用工具 (9 模块)
+├── tool/           # 14 内置工具 + 注册表 + 能力声明
+└── util/           # 通用工具 (10 模块)
 ```
 
 ## License
