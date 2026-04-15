@@ -104,7 +104,17 @@ class BatchTool(CallableTool[BatchParams]):
             _execute_one(i, call_item, impl)
             for i, (call_item, impl) in enumerate(validated)
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Normalize: exceptions surfaced by gather (shouldn't happen given try/except in
+        # _execute_one, but be defensive) are treated as failures.
+        results: list[tuple[bool, str]] = []
+        for i, item in enumerate(raw_results):
+            if isinstance(item, BaseException):
+                tool_name = validated[i][0].tool
+                results.append((False, f"[{i}:{tool_name}] Unexpected error: {item}"))
+            else:
+                results.append(item)
 
         succeeded = sum(1 for ok, _ in results if ok)
         failed = len(results) - succeeded

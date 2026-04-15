@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import shutil
+import signal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -57,10 +57,7 @@ class BashTool(CallableTool[BashParams]):
         base = inst.directory if inst else os.getcwd()
 
         # Resolve working directory
-        if params.cwd:
-            cwd = os.path.join(base, params.cwd) if not os.path.isabs(params.cwd) else params.cwd
-        else:
-            cwd = base
+        cwd = (os.path.join(base, params.cwd) if not os.path.isabs(params.cwd) else params.cwd) if params.cwd else base
 
         if not os.path.isdir(cwd):
             return ToolError(f"Working directory not found: {cwd}", title=command[:80])
@@ -115,9 +112,10 @@ class BashTool(CallableTool[BashParams]):
             if proc and proc.returncode is None:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.5)
                     if proc.returncode is None:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        await proc.wait()  # Reap the zombie process
                 except (ProcessLookupError, PermissionError):
                     pass
             return ToolError(

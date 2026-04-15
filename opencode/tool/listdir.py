@@ -35,10 +35,7 @@ class ListDirTool(CallableTool[ListDirParams]):
             return ToolError(f"Not a directory: {dir_path or '.'}", title=f"List {dir_path or '.'}")
 
         try:
-            if recursive:
-                lines = _tree(resolved, base, max_depth=3)
-            else:
-                lines = _flat(resolved, base)
+            lines = _tree(resolved, base, max_depth=3) if recursive else _flat(resolved, base)
 
             if not lines:
                 return ToolOk("(empty directory)", title=f"List {dir_path or '.'}", metadata={"count": 0})
@@ -67,8 +64,11 @@ def _flat(directory: str, base: str) -> list[str]:
         if entry.is_dir():
             lines.append(f"[dir]  {rel}/")
         else:
-            size = entry.stat().st_size
-            lines.append(f"[file] {rel}  ({_human_size(size)})")
+            try:
+                size = entry.stat().st_size
+                lines.append(f"[file] {rel}  ({_human_size(size)})")
+            except OSError:
+                lines.append(f"[file] {rel}  (unreadable)")
     return lines
 
 

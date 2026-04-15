@@ -29,6 +29,9 @@ class WebSearchTool(CallableTool[WebSearchParams]):
         query = params.query
         max_results = params.max_results
 
+        if not query.strip():
+            return ToolError("Search query cannot be empty.", title="Search")
+
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
                 resp = await client.get(

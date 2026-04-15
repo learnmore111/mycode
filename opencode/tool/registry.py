@@ -103,7 +103,21 @@ def register_builtins() -> None:
         return
     _registered = True
 
-    from opencode.tool import bash, edit, glob_tool, grep, listdir, question, read, skill, task, todo, webfetch, websearch, write
+    from opencode.tool import (
+        bash,
+        edit,
+        glob_tool,
+        grep,
+        listdir,
+        question,
+        read,
+        skill,
+        task,
+        todo,
+        webfetch,
+        websearch,
+        write,
+    )
     for mod in [bash, read, edit, write, glob_tool, grep, listdir, task, webfetch, websearch, question, todo, skill]:
         if hasattr(mod, "tool"):
             register(mod.tool)

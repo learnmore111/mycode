@@ -93,7 +93,7 @@ class GrepTool(CallableTool[GrepParams]):
                 )
 
             # Count unique files and match lines
-            match_lines = [l for l in output.split("\n") if l and not l.startswith("--")]
+            match_lines = [line for line in output.split("\n") if line and not line.startswith("--")]
             match_count = len(match_lines)
             unique_files: set[str] = set()
             for line in match_lines:
@@ -123,7 +123,7 @@ class GrepTool(CallableTool[GrepParams]):
             )
         except TimeoutError:
             return ToolError(
-                f"Search timed out after 30s. Try a more specific pattern or narrower path.",
+                "Search timed out after 30s. Try a more specific pattern or narrower path.",
                 title=f"Grep {pattern}",
             )
         except Exception as e:

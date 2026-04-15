@@ -13,6 +13,7 @@ Features:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -101,8 +102,7 @@ class EditTool(CallableTool[EditParams]):
             )
 
         try:
-            from pathlib import Path as _Path
-            content = _Path(full).read_text(encoding="utf-8")
+            content = Path(full).read_text(encoding="utf-8")
             lines = content.split("\n")
             total_before = len(lines)
 
@@ -164,7 +164,7 @@ class EditTool(CallableTool[EditParams]):
                     if stripped_count > 0:
                         locs = _find_all_occurrences(content, stripped_old)
                         hint = (f"\nHint: A stripped version was found {stripped_count} time(s) at line(s) "
-                                f"{', '.join(str(l) for l in locs[:10])}. "
+                                f"{', '.join(str(ln) for ln in locs[:10])}. "
                                 f"Check leading/trailing whitespace.")
                 if not hint and old_string.lower() in content.lower():
                     hint = "\nHint: A case-insensitive match exists. Check exact casing."
@@ -176,7 +176,7 @@ class EditTool(CallableTool[EditParams]):
                 )
             if count > 1:
                 locations = _find_all_occurrences(content, old_string)
-                loc_str = ", ".join(str(l) for l in locations[:20])
+                loc_str = ", ".join(str(ln) for ln in locations[:20])
                 return ToolError(
                     f"old_string found {count} times at line(s): {loc_str}. "
                     f"It must be unique — include more surrounding lines to disambiguate.",

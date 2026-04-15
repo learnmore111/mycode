@@ -340,24 +340,98 @@ def save_parts(parts: list[Part]) -> None:
     db = get_db_session()
     try:
         for part in parts:
-            row = PartTable(
-                id=part.id,
-                message_id=part.message_id,
-                session_id=part.session_id,
-                type=part.type,
-                time_created=part.time_created,
-            )
-            if isinstance(part, TextPart):
-                row.content = part.content
-            elif isinstance(part, ToolPart):
-                row.tool = part.tool
-                row.tool_call_id = part.tool_call_id
-                row.state = part.state
-                row.time_completed = part.time_completed
-                row.content = part.state.get("output", "")
-            elif isinstance(part, (ReasoningPart, FilePart)):
-                row.content = part.content
+            row = _build_part_row(part)
             db.merge(row)
         db.commit()
+    finally:
+        db.close()
+
+
+def _build_part_row(part: Part):
+    """Build a PartTable row from a Part object."""
+    from opencode.storage.models import PartTable
+
+    row = PartTable(
+        id=part.id,
+        message_id=part.message_id,
+        session_id=part.session_id,
+        type=part.type,
+        time_created=part.time_created,
+    )
+    if isinstance(part, TextPart):
+        row.content = part.content
+    elif isinstance(part, ToolPart):
+        row.tool = part.tool
+        row.tool_call_id = part.tool_call_id
+        row.state = part.state
+        row.time_completed = part.time_completed
+        row.content = part.state.get("output", "")
+    elif isinstance(part, ReasoningPart):
+        row.content = part.content
+    elif isinstance(part, FilePart):
+        row.content = part.content
+        row.tool = part.filename
+    return row
+
+
+def _build_message_row(msg: MessageInfo):
+    """Build a MessageTable row from a MessageInfo object."""
+    from opencode.storage.models import MessageTable
+
+    row = MessageTable(
+        id=msg.id,
+        session_id=msg.session_id,
+        role=msg.role,
+        time_created=msg.time_created,
+    )
+    if isinstance(msg, AssistantMessage):
+        row.parent_id = msg.parent_id
+        row.model_id = msg.model_id
+        row.provider_id = msg.provider_id
+        row.agent = msg.agent
+        row.variant = msg.variant
+        row.system = json.dumps(msg.system) if msg.system else None
+        row.error = json.dumps(msg.error) if msg.error else None
+        row.tokens_input = msg.tokens_input
+        row.tokens_output = msg.tokens_output
+        row.tokens_reasoning = msg.tokens_reasoning
+        row.tokens_cache_read = msg.tokens_cache_read
+        row.tokens_cache_write = msg.tokens_cache_write
+        row.cost = msg.cost
+        row.time_completed = msg.time_completed
+    return row
+
+
+def persist_turn(session_id: str, msg: MessageInfo, parts: list[Part]) -> None:
+    """Atomically persist a complete turn: message + all parts + session touch.
+
+    All writes happen in a single database transaction. Either everything
+    is committed, or nothing is — no partial state in the DB.
+    """
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import SessionTable
+
+    db = get_db_session()
+    try:
+        # 1. Message
+        msg_row = _build_message_row(msg)
+        db.merge(msg_row)
+
+        # 2. All parts
+        for part in parts:
+            part_row = _build_part_row(part)
+            db.merge(part_row)
+
+        # 3. Touch session timestamp
+        session_row = db.query(SessionTable).filter(
+            SessionTable.id == session_id,
+        ).first()
+        if session_row:
+            session_row.time_updated = int(time.time() * 1000)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

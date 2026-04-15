@@ -27,10 +27,8 @@ from opencode.session.message import (
     ToolPart,
     create_assistant_message,
     create_user_message,
-    save_message,
-    save_parts,
+    persist_turn,
 )
-from opencode.session.session import touch
 from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
 from opencode.util import log as logmod
@@ -162,6 +160,15 @@ async def prompt(
             loop_guard=guard,
         )
 
+        # Pre-build compaction kwargs so both call sites share the same args
+        compact_kwargs: dict[str, Any] = {
+            "system": system,
+            "tools": tools if model.capabilities.toolcall else None,
+            "model": model,
+            "api_key": await providermod.get_api_key(provider_id),
+            "api_base": model.api.url or None,
+        }
+
         all_parts: list[Part] = []
         iterations_done = 0
         stop_reason = ""
@@ -203,11 +210,7 @@ async def prompt(
                 messages=messages, model_context=context_limit
             ):
                 logger.info("context overflow detected, compacting")
-                api_key = await providermod.get_api_key(provider_id)
-                model_name = providermod.litellm_model_name(model)
-                messages = await compaction.compact(
-                    messages, model_name=model_name, api_key=api_key,
-                )
+                messages = await compaction.compact(messages, **compact_kwargs)
                 yield PromptEvent(type="compact", data={"session_id": session_id})
 
             stream_input = llmmod.StreamInput(
@@ -316,11 +319,7 @@ async def prompt(
 
             if result == "compact":
                 logger.info("compaction requested by processor")
-                api_key = await providermod.get_api_key(provider_id)
-                model_name = providermod.litellm_model_name(model)
-                messages = await compaction.compact(
-                    messages, model_name=model_name, api_key=api_key,
-                )
+                messages = await compaction.compact(messages, **compact_kwargs)
                 yield PromptEvent(type="compact", data={"session_id": session_id})
                 continue
 
@@ -353,9 +352,7 @@ async def prompt(
 
         # Persist after yielding done (user sees result immediately)
         import asyncio as _aio
-        await _aio.to_thread(save_message, assistant_msg)
-        await _aio.to_thread(save_parts, all_parts)
-        await _aio.to_thread(touch, session_id)
+        await _aio.to_thread(persist_turn, session_id, assistant_msg, all_parts)
 
     except Exception as e:
         logger.error("prompt failed", error=str(e))

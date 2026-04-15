@@ -1,12 +1,26 @@
 """Session compaction — context compression and pruning.
 
 Handles context overflow detection, old tool output pruning, and summary generation.
+
+Cache-friendly design:
+- The compaction LLM call reuses the main agent's system prompt + tools so
+  that the API prefix cache is shared (cache hit on system + tools prefix).
+- Tool outputs in old messages are truncated before the compaction call to
+  reduce cost.
+- The compacted result injects the summary as a **user message** (not a system
+  message) so the main agent's next call still has an identical system prefix.
 """
 from __future__ import annotations
 
-from typing import Any
+import copy
+import re
+from typing import TYPE_CHECKING, Any
 
+from opencode.session import llm as llmmod
 from opencode.util import log as logmod
+
+if TYPE_CHECKING:
+    from opencode.provider.schema import Model
 
 logger = logmod.create(service="session.compaction")
 
@@ -14,6 +28,19 @@ PRUNE_MINIMUM = 20_000  # tokens
 PRUNE_PROTECT = 40_000  # tokens
 OVERFLOW_RATIO = 0.85  # trigger at 85% of context window
 COMPACT_KEEP_TURNS = 3  # number of recent user turns to preserve verbatim
+SUMMARY_TOOL_OUTPUT_LIMIT = 1000  # chars — truncate tool outputs before summary call
+
+# Template for wrapping the summary as a user message in the compacted result.
+COMPACT_USER_MSG_TEMPLATE = """This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+{summary}
+
+Recent messages are preserved verbatim. Continue from where we left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened."""
+
+# Fallback prompt if the compaction agent cannot be loaded.
+_COMPACTION_PROMPT_FALLBACK = """Provide a detailed summary of the conversation so far.
+Focus on: what was done, what is being worked on, which files are relevant,
+what needs to be done next, and key user requests or constraints."""
 
 
 def estimate_tokens(text: str) -> int:
@@ -127,22 +154,114 @@ def _split_by_turns(
     return list(messages[:split_idx]), list(messages[split_idx:])
 
 
+# ---------------------------------------------------------------------------
+# Helpers for the cache-friendly compaction pipeline
+# ---------------------------------------------------------------------------
+
+
+def _truncate_tool_outputs_for_summary(
+    messages: list[dict[str, Any]],
+    limit: int = SUMMARY_TOOL_OUTPUT_LIMIT,
+) -> list[dict[str, Any]]:
+    """Create a deep copy of *messages* with large tool outputs truncated.
+
+    This is used **only** for the compaction LLM call so that it sees less
+    token volume.  The original messages are never modified.
+    """
+    truncated = copy.deepcopy(messages)
+    for msg in truncated:
+        # Truncate tool result content
+        if msg.get("role") == "tool":
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > limit:
+                msg["content"] = content[:limit] + f"\n... [truncated, {len(content)} chars total]"
+
+        # Truncate tool_call arguments in assistant messages
+        for tc in msg.get("tool_calls", []):
+            fn = tc.get("function", {})
+            args = fn.get("arguments", "")
+            if len(args) > limit:
+                fn["arguments"] = args[:limit] + "..."
+    return truncated
+
+
+def _extract_summary(text: str) -> str:
+    """Extract the ``<summary>`` content and strip the ``<analysis>`` scratchpad.
+
+    The compaction prompt asks the model to output ``<analysis>...</analysis>``
+    followed by ``<summary>...</summary>``.  The analysis block is a drafting
+    scratchpad that improves summary quality but should not be kept in the
+    final output (it wastes tokens in subsequent calls).
+    """
+    # Try to find <summary>...</summary>
+    match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    # Fallback: strip <analysis>...</analysis> and return the rest
+    stripped = re.sub(r"<analysis>.*?</analysis>", "", text, flags=re.DOTALL)
+    stripped = stripped.strip()
+    if stripped:
+        return stripped
+
+    # Last resort: return everything
+    return text.strip()
+
+
+def _build_compact_result(
+    summary: str,
+    recent: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Assemble the compacted message list.
+
+    The summary is injected as a **user message** so that the main agent's
+    system prompt prefix remains identical → prefix cache hit.
+    """
+    user_summary_msg: dict[str, Any] = {
+        "role": "user",
+        "content": COMPACT_USER_MSG_TEMPLATE.format(summary=summary),
+    }
+    return [user_summary_msg, *recent]
+
+
+async def _load_compaction_prompt() -> str:
+    """Load the compaction agent's prompt text.
+
+    Falls back to a built-in default if the agent cannot be loaded.
+    """
+    try:
+        from opencode.agent import agent as agentmod
+
+        agent = await agentmod.get("compaction")
+        if agent and agent.prompt:
+            return agent.prompt
+    except Exception:
+        pass
+    return _COMPACTION_PROMPT_FALLBACK
+
+
 async def compact(
     messages: list[dict[str, Any]],
     *,
-    model_name: str,
+    system: list[str],
+    tools: list[dict[str, Any]] | None,
+    model: Model,
     api_key: str | None = None,
+    api_base: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compact conversation history using sliding-window + summary strategy.
 
+    Cache-friendly pipeline:
+
     1. Prune old tool outputs first — may be enough on its own.
     2. Split messages into old turns and recent turns (keep last N turns verbatim).
-    3. Summarise the old turns via an LLM call.
-    4. Return: [summary_system_msg] + recent turns.
+    3. Truncate tool outputs in old messages (deep copy) to reduce summary cost.
+    4. Call the LLM with the **same system prompt + tools** as the main agent
+       so the API prefix cache is shared.
+    5. Extract the ``<summary>`` block, strip ``<analysis>`` scratchpad.
+    6. Return: ``[user_summary_msg] + recent_turns``.
     """
-    import litellm
-
-    # Step 1: prune tool outputs
+    # Step 1: prune tool outputs (in-place on the original messages)
     messages, freed = prune_tool_outputs(messages)
     if freed > PRUNE_MINIMUM:
         logger.info("pruning freed enough tokens, skipping full compaction", freed=freed)
@@ -156,59 +275,52 @@ async def compact(
         logger.info("no old turns to compact, returning as-is")
         return messages
 
-    # Step 3: ask LLM to summarise the old turns
-    summary_input: list[dict[str, Any]] = list(old)
-    summary_input.append({"role": "user", "content": COMPACTION_PROMPT})
+    # Step 3: truncate tool outputs in old messages for the summary call
+    truncated_old = _truncate_tool_outputs_for_summary(old)
 
+    # Step 4: build the compaction request
+    compaction_prompt = await _load_compaction_prompt()
+
+    summary_messages: list[dict[str, Any]] = list(truncated_old)
+    summary_messages.append({"role": "user", "content": compaction_prompt})
+
+    stream_input = llmmod.StreamInput(
+        model=model,
+        messages=summary_messages,
+        system=system,  # same system prompt as main agent → cache hit
+        tools=tools,  # same tools as main agent → cache key match
+        tool_choice="none",  # prevent tool calls at API level
+        temperature=0.0,
+        max_tokens=4096,
+        api_key=api_key,
+        api_base=api_base,
+    )
+
+    # Step 5: consume stream and collect summary text
+    summary_text = ""
     try:
-        kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": summary_input,
-            "max_tokens": 4096,
-            "temperature": 0.0,
-        }
-        if api_key:
-            kwargs["api_key"] = api_key
-
-        response = await litellm.acompletion(**kwargs)
-        summary = response.choices[0].message.content or ""
-        logger.info("compaction complete", summary_len=len(summary), old_msgs=len(old), kept_msgs=len(recent))
+        async for event in llmmod.stream(stream_input):
+            if isinstance(event, llmmod.TextDelta):
+                summary_text += event.text
+            elif isinstance(event, llmmod.ErrorEvent):
+                logger.error("compaction LLM stream error", error=event.error)
+                return messages  # fallback: return pruned but unsummarised
     except Exception as e:
         logger.error("compaction LLM call failed", error=str(e))
-        return messages  # fallback: return pruned but unsummarised
+        return messages  # fallback
 
-    # Step 4: assemble compacted conversation
-    compacted: list[dict[str, Any]] = [
-        {"role": "system", "content": f"[Previous conversation summary]\n\n{summary}"},
-    ]
-    compacted.extend(recent)
-    return compacted
+    if not summary_text.strip():
+        logger.warn("compaction produced empty summary")
+        return messages
 
+    # Step 6: extract <summary> block, strip <analysis> scratchpad
+    summary = _extract_summary(summary_text)
+    logger.info(
+        "compaction complete",
+        summary_len=len(summary),
+        old_msgs=len(old),
+        kept_msgs=len(recent),
+    )
 
-COMPACTION_PROMPT = """Provide a detailed prompt for continuing our conversation above.
-Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next.
-The summary that you construct will be used so that another agent can read it and continue the work.
-
-When constructing the summary, try to stick to this template:
----
-## Goal
-
-[What goal(s) is the user trying to accomplish?]
-
-## Instructions
-
-- [What important instructions did the user give you that are relevant]
-- [If there is a plan or spec, include information about it so next agent can continue using it]
-
-## Discoveries
-
-[What notable things were learned during this conversation that would be useful for the next agent to know when continuing the work]
-
-## Accomplished
-
-[What work has been completed, what work is still in progress, and what work is left?]
-
-## Relevant files / directories
-
-[Construct a structured list of relevant files that have been read, edited, or created that pertain to the task at hand.]
----"""
+    # Step 7: assemble compacted conversation
+    return _build_compact_result(summary, recent)

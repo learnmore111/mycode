@@ -157,7 +157,7 @@ class TaskTool(CallableTool[TaskParams]):
                 tool_output = ""
                 if tool_impl:
                     try:
-                        tool_args = json.loads(tc.args) if tc.args else {}
+                        tool_args = json.loads(tc.args) if tc.args and tc.args.strip() else {}
                         result = await tool_impl.execute(tool_args, ctx)
                         tool_output = result.output
                     except Exception as e:

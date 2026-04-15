@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from opencode.file.ignore import should_ignore_path
 from opencode.project.instance import current_or_none
-from opencode.tool.base import CallableTool, ToolContext, ToolOk, ToolResult, ToolResultBuilder
+from opencode.tool.base import CallableTool, ToolContext, ToolOk, ToolResult, ToolResultBuilder, validate_path_safety
 
 _MAX_RESULTS = 500
 
@@ -43,7 +43,15 @@ class GlobTool(CallableTool[GlobParams]):
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
         if search_path:
-            base = os.path.join(base, search_path) if not os.path.isabs(search_path) else search_path
+            resolved_search = os.path.join(base, search_path) if not os.path.isabs(search_path) else search_path
+            path_error = validate_path_safety(resolved_search, base)
+            if path_error:
+                return ToolOk(
+                    path_error,
+                    title=f"Glob {pattern}",
+                    metadata={"count": 0, "pattern": pattern},
+                )
+            base = resolved_search
         raw_matches = sorted(globmod.glob(pattern, root_dir=base, recursive=True))
         matches = [m for m in raw_matches if not should_ignore_path(m)]
         total_count = len(matches)

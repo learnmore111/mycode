@@ -110,6 +110,12 @@ class WebFetchTool(CallableTool[WebFetchParams]):
         if url.startswith("http://"):
             url = "https://" + url[7:]
 
+        if not url.startswith("https://"):
+            return ToolError(
+                f"Unsupported URL scheme. Only http:// and https:// are allowed, got: {url[:80]}",
+                title=f"Fetch {url[:60]}",
+            )
+
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
                 resp = await client.get(url, headers={

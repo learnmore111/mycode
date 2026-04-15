@@ -12,7 +12,6 @@ Features:
 """
 from __future__ import annotations
 
-import base64
 import mimetypes
 import os
 from pathlib import Path
@@ -160,6 +159,9 @@ class ReadTool(CallableTool[ReadParams]):
                 content = raw.decode("utf-8", errors="replace")
 
             all_lines = content.split("\n")
+            # An empty file produces [""] from split — treat it as 0 lines
+            if content == "":
+                all_lines = []
             total = len(all_lines)
 
             # Determine the line range to show
@@ -174,10 +176,7 @@ class ReadTool(CallableTool[ReadParams]):
                         metadata={"total_lines": total},
                     )
 
-            if params.line_count is not None:
-                end = min(offset_0 + params.line_count, total)
-            else:
-                end = total
+            end = min(offset_0 + params.line_count, total) if params.line_count is not None else total
 
             selected = all_lines[offset_0:end]
 
@@ -241,8 +240,33 @@ def _read_pdf(full: str, file_path: str, file_size: int) -> ToolResult:
                 title=f"Read {file_path}",
                 metadata={"type": "pdf", "file_size": file_size},
             )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass  # pdftotext not available
+        if result.returncode != 0:
+            # pdftotext found but failed (encrypted, corrupted, etc.)
+            stderr_hint = result.stderr.strip()
+            reason = f": {stderr_hint}" if stderr_hint else ""
+            return ToolError(
+                f"Failed to extract text from PDF: {file_path}{reason}. "
+                f"The file may be encrypted or corrupted.",
+                title=f"Read {file_path}",
+                metadata={"type": "pdf", "file_size": file_size},
+            )
+        # returncode == 0 but no text content (scanned/image-only PDF)
+        return ToolOk(
+            f"PDF file: {file_path} ({_human_size(file_size)})\n\n"
+            f"No extractable text found. The PDF may contain only scanned images. "
+            f"Use an OCR tool (e.g. tesseract) to extract text from image-based PDFs.",
+            title=f"Read {file_path}",
+            metadata={"type": "pdf", "file_size": file_size},
+        )
+    except FileNotFoundError:
+        pass  # pdftotext not installed — fall through to hint below
+    except subprocess.TimeoutExpired:
+        return ToolError(
+            f"PDF text extraction timed out for: {file_path}. "
+            f"The file may be very large or complex.",
+            title=f"Read {file_path}",
+            metadata={"type": "pdf", "file_size": file_size},
+        )
 
     return ToolOk(
         f"PDF file: {file_path} ({_human_size(file_size)})\n\n"
