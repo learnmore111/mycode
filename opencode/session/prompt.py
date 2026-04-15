@@ -26,8 +26,11 @@ from opencode.session.message import (
     Part,
     ToolPart,
     create_assistant_message,
+    create_text_part,
     create_user_message,
     persist_turn,
+    save_message,
+    save_part,
 )
 from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
@@ -409,7 +412,17 @@ async def prompt(
 
         # Persist after yielding done (user sees result immediately)
         import asyncio as _aio
-        await _aio.to_thread(persist_turn, session_id, assistant_msg, all_parts)
+
+        # Save user message + text part, then assistant turn
+        user_text_part = create_text_part(session_id, user_msg.id)
+        user_text_part.content = user_text
+
+        def _persist_all() -> None:
+            save_message(user_msg)
+            save_part(user_text_part)
+            persist_turn(session_id, assistant_msg, all_parts)
+
+        await _aio.to_thread(_persist_all)
 
     except Exception as e:
         logger.error("prompt failed", error=str(e))
