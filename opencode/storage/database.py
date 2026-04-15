@@ -24,7 +24,9 @@ logger = logmod.create(service="db")
 
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
-_db_lock = threading.Lock()
+# Use RLock (reentrant lock) because get_session_factory() holds the lock
+# and calls get_engine() which also needs to acquire the same lock.
+_db_lock = threading.RLock()
 
 
 def get_db_path() -> str:
