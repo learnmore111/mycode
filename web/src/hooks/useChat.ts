@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import type { Message, StreamingPart, SSEEvent } from '../types'
+import type { Message, StreamingPart, SSEEvent, ContextSnapshot } from '../types'
 import { getMessages, abortSession } from '../api/sessions'
 import { streamMessage } from '../api/stream'
 
@@ -10,6 +10,7 @@ export function useChat(sessionId: string | null) {
   const [streamParts, setStreamParts] = useState<StreamingPart[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [contextSnapshot, setContextSnapshot] = useState<ContextSnapshot | null>(null)
   const controllerRef = useRef<AbortController | null>(null)
 
   const loadHistory = useCallback(async () => {
@@ -102,6 +103,10 @@ export function useChat(sessionId: string | null) {
                 )
                 break
 
+              case 'context_snapshot':
+                setContextSnapshot(event.data as unknown as ContextSnapshot)
+                break
+
               case 'error':
                 setError(event.data.message as string)
                 break
@@ -161,5 +166,6 @@ export function useChat(sessionId: string | null) {
     loadHistory,
     send,
     abort,
+    contextSnapshot,
   }
 }

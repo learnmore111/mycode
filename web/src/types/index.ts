@@ -107,11 +107,64 @@ export type SSEEventType =
   | 'compact'
   | 'guard_warn'
   | 'guard_stop'
+  | 'context_snapshot'
   | 'done'
 
 export interface SSEEvent {
   type: SSEEventType
   data: Record<string, unknown>
+}
+
+// ---- Context Snapshot ----
+export interface ContextMessageInfo {
+  index: number
+  role: string
+  content?: string
+  cache_status: 'cached' | 'new'
+  estimated_tokens: number
+  is_compaction_summary?: boolean
+  is_system_reminder?: boolean
+  tool_call_id?: string
+  tool_name?: string
+  tool_calls?: Array<{ id: string; tool: string; args_preview: string }>
+  content_truncated?: boolean
+  full_length?: number
+}
+
+export interface ContextSnapshot {
+  system: {
+    content: string
+    estimated_tokens: number
+    cache_status: string
+  }
+  tools: {
+    count: number
+    names: string[]
+    estimated_tokens: number
+    cache_status: string
+  }
+  messages: ContextMessageInfo[]
+  compaction: {
+    has_boundary: boolean
+    boundary_index: number | null
+  }
+  summary: {
+    total_estimated_tokens: number
+    cached_estimated_tokens: number
+    new_estimated_tokens: number
+    context_limit: number
+    usage_percent: number
+  }
+  actual_usage?: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    reasoning_tokens: number
+    total_cost: number
+  } | null
+  iteration: number
+  model: string
 }
 
 // ---- Streaming state ----

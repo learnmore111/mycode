@@ -45,6 +45,7 @@ export default function App() {
         selectedAgent={providerState.selectedAgent}
         onModelChange={providerState.setSelectedModel}
         onAgentChange={providerState.setSelectedAgent}
+        contextSnapshot={chat.contextSnapshot}
       />
       {permission.pending.length > 0 && (
         <PermissionModal request={permission.pending[0]} onReply={permission.reply} />

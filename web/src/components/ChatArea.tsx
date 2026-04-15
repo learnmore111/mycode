@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { Code2, Sparkles } from 'lucide-react'
-import type { Session, Message, StreamingPart, AgentInfo } from '../types'
+import type { Session, Message, StreamingPart, AgentInfo, ContextSnapshot } from '../types'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
+import ContextViewer from './ContextViewer'
 
 interface Props {
   session: Session | null
@@ -21,6 +23,7 @@ interface Props {
   selectedAgent?: string
   onModelChange: (m: string | undefined) => void
   onAgentChange: (a: string | undefined) => void
+  contextSnapshot?: ContextSnapshot | null
 }
 
 const SUGGESTIONS = [
@@ -47,7 +50,9 @@ export default function ChatArea({
   selectedAgent,
   onModelChange,
   onAgentChange,
+  contextSnapshot,
 }: Props) {
+  const [showContext, setShowContext] = useState(false)
   // Welcome screen — no active session
   if (!session) {
     return (
@@ -123,6 +128,8 @@ export default function ChatArea({
         selectedAgent={selectedAgent}
         onModelChange={onModelChange}
         onAgentChange={onAgentChange}
+        contextSnapshot={contextSnapshot}
+        onViewContext={() => setShowContext(true)}
       />
       <MessageList
         messages={messages}
@@ -149,6 +156,9 @@ export default function ChatArea({
           onAgentChange={onAgentChange}
         />
       </div>
+      {showContext && contextSnapshot && (
+        <ContextViewer snapshot={contextSnapshot} onClose={() => setShowContext(false)} />
+      )}
     </div>
   )
 }
