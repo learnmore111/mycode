@@ -2,7 +2,7 @@
 
 **AI coding agent — Python edition.**
 
-一个不绑定特定 AI 提供商的开源编程 Agent 平台。
+一个不绑定特定 AI 提供商的开源编程 Agent 平台。支持 CLI、HTTP API 和 Web UI 三种交互方式。
 
 > **架构说明**：初始版本根据 [OpenCode](https://github.com/anomalyco/opencode)（TypeScript 版）架构使用 Python 重写，涵盖 session/processor agentic loop、tool 系统、permission 模型、memory 系统、event bus、config 多层合并等核心设计，使用 Python 生态工具链（litellm、FastAPI、SQLAlchemy、Click+Rich 等）实现。后续参考 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 的设计理念进行了改进，包括 system-reminder 动态注入（将 skills 列表和 memory 从 system prompt 迁移到 messages 尾部以复用 prefix cache）、三层循环保护、读写分离工具执行、两层记忆系统等增强特性。
 
@@ -30,6 +30,17 @@ uv run opencode run --message "列出当前目录的文件"
 # 启动 API Server
 uv run opencode serve --port 4096
 
+# 一键启动后端 + 前端开发服务器
+uv run opencode dev                            # 后端 :4096 + 前端 :3000
+uv run opencode dev --port 8080 --frontend-port 5173  # 自定义端口
+
+# 启动 Web UI（手动分别启动）
+cd web && npm install && npm run dev   # :3000，代理 API 到 :4096
+
+# 构建 Web UI 后单端口运行
+cd web && npm run build
+uv run opencode serve --port 4096      # 打开 http://localhost:4096
+
 # 运行测试
 uv run pytest tests/ -v
 ```
@@ -39,7 +50,7 @@ uv run pytest tests/ -v
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                        Clients                          │
-│  CLI (click)  │  HTTP API (FastAPI)  │  Interactive CLI   │
+│  CLI (click)  │  HTTP API (FastAPI)  │  Web UI (React)    │
 └──────┬────────┴──────────┬───────────┴──────────────────┘
        │                   │
        ▼                   ▼
@@ -136,7 +147,8 @@ uv run pytest tests/ -v
 
 | 模块 | 说明 |
 |------|------|
-| **`server/`** | FastAPI 应用。8 个路由模块（session/provider/config/file/permission/mcp/event/project），26 个 API 端点 + SSE 流式消息 + SSE 全局事件订阅 |
+| **`server/`** | FastAPI 应用。8 个路由模块（session/provider/config/file/permission/mcp/event/project），26 个 API 端点 + SSE 流式消息 + SSE 全局事件订阅 + Web UI 静态文件服务（SPA） |
+| **`web/`** | **Web UI**。React 18 + TypeScript + Vite + TailwindCSS 构建的聊天界面，支持 SSE 流式消息、Markdown 渲染、代码高亮、工具调用可折叠卡片、权限弹窗、模型/Agent 切换、Token/Cost 统计。构建产物集成到 FastAPI 实现单端口运行 |
 | **`cli/`** | Click CLI + Rich 交互式 REPL。欢迎面板 + Markdown 渲染 + Spinner 动画 + 上下文进度条 + Token/Cost 统计 + Debug 模式（`/debug` dump LLM I/O）。命令：`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
 | **`shell/`** | Shell 检测（排除 fish/nu）+ 进程树 kill |
 | **`file/`** | 文件读取/模糊搜索/列目录 + ripgrep 集成 |
@@ -184,12 +196,15 @@ Lint 错误:         0
 | MCP | **mcp** (Python SDK) |
 | 配置解析 | **json5** |
 | 模糊搜索 | **rapidfuzz** |
+| Web 前端 | **React 18** + **TypeScript** + **Vite** + **TailwindCSS** |
+| Markdown 渲染 | **react-markdown** + **remark-gfm** + **rehype-highlight** |
 
 ## CLI 命令
 
 ```bash
 opencode --help                     # 查看所有命令
 opencode serve [--port 4096]        # 启动 API 服务器
+opencode dev [--port --frontend-port] # 一键启动后端 + 前端开发服务器
 opencode run [DIR]                  # 交互式模式（默认）
 opencode run [DIR] -p "message"     # Headless 模式运行
 opencode run [DIR] -a plan          # 指定 agent 模式
@@ -237,7 +252,7 @@ opencode snapshot diff HASH [DIR]   # 查看快照 diff
 ## API 端点
 
 ```
-GET    /                           # 服务信息
+GET    /api/info                    # API 版本信息
 GET    /health                     # 健康检查
 
 # Session
@@ -247,6 +262,7 @@ GET    /session/{id}               # 获取会话
 DELETE /session/{id}               # 删除会话
 PUT    /session/{id}/title         # 设置标题
 POST   /session/{id}/message       # 发送消息 (SSE)
+GET    /session/{id}/messages      # 获取历史消息
 POST   /session/{id}/abort         # 中止会话
 
 # Provider / Agent
@@ -341,6 +357,92 @@ export OPENAI_API_KEY=sk-xxx
 uv run opencode run --message "hello"
 ```
 
+## Web UI
+
+项目内置基于 React 的 Web 聊天界面，支持完整的 Agent 交互体验。
+
+### 特性
+
+| 特性 | 说明 |
+|------|------|
+| 会话管理 | 侧边栏会话列表，新建 / 删除会话 |
+| 流式响应 | SSE 实时流式显示 AI 回复（POST + ReadableStream） |
+| Markdown 渲染 | react-markdown + remark-gfm + highlight.js 代码高亮 |
+| 工具调用卡片 | 可折叠展示工具名称、输入、输出、状态 |
+| 权限弹窗 | 工具执行权限请求的 Allow / Deny / Always 交互 |
+| 模型/Agent 切换 | 下拉选择可用的 Provider 模型和 Agent |
+| Token/Cost 统计 | 每条 AI 回复显示 token 用量和费用 |
+| 深色主题 | 全局深色配色（gray-950 背景 + blue-600 用户消息）|
+| 单端口部署 | 构建后静态文件集成到 FastAPI，API + UI 同一端口 |
+
+### 使用方式
+
+```bash
+# 一键启动（推荐）
+uv run opencode dev                              # 后端 :4096 + 前端 :3000
+
+# 自定义端口
+uv run opencode dev --port 8080 --frontend-port 5173
+
+# 手动分别启动（开发模式）
+cd web && npm install && npm run dev             # Vite :3000，代理到 :4096
+uv run opencode serve --port 4096                # 后端 API
+
+# 生产模式（单端口）
+cd web && npm run build                          # 构建到 web/dist/
+uv run opencode serve --port 4096                # 打开 http://localhost:4096
+```
+
+### 前端技术栈
+
+| 用途 | 选择 |
+|------|------|
+| 框架 | React 18 + TypeScript |
+| 构建 | Vite |
+| 样式 | TailwindCSS |
+| Markdown | react-markdown + remark-gfm + rehype-highlight |
+| 代码高亮 | highlight.js |
+| 图标 | lucide-react |
+
+### 前端目录结构
+
+```
+web/
+├── index.html
+├── package.json
+├── vite.config.ts              # 开发代理配置
+├── tsconfig.json
+├── tailwind.config.ts
+└── src/
+    ├── main.tsx                # 入口
+    ├── App.tsx                 # 布局：侧边栏 + 聊天区
+    ├── index.css               # Tailwind directives + highlight.js 主题
+    ├── types/index.ts          # TS 类型定义
+    ├── api/                    # API 层
+    │   ├── client.ts           # fetch 封装
+    │   ├── sessions.ts         # 会话 CRUD + 消息查询
+    │   ├── stream.ts           # SSE 流式消息（POST + ReadableStream）
+    │   ├── providers.ts        # 模型 / Agent 列表
+    │   └── permissions.ts      # 权限请求处理
+    ├── hooks/                  # React Hooks
+    │   ├── useSession.ts       # 会话管理状态
+    │   ├── useChat.ts          # 消息列表 + 流式状态累积
+    │   ├── usePermission.ts    # 权限弹窗轮询
+    │   └── useProviders.ts     # 模型 / Agent 选择
+    └── components/             # UI 组件
+        ├── Sidebar.tsx         # 会话列表
+        ├── ChatArea.tsx        # 聊天主区域
+        ├── ChatHeader.tsx      # 标题 + 模型 / Agent 选择器
+        ├── MessageList.tsx     # 消息滚动区域（自动滚底）
+        ├── MessageBubble.tsx   # 单条消息（用户 / 助手）
+        ├── TextContent.tsx     # Markdown 渲染 + 代码高亮
+        ├── ToolExecution.tsx   # 工具调用卡片（可折叠）
+        ├── MessageMeta.tsx     # Token / Cost 统计
+        ├── MessageInput.tsx    # 输入框 + 发送 / 中止按钮
+        ├── PermissionModal.tsx # 权限请求弹窗
+        └── StreamingIndicator.tsx  # 流式响应动画
+```
+
 ## 后续路线图
 
 | 功能 | 状态 |
@@ -356,6 +458,7 @@ uv run opencode run --message "hello"
 | 认证增强（Token 过期、环境变量发现）| ✅ 已完成 |
 | Debug 模式 (`/debug` dump LLM I/O) | ✅ 已完成 |
 | System-Reminder 注入（Skills + Memory → messages，prefix cache 跨 session 复用）| ✅ 已完成 |
+| Web UI（React + TypeScript + Vite + TailwindCSS） | ✅ 已完成 |
 | 会话恢复（从 DB 加载历史继续对话） | 待实现 |
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
 | LSP didChange 通知 | 待实现 |
@@ -412,6 +515,14 @@ opencode/
 ├── storage/        # SQLite + JSON 存储
 ├── tool/           # 14 内置工具 + 注册表 + 能力声明
 └── util/           # 通用工具 (10 模块)
+
+web/                # Web UI (React + TypeScript + Vite + TailwindCSS)
+├── src/
+│   ├── api/        # API 客户端 + SSE 流
+│   ├── hooks/      # React Hooks (会话/消息/权限/Provider)
+│   ├── components/ # UI 组件 (11 个)
+│   └── types/      # TypeScript 类型定义
+└── dist/           # 构建产物 (集成到 FastAPI)
 ```
 
 ## License
