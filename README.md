@@ -2,9 +2,9 @@
 
 **AI coding agent — Python edition.**
 
-基于 [OpenCode](https://github.com/anomalyco/opencode) 架构设计，使用 Python 重写实现。一个不绑定特定 AI 提供商的开源编程 Agent 平台。
+一个不绑定特定 AI 提供商的开源编程 Agent 平台。
 
-> **架构引用说明**：本项目的整体架构设计参考了 [OpenCode](https://github.com/anomalyco/opencode)（TypeScript 版），包括 session/processor agentic loop、tool 系统、permission 模型、memory 系统、event bus、config 多层合并等核心设计。在此基础上使用 Python 生态工具链（litellm、FastAPI、SQLAlchemy、Click+Rich 等）进行了完整重写，并添加了三层循环保护、读写分离工具执行、两层记忆系统等增强特性。
+> **架构说明**：初始版本根据 [OpenCode](https://github.com/anomalyco/opencode)（TypeScript 版）架构使用 Python 重写，涵盖 session/processor agentic loop、tool 系统、permission 模型、memory 系统、event bus、config 多层合并等核心设计，使用 Python 生态工具链（litellm、FastAPI、SQLAlchemy、Click+Rich 等）实现。后续参考 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 的设计理念进行了改进，包括 system-reminder 动态注入（将 skills 列表和 memory 从 system prompt 迁移到 messages 尾部以复用 prefix cache）、三层循环保护、读写分离工具执行、两层记忆系统等增强特性。
 
 ---
 
@@ -49,7 +49,6 @@ uv run pytest tests/ -v
 │  │ Agent 选择   │  │ System Prompt│  │  Tool 加载     │  │
 │  └──────┬──────┘  └──────┬───────┘  └───────┬───────┘  │
 │         └────────────────┼──────────────────┘           │
-│                    Memory 注入                           │
 │                          ▼                              │
 │              ┌─── Agentic Loop ───┐                     │
 │              │                    │                     │
@@ -68,6 +67,9 @@ uv run pytest tests/ -v
 │              │  continue/stop ◄──┘                     │
 │              └────────────────────┘                     │
 │                      │                                  │
+│              System-Reminder 注入                        │
+│              (Skills 列表 + Memory → messages 尾部)      │
+│                      │                                  │
 │              Message 持久化 (SQLite)                     │
 └──────┬──────────────────┬───────────────────┬──────────┘
        │                  │                   │
@@ -84,7 +86,7 @@ uv run pytest tests/ -v
 
 | 模块 | 说明 |
 |------|------|
-| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + 记忆注入 + 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + 读写分离（基于能力声明）+ doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`loop_guard.py` 三层循环保护（硬限制 + 模式检测 + 智能判断）+ 结果缓存 + 重试逻辑，`llm.py` litellm 流式调用 + token 统计 + cost 计算 |
+| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + system-reminder 注入（skills 列表 + memory → messages 尾部，system prompt 保持固定以复用 prefix cache）+ 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + 读写分离（基于能力声明）+ doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`loop_guard.py` 三层循环保护（硬限制 + 模式检测 + 智能判断）+ 结果缓存 + 重试逻辑，`llm.py` litellm 流式调用 + token 统计 + cost 计算 |
 | **`session/memory/`** | **两层记忆系统**。`memory.py` 会话级记忆（JSONL 滚动摘要 + 每轮记录 + LLM 精炼），`memdir.py` 结构化长期记忆（四类：user/feedback/project/reference + frontmatter 格式 + MEMORY.md 索引），`retrieval.py` 相关记忆检索（关键词 + LLM 辅助），`extractor.py` 后台自动记忆提取 + 新鲜度管理 |
 | **`provider/`** | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，`transform.py` 按模型类型调整参数（temperature/reasoning/max_tokens），通过 litellm 统一调用 14+ 种 LLM |
 | **`agent/`** | Agent 系统。内置 7 个 agent：`build`(默认全权限)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
@@ -106,7 +108,7 @@ uv run pytest tests/ -v
 | `websearch` | 网页搜索 | 多引擎支持 |
 | `question` | 向用户提问 | 阻塞等待回复 |
 | `todo` | 任务列表管理 | 会话内 in-memory 状态 |
-| `skill` | 技能文件加载 | 项目 + `~/.opencode/skills/` 搜索、列出可用技能 |
+| `skill` | 技能文件加载 | 项目 + `~/.opencode/skills/` 搜索、列出可用技能、自动注入 skills 列表到 system-reminder |
 | `batch` | 并行工具执行 (实验性) | 多工具同时调用 |
 
 ### 基础设施 (Infrastructure)
@@ -353,6 +355,7 @@ uv run opencode run --message "hello"
 | 消息类型系统（System/Meta/Origin）| ✅ 已完成 |
 | 认证增强（Token 过期、环境变量发现）| ✅ 已完成 |
 | Debug 模式 (`/debug` dump LLM I/O) | ✅ 已完成 |
+| System-Reminder 注入（Skills + Memory → messages，prefix cache 跨 session 复用）| ✅ 已完成 |
 | 会话恢复（从 DB 加载历史继续对话） | 待实现 |
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
 | LSP didChange 通知 | 待实现 |
