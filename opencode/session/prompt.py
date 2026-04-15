@@ -20,10 +20,10 @@ from opencode.provider import provider as providermod
 from opencode.session import compaction
 from opencode.session import llm as llmmod
 from opencode.session import processor as proc
+from opencode.session.context import build_context_snapshot
 from opencode.session.loop_guard import GuardAction, LoopGuard, LoopGuardConfig
 from opencode.session.message import (
     Part,
-    TextPart,
     ToolPart,
     create_assistant_message,
     create_user_message,
@@ -67,6 +67,7 @@ class PromptEvent:
       - "compact":    Context compaction in progress.
       - "guard_warn": Loop guard warning. data["reason"], data["layer"].
       - "guard_stop": Loop guard stopped the loop. data["reason"], data["layer"].
+      - "context_snapshot": Full context snapshot before LLM call. data has system/tools/messages/summary.
       - "done":       All iterations finished. data has tokens/cost/context stats.
     """
     type: str
@@ -232,6 +233,25 @@ async def prompt(
                 api_key=await providermod.get_api_key(provider_id),
                 api_base=model.api.url or None,
             )
+
+            # === Context snapshot for UI context viewer ===
+            yield PromptEvent(type="context_snapshot", data=build_context_snapshot(
+                system=system,
+                tools=tools if model.capabilities.toolcall else None,
+                messages=iter_messages,
+                model_id=f"{provider_id}/{model_id}",
+                context_limit=model.limit.context if model.limit.context > 0 else 0,
+                iteration=iteration,
+                has_history=bool(history),
+                actual_usage={
+                    "input_tokens": assistant_msg.tokens_input,
+                    "output_tokens": assistant_msg.tokens_output,
+                    "cache_read_tokens": assistant_msg.tokens_cache_read,
+                    "cache_write_tokens": assistant_msg.tokens_cache_write,
+                    "reasoning_tokens": assistant_msg.tokens_reasoning,
+                    "total_cost": assistant_msg.cost,
+                } if iteration > 0 else None,
+            ))
 
             # === Debug: dump input before LLM call ===
             if debug:
