@@ -4,8 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from opencode.session.compaction import (
     COMPACT_KEEP_TURNS,
-    estimate_tokens, estimate_messages_tokens, should_compact,
-    is_overflow, prune_tool_outputs, _split_by_turns, compact,
+    _build_compact_result,
+    _extract_summary,
+    _truncate_tool_outputs_for_summary,
+    compact,
+    estimate_messages_tokens,
+    estimate_tokens,
+    is_overflow,
+    prune_tool_outputs,
+    should_compact,
+    _split_by_turns,
 )
 
 
@@ -166,15 +174,126 @@ def test_split_with_tool_messages():
     assert recent[0]["content"] == "q2"
 
 
+# ── _truncate_tool_outputs_for_summary tests ──
+
+
+def test_truncate_tool_outputs_does_not_modify_originals():
+    msgs = [
+        {"role": "tool", "tool_call_id": "1", "content": "x" * 5000},
+    ]
+    original_content = msgs[0]["content"]
+    truncated = _truncate_tool_outputs_for_summary(msgs, limit=100)
+    # Original untouched
+    assert msgs[0]["content"] == original_content
+    # Truncated copy is shorter
+    assert len(truncated[0]["content"]) < len(original_content)
+    assert "[truncated" in truncated[0]["content"]
+
+
+def test_truncate_preserves_short_content():
+    msgs = [
+        {"role": "tool", "tool_call_id": "1", "content": "short"},
+        {"role": "user", "content": "hello"},
+    ]
+    truncated = _truncate_tool_outputs_for_summary(msgs, limit=1000)
+    assert truncated[0]["content"] == "short"
+    assert truncated[1]["content"] == "hello"
+
+
+def test_truncate_tool_call_arguments():
+    msgs = [
+        {"role": "assistant", "tool_calls": [
+            {"function": {"name": "read", "arguments": "a" * 5000}}
+        ]},
+    ]
+    truncated = _truncate_tool_outputs_for_summary(msgs, limit=100)
+    assert len(truncated[0]["tool_calls"][0]["function"]["arguments"]) < 5000
+    # Original untouched
+    assert len(msgs[0]["tool_calls"][0]["function"]["arguments"]) == 5000
+
+
+# ── _extract_summary tests ──
+
+
+def test_extract_summary_with_both_tags():
+    text = "<analysis>thinking...</analysis>\n<summary>The real summary.</summary>"
+    assert _extract_summary(text) == "The real summary."
+
+
+def test_extract_summary_only_summary_tag():
+    text = "<summary>Just the summary.</summary>"
+    assert _extract_summary(text) == "Just the summary."
+
+
+def test_extract_summary_no_tags():
+    text = "Plain text summary without tags."
+    assert _extract_summary(text) == "Plain text summary without tags."
+
+
+def test_extract_summary_strips_analysis_fallback():
+    text = "<analysis>thinking...</analysis>\nLeftover content here."
+    assert _extract_summary(text) == "Leftover content here."
+
+
+# ── _build_compact_result tests ──
+
+
+def test_build_compact_result_format():
+    recent = [
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+    result = _build_compact_result("Summary text", recent)
+    assert len(result) == 3  # 1 summary + 2 recent
+    assert result[0]["role"] == "user"
+    assert "Summary text" in result[0]["content"]
+    assert result[1]["content"] == "q3"
+
+
+def test_build_compact_result_user_not_system():
+    """Summary must be a user message, not system, for cache preservation."""
+    result = _build_compact_result("test", [])
+    assert result[0]["role"] == "user"
+    assert result[0]["role"] != "system"
+
+
 # ── compact() integration tests ──
 
 
-def _make_mock_response(summary_text):
-    choice = MagicMock()
-    choice.message.content = summary_text
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
+def _make_mock_model():
+    """Create a minimal mock Model for compact() tests."""
+    model = MagicMock()
+    model.provider_id = "test"
+    model.api.id = "test-model"
+    model.api.npm = "@ai-sdk/openai"
+    model.api.url = None
+    model.limit.context = 100000
+    model.limit.output = 4096
+    model.capabilities.toolcall = True
+    model.capabilities.reasoning = False
+    model.headers = None
+    model.options = None
+    return model
+
+
+def _make_compact_kwargs(model=None):
+    """Build the kwargs dict that prompt.py passes to compact()."""
+    if model is None:
+        model = _make_mock_model()
+    return {
+        "system": ["You are a helpful assistant."],
+        "tools": [{"type": "function", "function": {"name": "bash", "description": "Run bash", "parameters": {}}}],
+        "model": model,
+        "api_key": "test-key",
+        "api_base": None,
+    }
+
+
+async def _fake_stream_with_summary(summary_text):
+    """Create a fake async generator that yields TextDelta events."""
+    from opencode.session.llm import TextDelta, FinishEvent
+    yield TextDelta(text=f"<analysis>thinking</analysis>\n<summary>{summary_text}</summary>")
+    yield FinishEvent(reason="stop", usage={}, cost=0.0)
 
 
 def test_compact_preserves_recent_turns():
@@ -192,15 +311,16 @@ def test_compact_preserves_recent_turns():
         {"role": "assistant", "content": "recent a5"},
     ]
 
-    mock_resp = _make_mock_response("Summary of old turns")
+    kwargs = _make_compact_kwargs()
 
-    with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_resp):
-        result = asyncio.run(
-            compact(msgs, model_name="test-model")
-        )
+    with (
+        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary of old turns")),
+        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+    ):
+        result = asyncio.run(compact(msgs, **kwargs))
 
-    # First msg is summary system message
-    assert result[0]["role"] == "system"
+    # First msg is summary user message (not system!)
+    assert result[0]["role"] == "user"
     assert "Summary of old turns" in result[0]["content"]
     # Recent 3 turns preserved (6 messages)
     assert len(result) == 7  # 1 summary + 6 recent
@@ -213,9 +333,8 @@ def test_compact_no_old_turns():
         {"role": "user", "content": "q1"},
         {"role": "assistant", "content": "a1"},
     ]
-    result = asyncio.run(
-        compact(list(msgs), model_name="test-model")
-    )
+    kwargs = _make_compact_kwargs()
+    result = asyncio.run(compact(list(msgs), **kwargs))
     assert result == msgs
 
 
@@ -233,9 +352,12 @@ def test_compact_llm_failure_returns_original():
     ]
     original_len = len(msgs)
 
-    with patch("litellm.acompletion", new_callable=AsyncMock, side_effect=Exception("fail")):
-        result = asyncio.run(
-            compact(msgs, model_name="test-model")
-        )
+    kwargs = _make_compact_kwargs()
+
+    with (
+        patch("opencode.session.compaction.llmmod.stream", side_effect=Exception("fail")),
+        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+    ):
+        result = asyncio.run(compact(msgs, **kwargs))
 
     assert len(result) == original_len

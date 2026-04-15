@@ -117,8 +117,8 @@ async def prompt(
         if prompt_input.system:
             system.append(prompt_input.system)
 
-        # Inject relevant memories into system prompt
-        _inject_memory_context(system, prompt_input)
+        # Memory and skills are now injected as system-reminder messages (not in system prompt)
+        # This keeps the system prompt static for prefix cache reuse across sessions
 
         # Load tools
         tool_registry.register_builtins()
@@ -172,6 +172,7 @@ async def prompt(
         all_parts: list[Part] = []
         iterations_done = 0
         stop_reason = ""
+        prev_skills: list[dict[str, str]] | None = None
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
@@ -213,9 +214,17 @@ async def prompt(
                 messages = await compaction.compact(messages, **compact_kwargs)
                 yield PromptEvent(type="compact", data={"session_id": session_id})
 
+            # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
+            reminder_text, prev_skills = _build_system_reminders(prompt_input, prev_skills)
+            if reminder_text:
+                iter_messages = list(messages)
+                iter_messages.append({"role": "user", "content": reminder_text})
+            else:
+                iter_messages = messages
+
             stream_input = llmmod.StreamInput(
                 model=model,
-                messages=messages,
+                messages=iter_messages,
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
                 temperature=agent.temperature,
@@ -401,11 +410,103 @@ def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str
     return str(filepath)
 
 
-def _inject_memory_context(system: list[str], prompt_input: PromptInput) -> None:
-    """Inject relevant memories into the system prompt.
+def _build_system_reminders(
+    prompt_input: PromptInput,
+    prev_skills: list[dict[str, str]] | None,
+) -> tuple[str, list[dict[str, str]]]:
+    """Build <system-reminder> content for skills and memory.
 
-    Looks up structured memdir memories based on user query keywords.
-    Only adds if memories are found and non-empty.
+    Returns (reminder_text, current_skills_snapshot).
+
+    Skills use an incremental strategy:
+    - First call (prev_skills is None) or modifications/deletions → full list
+    - Only additions → only the new skills
+    - No change → reuse previous text (empty skills section)
+
+    Memory is always included if found.
+    """
+    sections: list[str] = []
+
+    # --- Skills section ---
+    try:
+        from opencode.tool.skill import list_skills_with_descriptions
+
+        current_skills = list_skills_with_descriptions()
+    except Exception:
+        current_skills = []
+
+    skills_text = _build_skills_reminder(current_skills, prev_skills)
+    if skills_text:
+        sections.append(skills_text)
+
+    # --- Memory section ---
+    memory_text = _build_memory_reminder(prompt_input)
+    if memory_text:
+        sections.append(memory_text)
+
+    if not sections:
+        return "", current_skills
+
+    reminder = "\n".join(sections)
+    return reminder, current_skills
+
+
+def _build_skills_reminder(
+    current: list[dict[str, str]],
+    prev: list[dict[str, str]] | None,
+) -> str:
+    """Build the skills system-reminder section.
+
+    Returns empty string if no skills exist or nothing changed.
+    """
+    if not current:
+        return ""
+
+    # First call — full list
+    if prev is None:
+        lines = ["<system-reminder>", "The following skills are available for use with the `skill` tool:", ""]
+        for s in current:
+            desc = s["description"]
+            lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
+        lines.append("</system-reminder>")
+        return "\n".join(lines)
+
+    # No change
+    if current == prev:
+        return ""
+
+    # Check if purely additive (current is a superset of prev)
+    prev_names = {s["name"] for s in prev}
+    prev_map = {s["name"]: s["description"] for s in prev}
+    current_map = {s["name"]: s["description"] for s in current}
+
+    # Superset check: all prev items still present and unchanged
+    is_superset = all(current_map.get(n) == d for n, d in prev_map.items())
+
+    if is_superset:
+        new_skills = [s for s in current if s["name"] not in prev_names]
+        if not new_skills:
+            return ""
+        lines = ["<system-reminder>", "New skills available:", ""]
+        for s in new_skills:
+            desc = s["description"]
+            lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
+        lines.append("</system-reminder>")
+        return "\n".join(lines)
+
+    # Modification or deletion — full list
+    lines = ["<system-reminder>", "The following skills are available for use with the `skill` tool:", ""]
+    for s in current:
+        desc = s["description"]
+        lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
+    lines.append("</system-reminder>")
+    return "\n".join(lines)
+
+
+def _build_memory_reminder(prompt_input: PromptInput) -> str:
+    """Build the memory system-reminder section.
+
+    Returns empty string if no relevant memories found.
     """
     try:
         from opencode.project.instance import current_or_none
@@ -414,25 +515,23 @@ def _inject_memory_context(system: list[str], prompt_input: PromptInput) -> None
 
         inst = current_or_none()
         if not inst:
-            return
+            return ""
 
-        # Extract query text from prompt parts
         query = ""
         for part in prompt_input.parts:
             if part.get("type") == "text":
                 query += part.get("content", "")
 
         if not query:
-            return
+            return ""
 
-        # Find relevant memories (keyword-based, no LLM call)
         memories = find_relevant_memories(inst.directory, query, max_results=5)
         if not memories:
-            return
+            return ""
 
         context = format_memories_for_context(memories, include_freshness=True)
         if context:
-            system.append(context)
-            logger.debug("injected memories into system prompt", count=len(memories))
+            return f"<system-reminder>\n<relevant_memories>\n{context}\n</relevant_memories>\n</system-reminder>"
     except Exception:
-        pass  # Memory injection is best-effort, never block the main flow
+        pass  # Memory injection is best-effort
+    return ""

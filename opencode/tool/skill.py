@@ -88,4 +88,53 @@ def _list_available_skills(search_dirs: list[str]) -> set[str]:
     return skills
 
 
+def _get_search_dirs() -> list[str]:
+    """Return the standard skill search directories."""
+    inst = current_or_none()
+    base = inst.directory if inst else os.getcwd()
+    return [
+        os.path.join(base, ".opencode", "skills"),
+        os.path.join(base, ".opencode", "skill"),
+        os.path.join(str(Path.home()), ".opencode", "skills"),
+    ]
+
+
+def list_skills_with_descriptions() -> list[dict[str, str]]:
+    """Scan skill directories and return [{name, description}] for each skill.
+
+    Description is extracted from the first non-empty line of the file.
+    Results are sorted by name for cache stability.
+    """
+    search_dirs = _get_search_dirs()
+    # Use dict to deduplicate (first match wins, same as tool lookup order)
+    skills: dict[str, str] = {}
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            fp = os.path.join(d, f)
+            if not os.path.isfile(fp):
+                continue
+            name = f
+            for ext in [".md", ".txt"]:
+                if name.endswith(ext):
+                    name = name[: -len(ext)]
+                    break
+            if not name or name in skills:
+                continue
+            # Extract first non-empty line as description
+            description = ""
+            try:
+                with open(fp, encoding="utf-8") as fh:
+                    for line in fh:
+                        stripped = line.strip()
+                        if stripped:
+                            description = stripped
+                            break
+            except Exception:
+                description = ""
+            skills[name] = description
+    return [{"name": n, "description": skills[n]} for n in sorted(skills)]
+
+
 tool = SkillTool()
