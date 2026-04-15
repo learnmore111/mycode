@@ -1,13 +1,46 @@
 from __future__ import annotations
 
+import asyncio
+from collections import OrderedDict
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from opencode.tool.base import CallableTool, ToolContext, ToolOk, ToolResult
+from opencode.util import log as logmod
 
-# In-memory todo storage per session
-_todos: dict[str, list[dict[str, Any]]] = {}
+logger = logmod.create(service="tool.todo")
+
+# In-memory todo storage per session.
+# Uses OrderedDict with a max size to prevent unbounded growth
+# when sessions are never explicitly deleted.
+_MAX_SESSIONS = 500
+_todos: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+_todos_lock = asyncio.Lock()
+
+
+def get_todos(session_id: str) -> list[dict[str, Any]]:
+    """Get todo items for a session (returns a copy)."""
+    return list(_todos.get(session_id, []))
+
+
+async def set_todos(session_id: str, items: list[dict[str, Any]]) -> None:
+    """Replace todo items for a session (async-safe)."""
+    async with _todos_lock:
+        _todos[session_id] = items
+        _todos.move_to_end(session_id)
+        # Evict oldest sessions if over limit
+        while len(_todos) > _MAX_SESSIONS:
+            evicted_id, _ = _todos.popitem(last=False)
+            logger.debug("todos evicted (LRU)", session_id=evicted_id)
+    logger.debug("todos updated", session_id=session_id, count=len(items))
+
+
+def clear_todos(session_id: str) -> None:
+    """Remove all todos for a session."""
+    removed = _todos.pop(session_id, None)
+    if removed:
+        logger.debug("todos cleared", session_id=session_id)
 
 
 class TodoItem(BaseModel):
@@ -31,15 +64,19 @@ class TodoTool(CallableTool[TodoParams]):
         items = [item.model_dump() for item in params.todos]
         merge = params.merge
 
-        if merge and ctx.session_id in _todos:
-            existing = {t["id"]: t for t in _todos[ctx.session_id]}
-            for item in items:
-                existing[item["id"]] = item
-            _todos[ctx.session_id] = list(existing.values())
+        if merge:
+            existing_items = get_todos(ctx.session_id)
+            if existing_items:
+                existing = {t["id"]: t for t in existing_items}
+                for item in items:
+                    existing[item["id"]] = item
+                await set_todos(ctx.session_id, list(existing.values()))
+            else:
+                await set_todos(ctx.session_id, list(items))
         else:
-            _todos[ctx.session_id] = list(items)
+            await set_todos(ctx.session_id, list(items))
 
-        current = _todos.get(ctx.session_id, [])
+        current = get_todos(ctx.session_id)
         lines = []
         for t in current:
             icon = {"pending": "⬜", "in_progress": "🔶", "completed": "✅", "cancelled": "⬛"}.get(t["status"], "⬜")

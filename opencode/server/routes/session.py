@@ -106,6 +106,74 @@ async def session_set_title(session_id: str, request: Request, directory: str = 
     return await provide(directory, _fn)
 
 
+@router.get("/{session_id}/messages")
+async def session_messages(session_id: str, directory: str = Query(default=".")):
+    """Get all messages and their parts for a session."""
+    from opencode.project.instance import provide
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import MessageTable, PartTable
+
+    async def _fn():
+        db = get_db_session()
+        try:
+            messages = (
+                db.query(MessageTable)
+                .filter(MessageTable.session_id == session_id)
+                .order_by(MessageTable.time_created)
+                .all()
+            )
+            if not messages:
+                return []
+
+            message_ids = [m.id for m in messages]
+            parts = (
+                db.query(PartTable)
+                .filter(PartTable.message_id.in_(message_ids))
+                .order_by(PartTable.time_created)
+                .all()
+            )
+
+            parts_by_msg: dict[str, list[dict[str, Any]]] = {}
+            for p in parts:
+                parts_by_msg.setdefault(p.message_id, []).append({
+                    "id": p.id,
+                    "type": p.type,
+                    "content": p.content,
+                    "tool": p.tool,
+                    "toolCallId": p.tool_call_id,
+                    "state": p.state,
+                    "time": {"created": p.time_created, "completed": p.time_completed},
+                })
+
+            result = []
+            for m in messages:
+                result.append({
+                    "id": m.id,
+                    "sessionId": m.session_id,
+                    "role": m.role,
+                    "parentId": m.parent_id,
+                    "modelId": m.model_id,
+                    "providerId": m.provider_id,
+                    "agent": m.agent,
+                    "tokens": {
+                        "input": m.tokens_input,
+                        "output": m.tokens_output,
+                        "reasoning": m.tokens_reasoning,
+                        "cacheRead": m.tokens_cache_read,
+                        "cacheWrite": m.tokens_cache_write,
+                    },
+                    "cost": m.cost,
+                    "error": json.loads(m.error) if m.error else None,
+                    "parts": parts_by_msg.get(m.id, []),
+                    "time": {"created": m.time_created, "completed": m.time_completed},
+                })
+            return result
+        finally:
+            db.close()
+
+    return await provide(directory, _fn)
+
+
 @router.post("/{session_id}/message")
 async def session_message(session_id: str, request: Request, directory: str = Query(default=".")):
     from opencode.bus.bus import Bus

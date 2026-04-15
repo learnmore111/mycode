@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from opencode import __version__
 from opencode.bus.bus import Bus
@@ -32,13 +35,13 @@ def create_app() -> FastAPI:
     event.set_bus(bus)
 
     # --- Health ---
-    @app.get("/")
-    async def root():
-        return {"name": "mycode", "version": __version__}
-
     @app.get("/health")
     async def health():
         return {"status": "ok", "version": __version__}
+
+    @app.get("/api/info")
+    async def api_info():
+        return {"name": "mycode", "version": __version__}
 
     # --- Agent route (small, kept inline) ---
     @app.get("/agent")
@@ -75,5 +78,32 @@ def create_app() -> FastAPI:
     app.include_router(mcp.router)
     app.include_router(event.router)
     app.include_router(project.router)
+
+    # --- Static files: serve Web UI from web/dist if it exists ---
+    # Try multiple locations: next to the opencode package, or in the project root
+    _web_dist = None
+    for candidate in [
+        Path(__file__).resolve().parent.parent.parent / "web" / "dist",  # repo root / web / dist
+    ]:
+        if (candidate / "index.html").is_file():
+            _web_dist = candidate
+            break
+
+    if _web_dist:
+        # Mount assets directory for JS/CSS/images
+        assets_dir = _web_dist / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="static-assets")
+
+        # SPA catch-all: return index.html for any non-API path
+        _index_html = _web_dist / "index.html"
+
+        @app.get("/{path:path}")
+        async def spa_fallback(path: str):
+            # Serve actual files from dist if they exist (e.g. favicon, manifest)
+            file_path = _web_dist / path  # type: ignore[operator]
+            if file_path.is_file() and ".." not in path:
+                return FileResponse(str(file_path))
+            return FileResponse(str(_index_html))
 
     return app
