@@ -16,27 +16,28 @@ export default function ToolExecution({ part }: Props) {
   const StatusIcon = () => {
     switch (status) {
       case 'running':
-        return <Loader2 size={12} className="animate-spin text-yellow-400" />
+        return <Loader2 size={12} className="animate-spin text-yellow-300" />
+      case 'completed':
       case 'success':
         return <CheckCircle2 size={12} className="text-green-400" />
       case 'error':
         return <XCircle size={12} className="text-red-400" />
       default:
-        return <Terminal size={12} className="text-gray-400" />
+        return <Terminal size={12} className="text-white/40" />
     }
   }
 
   return (
-    <div className="my-2 border border-gray-700 rounded-lg bg-gray-900/50 overflow-hidden">
+    <div className="my-2 border border-white/10 rounded-lg bg-black/20 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2 text-xs hover:bg-gray-800/50 transition-colors"
+        className="flex items-center gap-2 w-full px-3 py-2 text-xs hover:bg-white/5 transition-colors"
       >
-        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {expanded ? <ChevronDown size={12} className="text-white/40" /> : <ChevronRight size={12} className="text-white/40" />}
         <StatusIcon />
-        <span className="font-mono text-gray-300">{toolName}</span>
+        <span className="font-mono text-white/70">{toolName}</span>
         {!expanded && input && (
-          <span className="text-gray-500 truncate ml-2">
+          <span className="text-white/30 truncate ml-2">
             {typeof input === 'string' ? input : JSON.stringify(input).slice(0, 60)}
           </span>
         )}
@@ -46,16 +47,16 @@ export default function ToolExecution({ part }: Props) {
         <div className="px-3 pb-3 space-y-2">
           {input && (
             <div>
-              <div className="text-[10px] uppercase text-gray-500 mb-1">Input</div>
-              <pre className="text-xs bg-gray-900 p-2 rounded border border-gray-800 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
+              <div className="text-[10px] uppercase text-white/30 mb-1">Input</div>
+              <pre className="text-xs bg-black/30 p-2 rounded border border-white/5 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap text-white/70">
                 {typeof input === 'string' ? input : JSON.stringify(input, null, 2)}
               </pre>
             </div>
           )}
           {output && (
             <div>
-              <div className="text-[10px] uppercase text-gray-500 mb-1">Output</div>
-              <pre className="text-xs bg-gray-900 p-2 rounded border border-gray-800 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap">
+              <div className="text-[10px] uppercase text-white/30 mb-1">Output</div>
+              <pre className="text-xs bg-black/30 p-2 rounded border border-white/5 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap text-white/70">
                 {typeof output === 'string' ? output : JSON.stringify(output, null, 2)}
               </pre>
             </div>
@@ -63,7 +64,7 @@ export default function ToolExecution({ part }: Props) {
           {part.state?.error && (
             <div>
               <div className="text-[10px] uppercase text-red-400 mb-1">Error</div>
-              <pre className="text-xs bg-red-900/20 p-2 rounded border border-red-800 text-red-300 whitespace-pre-wrap">
+              <pre className="text-xs bg-red-500/10 p-2 rounded border border-red-500/20 text-red-300 whitespace-pre-wrap">
                 {part.state.error}
               </pre>
             </div>

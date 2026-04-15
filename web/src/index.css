@@ -6,7 +6,7 @@
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #374151 transparent;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -18,6 +18,79 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: #374151;
+  background-color: rgba(255,255,255,0.15);
   border-radius: 3px;
+}
+
+body {
+  background: #0a0a0f;
+}
+
+.bg-gradient-main {
+  background: linear-gradient(135deg, #0c1929 0%, #0f2847 25%, #163a6b 50%, #1a4a8a 75%, #1e5aaa 100%);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.input-bar {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.input-bar:focus-within {
+  border-color: rgba(96, 165, 250, 0.5);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.15);
+}
+
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.toolbar-btn.active {
+  background: rgba(96, 165, 250, 0.15);
+  color: rgba(96, 165, 250, 0.9);
+}
+
+.toolbar-select {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  outline: none;
+}
+
+.toolbar-select:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.toolbar-select:focus {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.toolbar-select option {
+  background: #1a2332;
+  color: #e2e8f0;
 }

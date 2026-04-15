@@ -22,7 +22,7 @@ export default function MessageList({ messages, streaming, streamText, streamPar
   if (loadingHistory) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-gray-500" />
+        <Loader2 size={24} className="animate-spin text-white/30" />
       </div>
     )
   }
@@ -30,8 +30,8 @@ export default function MessageList({ messages, streaming, streamText, streamPar
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
       {messages.length === 0 && !streaming && (
-        <div className="text-center py-16 text-gray-500 text-sm">
-          Send a message to start the conversation.
+        <div className="text-center py-16 text-white/30 text-sm">
+          发送消息开始对话
         </div>
       )}
 

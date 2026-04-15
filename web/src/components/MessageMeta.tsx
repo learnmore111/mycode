@@ -18,7 +18,7 @@ export default function MessageMeta({ message }: Props) {
   if (modelId) parts.push(modelId.split('/').pop() ?? modelId)
 
   return (
-    <div className="mt-1 px-1 text-[10px] text-gray-500 flex flex-wrap gap-x-2">
+    <div className="mt-1 px-1 text-[10px] text-white/30 flex flex-wrap gap-x-2">
       {parts.map((p, i) => (
         <span key={i}>{p}</span>
       ))}

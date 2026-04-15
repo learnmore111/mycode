@@ -19,7 +19,7 @@ export default function App() {
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
+    <div className="flex h-screen bg-gradient-main text-gray-100">
       <Sidebar
         sessions={session.sessions}
         activeId={session.activeId}
@@ -38,6 +38,7 @@ export default function App() {
         loadingHistory={chat.loadingHistory}
         onSend={(text) => chat.send(text, { model: providerState.selectedModel, agent: providerState.selectedAgent })}
         onAbort={chat.abort}
+        onCreate={session.create}
         models={providerState.models}
         agents={providerState.agents}
         selectedModel={providerState.selectedModel}

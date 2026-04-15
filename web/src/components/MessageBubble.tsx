@@ -14,8 +14,8 @@ export default function MessageBubble({ message }: Props) {
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-gray-800 flex items-center justify-center mt-1">
-          <Bot size={14} className="text-blue-400" />
+        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-white/10 flex items-center justify-center mt-1">
+          <Bot size={14} className="text-blue-300" />
         </div>
       )}
 
@@ -23,8 +23,8 @@ export default function MessageBubble({ message }: Props) {
         <div
           className={`rounded-2xl px-4 py-2.5 ${
             isUser
-              ? 'bg-blue-600 text-white rounded-br-md'
-              : 'bg-gray-800 text-gray-100 rounded-bl-md'
+              ? 'bg-blue-500/25 text-white border border-blue-400/15 rounded-br-md'
+              : 'bg-white/8 text-gray-100 border border-white/8 rounded-bl-md'
           }`}
         >
           {message.parts.map((part) => {
@@ -35,7 +35,7 @@ export default function MessageBubble({ message }: Props) {
                 return <ToolExecution key={part.id} part={part} />
               case 'reasoning':
                 return (
-                  <div key={part.id} className="text-xs text-gray-400 italic border-l-2 border-gray-600 pl-2 my-1">
+                  <div key={part.id} className="text-xs text-white/40 italic border-l-2 border-white/15 pl-2 my-1">
                     {part.content}
                   </div>
                 )
@@ -49,8 +49,8 @@ export default function MessageBubble({ message }: Props) {
       </div>
 
       {isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center mt-1">
-          <User size={14} className="text-white" />
+        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-500/30 flex items-center justify-center mt-1">
+          <User size={14} className="text-blue-200" />
         </div>
       )}
     </div>
