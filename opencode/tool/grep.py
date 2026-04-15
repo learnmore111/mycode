@@ -57,6 +57,26 @@ class GrepTool(CallableTool[GrepParams]):
                 title=f"Grep {pattern}",
             )
 
+        # Validate regex pattern before executing
+        import re as _re
+        try:
+            _re.compile(pattern)
+        except _re.error as e:
+            return ToolError(
+                f"Invalid regex pattern: {e}",
+                title=f"Grep {pattern}",
+            )
+
+        # Validate regex pattern before executing
+        import re as _re
+        try:
+            _re.compile(pattern)
+        except _re.error as e:
+            return ToolError(
+                f"Invalid regex pattern: {e}",
+                title=f"Grep {pattern}",
+            )
+
         rg = shutil.which("rg")
         if rg:
             cmd = [rg, "-rn", "--no-heading", "-C", "1", "-m", str(_MAX_MATCHES),

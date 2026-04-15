@@ -40,8 +40,43 @@ if TYPE_CHECKING:
 
 logger = logmod.create(service="session.prompt")
 
-# Track busy sessions
-_busy: dict[str, bool] = {}
+# Track busy sessions — use asyncio.Lock per session for TOCTOU safety
+import asyncio as _aio  # noqa: E402  # noqa: E402
+
+_session_locks: dict[str, _aio.Lock] = {}
+_locks_mutex = _aio.Lock()
+
+
+def is_session_busy(session_id: str) -> bool:
+    """Check if a session is currently being processed."""
+    lock = _session_locks.get(session_id)
+    return lock is not None and lock.locked()
+
+
+async def _acquire_session(session_id: str) -> bool:
+    """Try to acquire a session for processing.
+
+    Returns True if acquired, False if already busy.
+    Uses asyncio.Lock to prevent TOCTOU race conditions.
+    """
+    async with _locks_mutex:
+        if session_id not in _session_locks:
+            _session_locks[session_id] = _aio.Lock()
+        lock = _session_locks[session_id]
+
+    if lock.locked():
+        return False
+    await lock.acquire()
+    logger.debug("session acquired", session_id=session_id)
+    return True
+
+
+def _release_session(session_id: str) -> None:
+    """Release a session after processing."""
+    lock = _session_locks.get(session_id)
+    if lock and lock.locked():
+        lock.release()
+        logger.debug("session released", session_id=session_id)
 
 @dataclass
 class PromptInput:
@@ -88,11 +123,10 @@ async def prompt(
     """
     session_id = prompt_input.session_id
 
-    if _busy.get(session_id):
+    if not await _acquire_session(session_id):
         yield PromptEvent(type="error", data={"message": f"Session {session_id} is busy"})
         return
 
-    _busy[session_id] = True
     try:
         # Resolve model
         if prompt_input.model:
@@ -346,12 +380,6 @@ async def prompt(
                 messages.extend(tool_messages)
                 continue
 
-            if result == "compact":
-                logger.info("compaction requested by processor")
-                messages = await compaction.compact(messages, **compact_kwargs)
-                yield PromptEvent(type="compact", data={"session_id": session_id})
-                continue
-
         # Finalize — persist in background (don't block the done event)
         assistant_msg.time_completed = int(time.time() * 1000)
 
@@ -388,7 +416,7 @@ async def prompt(
         yield PromptEvent(type="error", data={"message": str(e)})
         await bus.publish(SESSION_ERROR, {"session_id": session_id, "error": {"message": str(e)}})
     finally:
-        _busy.pop(session_id, None)
+        _release_session(session_id)
 
 
 def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str:

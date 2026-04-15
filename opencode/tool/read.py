@@ -167,6 +167,11 @@ class ReadTool(CallableTool[ReadParams]):
             # Determine the line range to show
             offset_0 = 0
             if params.line_offset is not None:
+                if params.line_offset < 1:
+                    return ToolError(
+                        f"line_offset must be >= 1, got {params.line_offset}.",
+                        title=f"Read {file_path}",
+                    )
                 offset_0 = max(0, params.line_offset - 1)
                 if offset_0 >= total:
                     return ToolError(
@@ -175,6 +180,12 @@ class ReadTool(CallableTool[ReadParams]):
                         title=f"Read {file_path}",
                         metadata={"total_lines": total},
                     )
+
+            if params.line_count is not None and params.line_count < 1:
+                return ToolError(
+                    f"line_count must be >= 1, got {params.line_count}.",
+                    title=f"Read {file_path}",
+                )
 
             end = min(offset_0 + params.line_count, total) if params.line_count is not None else total
 
@@ -264,6 +275,12 @@ def _read_pdf(full: str, file_path: str, file_size: int) -> ToolResult:
         return ToolError(
             f"PDF text extraction timed out for: {file_path}. "
             f"The file may be very large or complex.",
+            title=f"Read {file_path}",
+            metadata={"type": "pdf", "file_size": file_size},
+        )
+    except (UnicodeDecodeError, OSError) as e:
+        return ToolError(
+            f"PDF extraction error: {e}",
             title=f"Read {file_path}",
             metadata={"type": "pdf", "file_size": file_size},
         )

@@ -20,10 +20,32 @@ from opencode.session.session import get as get_session
 if TYPE_CHECKING:
     import asyncio
 
+from opencode.util import log as logmod
+
+logger = logmod.create(service="routes.session")
+
 router = APIRouter(prefix="/session", tags=["session"])
 
 # Abort signals: session_id -> asyncio.Event
 _abort_signals: dict[str, asyncio.Event] = {}
+
+
+def get_abort_signal(session_id: str) -> asyncio.Event | None:
+    """Get the abort signal for a session, if any."""
+    return _abort_signals.get(session_id)
+
+
+def set_abort_signal(session_id: str, event: asyncio.Event) -> None:
+    """Register an abort signal for a session."""
+    _abort_signals[session_id] = event
+    logger.debug("abort signal registered", session_id=session_id)
+
+
+def clear_abort_signal(session_id: str) -> None:
+    """Remove the abort signal for a session."""
+    removed = _abort_signals.pop(session_id, None)
+    if removed:
+        logger.debug("abort signal cleared", session_id=session_id)
 
 
 def _session_json(s: SessionInfo) -> dict[str, Any]:
@@ -96,16 +118,22 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
     bus = Bus()
 
     async def event_generator():
+        import asyncio as _aio
         project = ProjectInfo(id="global", worktree=directory)
         ctx = InstanceContext(directory=directory, worktree=directory, project=project)
         token = set_context(ctx)
+        abort_event = _aio.Event()
+        set_abort_signal(session_id, abort_event)
         try:
             inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
             async for event in prompt(inp, bus):
                 yield {"event": event.type, "data": json.dumps(event.data)}
+        except _aio.CancelledError:
+            logger.debug("SSE stream cancelled by client", session_id=session_id)
         finally:
             token.reset()
             await bus.close()
+            clear_abort_signal(session_id)
 
     return EventSourceResponse(event_generator())
 
@@ -113,7 +141,7 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
 @router.post("/{session_id}/abort")
 async def session_abort(session_id: str):
     """Signal an in-progress session to stop after the current tool finishes."""
-    signal = _abort_signals.get(session_id)
+    signal = get_abort_signal(session_id)
     if signal:
         signal.set()
         return {"ok": True, "aborted": True}

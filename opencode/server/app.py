@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,10 +9,23 @@ from opencode import __version__
 from opencode.bus.bus import Bus
 from opencode.server.routes import config, event, file, mcp, permission, project, provider, session
 
+# Maximum sizes for log endpoint to prevent DoS
+_MAX_LOG_SERVICE_LEN = 128
+_MAX_LOG_MESSAGE_LEN = 10_000
+_ALLOWED_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="mycode", version=__version__, description="MyCode AI coding agent API")
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+    # CORS: restrict origins via env var, default to localhost only
+    allowed_origins = os.environ.get("OPENCODE_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in allowed_origins if o.strip()],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["*"],
+    )
 
     # Shared bus for SSE events
     bus = Bus()
@@ -32,15 +47,23 @@ def create_app() -> FastAPI:
         agents = await agentmod.list_agents()
         return [{"name": a.name, "description": a.description, "mode": a.mode, "hidden": a.hidden} for a in agents]
 
-    # --- Log route ---
+    # --- Log route (with input validation) ---
     @app.post("/log")
     async def log_write(request: Request):
         from opencode.util import log as logmod
         body = await request.json()
-        logger = logmod.create(service=body.get("service", "app"))
-        level = body.get("level", "info")
-        msg = body.get("message", "")
-        getattr(logger, level, logger.info)(msg, **(body.get("extra") or {}))
+        service = str(body.get("service", "app"))[:_MAX_LOG_SERVICE_LEN]
+        level = str(body.get("level", "info")).lower()
+        msg = str(body.get("message", ""))[:_MAX_LOG_MESSAGE_LEN]
+
+        if level not in _ALLOWED_LOG_LEVELS:
+            level = "info"
+
+        logger = logmod.create(service=service)
+        extra = body.get("extra") or {}
+        if not isinstance(extra, dict):
+            extra = {}
+        getattr(logger, level, logger.info)(msg, **extra)
         return True
 
     # --- Include route modules ---

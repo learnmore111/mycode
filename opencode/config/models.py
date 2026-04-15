@@ -261,4 +261,4 @@ class Config(BaseModel):
     experimental: ExperimentalConfig | None = None
     enterprise: EnterpriseConfig | None = None
 
-    model_config = {"populate_by_name": True, "extra": "ignore"}
+    model_config = {"populate_by_name": True, "extra": "ignore", "frozen": True}

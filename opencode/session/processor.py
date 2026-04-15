@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from opencode.bus.events import PART_DELTA, PART_UPDATED
 from opencode.session import llm as llmmod
-from opencode.session.loop_guard import MUTATING_TOOLS, LoopGuard, ToolResultCache
+from opencode.session.loop_guard import MUTATING_TOOLS, LoopGuard
 from opencode.session.message import AssistantMessage, Part, TextPart, ToolPart, create_text_part, create_tool_part
 from opencode.tool import registry as tool_registry
 from opencode.tool.base import (
@@ -126,9 +126,16 @@ async def process_stream(
             tp = ctx.toolcalls.get(event.tool_call_id)
             if tp:
                 try:
-                    tp.state["input"] = json.loads(event.args) if event.args else {}
-                except json.JSONDecodeError:
-                    tp.state["input"] = {"_raw": event.args}
+                    parsed = json.loads(event.args) if event.args else {}
+                    if not isinstance(parsed, dict):
+                        logger.warn("tool args parsed to non-dict", tool=tp.tool, type=type(parsed).__name__)
+                        tp.state["input"] = {}
+                    else:
+                        tp.state["input"] = parsed
+                except json.JSONDecodeError as e:
+                    logger.error("malformed tool arguments", tool=tp.tool, error=str(e))
+                    tp.state["input"] = {}
+                    tp.state["_parse_error"] = str(e)
                 tool_calls_pending.append(tp)
 
         elif isinstance(event, llmmod.FinishEvent):
@@ -165,7 +172,7 @@ async def process_stream(
                 tp.state["output"] = str(e)
                 tp.state["is_error"] = True
                 tp.time_completed = int(time.time() * 1000)
-                has_failure = True
+                has_failure = True  # Count tool-not-found as a failure for doom detection
                 yield ProcessorEvent(type="tool_done", data={
                     "tool": tp.tool, "call_id": tp.tool_call_id,
                     "status": "error", "output": str(e), "input": {},
@@ -202,8 +209,25 @@ async def process_stream(
                         "status": "error", "output": str(e), "input": tp.state.get("input", {}),
                     })
                     continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Fail-safe: block tool execution on unexpected permission errors
+                    logger.error(
+                        "permission check failed unexpectedly",
+                        tool=tp.tool,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    tp.state["status"] = "error"
+                    tp.state["output"] = f"Permission check failed: {e}"
+                    tp.state["is_error"] = True
+                    tp.time_completed = int(time.time() * 1000)
+                    blocked = True
+                    yield ProcessorEvent(type="tool_done", data={
+                        "tool": tp.tool, "call_id": tp.tool_call_id,
+                        "status": "error", "output": f"Permission check failed: {e}",
+                        "input": tp.state.get("input", {}),
+                    })
+                    continue
 
             # Doom loop detection (legacy, loop_guard has more advanced detection)
             recent_tool_parts = [p for p in ctx.parts if isinstance(p, ToolPart) and p.tool == tp.tool]

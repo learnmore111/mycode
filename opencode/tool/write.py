@@ -27,6 +27,8 @@ from opencode.tool.base import (
 )
 
 _PREVIEW_LINES = 10
+_MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for write operations
+_MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for write operations
 
 
 class WriteParams(BaseModel):
@@ -51,6 +53,15 @@ class WriteTool(CallableTool[WriteParams]):
     async def call(self, params: WriteParams, ctx: ToolContext) -> ToolResult:
         file_path = params.file_path
         content = params.content
+
+        # File size limit to prevent DoS
+        if len(content) > _MAX_CONTENT_SIZE:
+            return ToolError(
+                f"Content too large: {len(content)} bytes exceeds {_MAX_CONTENT_SIZE // (1024 * 1024)}MB limit.",
+                title=f"Write {file_path}",
+                metadata={"success": False},
+            )
+
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
 

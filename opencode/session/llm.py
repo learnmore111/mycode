@@ -5,6 +5,7 @@ Wraps litellm.acompletion to provide a unified streaming interface.
 
 from __future__ import annotations
 
+import asyncio
 import logging as _logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -96,10 +97,11 @@ def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
     """Build the messages list with system prompts prepended."""
     messages: list[dict[str, Any]] = []
 
-    # Add system prompts
+    # Add system prompts (skip whitespace-only)
     if stream_input.system:
         system_content = "\n\n".join(stream_input.system)
-        messages.append({"role": "system", "content": system_content})
+        if system_content.strip():
+            messages.append({"role": "system", "content": system_content})
 
     # Add conversation messages
     messages.extend(stream_input.messages)
@@ -167,7 +169,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     pending_finish_reason: str | None = None
 
     try:
-        response = await litellm.acompletion(**kwargs)
+        response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=300)
 
         async for chunk in response:
             # Collect usage from any chunk that has it
@@ -244,6 +246,10 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     except Exception as e:
         logger.error("stream error", error=str(e), model=model_name)
         yield ErrorEvent(error=str(e))
+        # Ensure a FinishEvent is always emitted so consumers don't hang
+        if not pending_finish_reason:
+            cost = _calc_cost(model_name, accumulated_usage)
+            yield FinishEvent(reason="error", usage=accumulated_usage, cost=cost)
 
 
 def _get_reasoning_tokens(usage: Any) -> int:

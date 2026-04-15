@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,7 @@ class ConfigValidationError(Exception):
 # --- Cached config state ---
 
 _cache: dict[str, Config] = {}  # key: directory path or "__global__"
+_cache_lock = threading.Lock()
 
 
 def get(directory: str | None = None, worktree: str | None = None) -> Config:
@@ -125,6 +127,16 @@ def get(directory: str | None = None, worktree: str | None = None) -> Config:
     if cache_key in _cache:
         return _cache[cache_key]
 
+    with _cache_lock:
+        if cache_key in _cache:
+            return _cache[cache_key]
+        config = _load_and_merge(directory, worktree)
+        _cache[cache_key] = config
+        return config
+
+
+def _load_and_merge(directory: str | None, worktree: str | None) -> Config:
+    """Internal: load and merge all config layers (called under lock)."""
     merged: dict[str, Any] = {}
 
     # 1. Global config
@@ -170,13 +182,13 @@ def get(directory: str | None = None, worktree: str | None = None) -> Config:
             merged["username"] = "user"
 
     config = _validate(merged)
-    _cache[cache_key] = config
     return config
 
 
 def invalidate() -> None:
     """Clear the cached config so it will be reloaded on next access."""
     _cache.clear()
+    logger.debug("config cache invalidated")
 
 
 async def get_async(directory: str | None = None, worktree: str | None = None) -> Config:

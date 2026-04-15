@@ -185,27 +185,38 @@ def _truncate_tool_outputs_for_summary(
     return truncated
 
 
-def _extract_summary(text: str) -> str:
+def _extract_summary(text: str, max_length: int = 8000) -> str:
     """Extract the ``<summary>`` content and strip the ``<analysis>`` scratchpad.
 
     The compaction prompt asks the model to output ``<analysis>...</analysis>``
     followed by ``<summary>...</summary>``.  The analysis block is a drafting
     scratchpad that improves summary quality but should not be kept in the
     final output (it wastes tokens in subsequent calls).
+
+    Enforces a max_length on the summary to prevent unbounded growth.
     """
     # Try to find <summary>...</summary>
     match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
     if match:
-        return match.group(1).strip()
+        summary = match.group(1).strip()
+        if len(summary) > max_length:
+            summary = summary[:max_length] + "\n... [summary truncated]"
+        return summary
 
     # Fallback: strip <analysis>...</analysis> and return the rest
     stripped = re.sub(r"<analysis>.*?</analysis>", "", text, flags=re.DOTALL)
     stripped = stripped.strip()
-    if stripped:
+    if stripped and len(stripped) < len(text):
+        if len(stripped) > max_length:
+            stripped = stripped[:max_length] + "\n... [summary truncated]"
         return stripped
 
-    # Last resort: return everything
-    return text.strip()
+    # Last resort: truncate
+    result = text.strip()
+    if len(result) > max_length:
+        result = result[:max_length] + "\n... [summary truncated]"
+        logger.warn("summary extraction fell back to truncated full text", length=len(text))
+    return result if result else "[Empty summary generated]"
 
 
 def _build_compact_result(
@@ -271,7 +282,11 @@ async def compact(
     old, recent = _split_by_turns(messages, keep_turns=COMPACT_KEEP_TURNS)
 
     if not old:
-        # Nothing old enough to summarise
+        # Nothing old enough to summarise — try pruning harder
+        pruned_again, freed_again = prune_tool_outputs(messages)
+        if freed_again > 0:
+            logger.info("no old turns to compact, but pruned more tool outputs", freed=freed_again)
+            return pruned_again
         logger.info("no old turns to compact, returning as-is")
         return messages
 

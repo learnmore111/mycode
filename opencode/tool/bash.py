@@ -9,6 +9,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import signal
@@ -26,6 +27,13 @@ from opencode.tool.base import (
     ToolResultBuilder,
     validate_path_safety,
 )
+
+# Environment variables that cannot be overridden via tool params
+_BLOCKED_ENV_VARS = frozenset({
+    "PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH",
+    "PYTHONPATH", "NODE_PATH", "HOME", "USER", "SHELL",
+    "OPENCODE_DB", "OPENCODE_CONFIG_CONTENT",
+})
 
 
 class BashParams(BaseModel):
@@ -75,10 +83,16 @@ class BashTool(CallableTool[BashParams]):
         if os.path.basename(shell) in ("fish", "nu"):
             shell = shutil.which("bash") or shutil.which("zsh") or "/bin/sh"
 
-        # Build environment
+        # Build environment — restrict sensitive env var overrides
         env = {**os.environ, "AGENT": "1"}
         if params.env:
-            env.update(params.env)
+            for key, value in params.env.items():
+                if key.upper() in _BLOCKED_ENV_VARS:
+                    return ToolError(
+                        f"Cannot override protected environment variable: {key}",
+                        title=command[:80],
+                    )
+                env[key] = value
 
         proc = None
         try:
@@ -112,8 +126,10 @@ class BashTool(CallableTool[BashParams]):
             if proc and proc.returncode is None:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    await asyncio.sleep(0.5)
-                    if proc.returncode is None:
+                    # Wait briefly for graceful shutdown
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except TimeoutError:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                         await proc.wait()  # Reap the zombie process
                 except (ProcessLookupError, PermissionError):
@@ -124,6 +140,14 @@ class BashTool(CallableTool[BashParams]):
                 metadata={"exit_code": -1, "timeout": True},
             )
         except Exception as e:
+            # Ensure cleanup even on unexpected errors
+            if proc and proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except (TimeoutError, ProcessLookupError, PermissionError):
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        proc.kill()
             return ToolError(
                 f"Error: {e}",
                 title=command[:80],

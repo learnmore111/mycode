@@ -30,6 +30,8 @@ from opencode.tool.base import (
 )
 
 _CONTEXT_LINES = 4
+_MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for edit operations
+_MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for edit operations
 
 
 def _snippet_around(lines: list[str], start: int, end: int, context: int = _CONTEXT_LINES) -> str:
@@ -86,6 +88,14 @@ class EditTool(CallableTool[EditParams]):
         old_string = params.old_string
         new_string = params.new_string
         insert_after_line = params.insert_after_line
+
+        # Size limit to prevent DoS
+        if len(new_string) > _MAX_CONTENT_SIZE:
+            return ToolError(
+                f"new_string too large: {len(new_string)} bytes exceeds {_MAX_CONTENT_SIZE // (1024 * 1024)}MB limit.",
+                title=f"Edit {file_path}",
+                metadata={"success": False},
+            )
 
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()

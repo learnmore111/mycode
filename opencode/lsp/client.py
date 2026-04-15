@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import os
 from typing import Any
@@ -10,13 +11,11 @@ from opencode.util import log as logmod
 
 logger = logmod.create(service="lsp.client")
 
-_MSG_ID = 0
+_msg_ids = itertools.count(1)
 
 
 def _next_id() -> int:
-    global _MSG_ID
-    _MSG_ID += 1
-    return _MSG_ID
+    return next(_msg_ids)
 
 
 class LspJsonRpcClient:
@@ -141,8 +140,14 @@ class LspJsonRpcClient:
     async def open_file(self, path: str) -> None:
         """Notify the server about an opened file."""
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            # Use async file I/O to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+
+            def _read_file() -> str:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    return f.read()
+
+            text = await loop.run_in_executor(None, _read_file)
         except Exception:
             return
 

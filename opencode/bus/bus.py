@@ -35,20 +35,22 @@ class Bus:
         event = Event(type=event_def.type, properties=properties or {})
         logger.debug("publishing", type=event_def.type)
 
-        # Typed subscribers
-        for q in self._subscribers.get(event_def.type, []):
+        # Typed subscribers — copy list to avoid mutation during iteration
+        for q in list(self._subscribers.get(event_def.type, [])):
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
                 logger.warn("subscriber queue full, dropping event", type=event_def.type)
 
-        # Wildcard subscribers
-        for q in self._wildcard:
-            with contextlib.suppress(asyncio.QueueFull):
+        # Wildcard subscribers — copy list, log drops
+        for q in list(self._wildcard):
+            try:
                 q.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warn("wildcard subscriber queue full, dropping event", type=event_def.type)
 
-        # Callbacks
-        for cb in self._callbacks.get(event_def.type, []):
+        # Callbacks — copy list to avoid mutation during iteration
+        for cb in list(self._callbacks.get(event_def.type, [])):
             try:
                 result = cb(event)
                 if asyncio.iscoroutine(result):
@@ -56,7 +58,7 @@ class Bus:
             except Exception as e:
                 logger.error("subscriber callback failed", type=event_def.type, error=str(e))
 
-        for cb in self._wildcard_callbacks:
+        for cb in list(self._wildcard_callbacks):
             try:
                 result = cb(event)
                 if asyncio.iscoroutine(result):

@@ -42,6 +42,8 @@ class PermissionManager:
         self._project_id = project_id
         self._pending: dict[str, tuple[PermissionRequest, asyncio.Future[None]]] = {}
         self._approved: Ruleset = []
+        self._lock = asyncio.Lock()  # Protect _pending dict from concurrent access
+        self._lock = asyncio.Lock()  # Protect _pending dict from concurrent access
 
     async def ask(
         self,
@@ -112,75 +114,77 @@ class PermissionManager:
 
     async def reply(self, *, request_id: str, reply: Reply, message: str | None = None) -> None:
         """Reply to a pending permission request."""
-        entry = self._pending.pop(request_id, None)
-        if not entry:
-            return
+        async with self._lock:
+            entry = self._pending.pop(request_id, None)
+            if not entry:
+                return
 
-        request, future = entry
+            request, future = entry
 
-        await self._bus.publish(PERMISSION_REPLIED, {
-            "session_id": request.session_id,
-            "request_id": request_id,
-            "reply": reply,
-        })
+            await self._bus.publish(PERMISSION_REPLIED, {
+                "session_id": request.session_id,
+                "request_id": request_id,
+                "reply": reply,
+            })
 
-        if reply == "reject":
-            if message:
-                future.set_exception(CorrectedError(message))
-            else:
-                future.set_exception(RejectedError())
+            if reply == "reject":
+                if not future.done():
+                    if message:
+                        future.set_exception(CorrectedError(message))
+                    else:
+                        future.set_exception(RejectedError())
 
-            # Also reject all other pending requests for the same session
-            to_reject = [
-                (rid, (req, fut))
-                for rid, (req, fut) in self._pending.items()
-                if req.session_id == request.session_id
-            ]
-            for rid, (req, fut) in to_reject:
-                self._pending.pop(rid, None)
-                if not fut.done():
-                    fut.set_exception(RejectedError())
-                await self._bus.publish(PERMISSION_REPLIED, {
-                    "session_id": req.session_id,
-                    "request_id": rid,
-                    "reply": "reject",
-                })
-            return
-
-        if not future.done():
-            future.set_result(None)
-
-        if reply == "always":
-            for pattern in request.always:
-                self._approved.append(Rule(
-                    permission=request.permission,
-                    pattern=pattern,
-                    action="allow",
-                ))
-
-            # Auto-resolve other pending that now match
-            to_resolve = []
-            for rid, (req, _fut) in list(self._pending.items()):
-                if req.session_id != request.session_id:
-                    continue
-                all_ok = all(
-                    eval_rule(req.permission, p, self._approved).action == "allow"
-                    for p in req.patterns
-                )
-                if all_ok:
-                    to_resolve.append(rid)
-
-            for rid in to_resolve:
-                entry = self._pending.pop(rid, None)
-                if entry:
-                    _, fut = entry
+                # Also reject all other pending requests for the same session
+                to_reject = [
+                    (rid, (req, fut))
+                    for rid, (req, fut) in self._pending.items()
+                    if req.session_id == request.session_id
+                ]
+                for rid, (req, fut) in to_reject:
+                    self._pending.pop(rid, None)
                     if not fut.done():
-                        fut.set_result(None)
+                        fut.set_exception(RejectedError())
                     await self._bus.publish(PERMISSION_REPLIED, {
-                        "session_id": entry[0].session_id,
+                        "session_id": req.session_id,
                         "request_id": rid,
-                        "reply": "always",
+                        "reply": "reject",
                     })
+                return
+
+            if not future.done():
+                future.set_result(None)
+
+            if reply == "always":
+                for pattern in request.always:
+                    self._approved.append(Rule(
+                        permission=request.permission,
+                        pattern=pattern,
+                        action="allow",
+                    ))
+
+                # Auto-resolve other pending that now match
+                to_resolve = []
+                for rid, (req, _fut) in list(self._pending.items()):
+                    if req.session_id != request.session_id:
+                        continue
+                    all_ok = all(
+                        eval_rule(req.permission, p, self._approved).action == "allow"
+                        for p in req.patterns
+                    )
+                    if all_ok:
+                        to_resolve.append(rid)
+
+                for rid in to_resolve:
+                    entry = self._pending.pop(rid, None)
+                    if entry:
+                        _, fut = entry
+                        if not fut.done():
+                            fut.set_result(None)
+                        await self._bus.publish(PERMISSION_REPLIED, {
+                            "session_id": entry[0].session_id,
+                            "request_id": rid,
+                            "reply": "always",
+                        })
 
     def list_pending(self) -> list[PermissionRequest]:
         """List all pending permission requests."""

@@ -33,6 +33,7 @@ def unregister(tool_id: str) -> None:
     """Remove a tool from the registry."""
     _tools.pop(tool_id, None)
     _hidden.discard(tool_id)
+    logger.debug("unregistered tool", id=tool_id)
 
 
 def get(tool_id: str) -> ToolInfo | None:
@@ -94,6 +95,7 @@ def clear() -> None:
     _tools.clear()
     _hidden.clear()
     _registered = False
+    logger.debug("tool registry cleared")
 
 
 def register_builtins() -> None:

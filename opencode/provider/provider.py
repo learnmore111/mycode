@@ -6,7 +6,9 @@ Uses litellm as the unified LLM SDK.
 
 from __future__ import annotations
 
+import asyncio
 import os
+from types import MappingProxyType
 
 from opencode.auth import auth as authmod
 from opencode.config import config as configmod
@@ -67,6 +69,7 @@ PROVIDER_ENV: dict[str, list[str]] = {
 }
 
 _state: dict[str, ProviderInfo] | None = None
+_state_lock = asyncio.Lock()
 
 
 async def _init_state() -> dict[str, ProviderInfo]:
@@ -75,6 +78,15 @@ async def _init_state() -> dict[str, ProviderInfo]:
     if _state is not None:
         return _state
 
+    async with _state_lock:
+        if _state is not None:
+            return _state
+        _state = await _discover_providers()
+        return _state
+
+
+async def _discover_providers() -> dict[str, ProviderInfo]:
+    """Internal: do the actual provider discovery (called under lock)."""
     providers: dict[str, ProviderInfo] = {}
     cfg = configmod.get()
 
@@ -264,13 +276,12 @@ async def _init_state() -> dict[str, ProviderInfo]:
             del providers[pid]
 
     logger.info("providers initialized", count=len(providers), ids=list(providers.keys()))
-    _state = providers
     return providers
 
 
-async def list_providers() -> dict[str, ProviderInfo]:
-    """List all available providers."""
-    return await _init_state()
+async def list_providers() -> MappingProxyType[str, ProviderInfo]:
+    """List all available providers (read-only view)."""
+    return MappingProxyType(await _init_state())
 
 
 async def get_provider(provider_id: ProviderID) -> ProviderInfo | None:
@@ -333,6 +344,7 @@ def invalidate() -> None:
     """Clear cached provider state."""
     global _state
     _state = None
+    logger.debug("provider state invalidated")
 
 
 async def get_api_key(provider_id: ProviderID) -> str | None:

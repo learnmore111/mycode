@@ -201,11 +201,11 @@ class ToolResultCache:
         self._cache[key] = output
 
     def invalidate(self, tool_name: str | None = None) -> None:
-        """Invalidate cache entries. Call after write/edit/bash operations."""
-        if tool_name is None:
-            self._cache.clear()
-        # After file modifications, invalidate read cache
-        # (we can't know exactly which files changed, so clear all)
+        """Invalidate cache entries. Call after write/edit/bash operations.
+
+        Always clears all entries because we cannot know exactly which
+        files changed from a mutating tool call.
+        """
         self._cache.clear()
 
     @property
@@ -293,8 +293,9 @@ class LoopGuard:
         )
         self._history.append(record)
 
-        # Cache invalidation for mutating tools
-        if tool_name in MUTATING_TOOLS and not is_error:
+        # Cache invalidation for mutating tools — always invalidate, even on error,
+        # because the tool may have partially modified files before failing
+        if tool_name in MUTATING_TOOLS:
             self.cache.invalidate()
         # Cache successful read-only results
         elif not is_error and output:

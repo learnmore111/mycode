@@ -51,8 +51,10 @@ class Snapshot:
         if not _git_available():
             logger.warn("git not available, snapshots disabled")
             return
-        if not Path(self.gitdir).exists():
-            Path(self.gitdir).mkdir(parents=True, exist_ok=True)
+        gitdir = Path(self.gitdir)
+        gitdir.mkdir(parents=True, exist_ok=True)
+        # Check if git repo already initialized (handles race with exist_ok)
+        if not (gitdir / "HEAD").exists():
             await _git(["init"], env={"GIT_DIR": self.gitdir, "GIT_WORK_TREE": self.worktree})
             for k, v in [
                 ("core.autocrlf", "false"),
@@ -72,7 +74,10 @@ class Snapshot:
         await self.init()
         if not self._initialized:
             return None
-        await _git([*self._base_args(), "add", "--sparse", "."], cwd=self.worktree)
+        # Check git add success before proceeding
+        add_code, _, add_err = await _git([*self._base_args(), "add", "--sparse", "."], cwd=self.worktree)
+        if add_code != 0:
+            logger.warn("git add failed", error=add_err.strip())
         code, tree_text, _ = await _git([*self._base_args(), "write-tree"], cwd=self.worktree)
         if code != 0:
             return None

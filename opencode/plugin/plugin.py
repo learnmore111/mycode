@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from opencode.util import log as logmod
 logger = logmod.create(service="plugin")
 
 Hook = Callable[..., Any]
+_HOOK_TIMEOUT = 10.0  # seconds — max time for a single hook execution
 
 
 class HookType(StrEnum):
@@ -78,13 +80,16 @@ class PluginManager:
 
         Each hook receives the current output and can return a modified version.
         If a hook returns None, the previous output is preserved.
+        Hooks are given a timeout to prevent blocking.
         """
         current = output
-        for fn in self._hooks.get(hook_name, []):
+        for fn in list(self._hooks.get(hook_name, [])):  # Copy list to avoid mutation during iteration
             try:
-                result = await fn(hook_input, current)
+                result = await asyncio.wait_for(fn(hook_input, current), timeout=_HOOK_TIMEOUT)
                 if result is not None:
                     current = result
+            except TimeoutError:
+                logger.error("hook timed out", hook=hook_name, timeout=_HOOK_TIMEOUT)
             except Exception as e:
                 logger.error("hook failed", hook=hook_name, error=str(e))
         return current

@@ -6,6 +6,7 @@ Provides both sync and async access to the SQLite database.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,7 @@ logger = logmod.create(service="db")
 
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
+_db_lock = threading.Lock()
 
 
 def get_db_path() -> str:
@@ -52,26 +54,30 @@ def get_engine() -> Engine:
     if _engine is not None:
         return _engine
 
-    db_path = get_db_path()
-    logger.info("opening database", path=db_path)
+    with _db_lock:
+        if _engine is not None:
+            return _engine
 
-    # Ensure directory exists
-    if db_path != ":memory:":
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        db_path = get_db_path()
+        logger.info("opening database", path=db_path)
 
-    _engine = create_engine(
-        f"sqlite:///{db_path}",
-        echo=False,
-        pool_pre_ping=True,
-    )
+        # Ensure directory exists
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Register SQLite pragmas
-    event.listen(_engine, "connect", _configure_sqlite)
+        _engine = create_engine(
+            f"sqlite:///{db_path}",
+            echo=False,
+            pool_pre_ping=True,
+        )
 
-    # Create all tables
-    Base.metadata.create_all(_engine)
+        # Register SQLite pragmas
+        event.listen(_engine, "connect", _configure_sqlite)
 
-    return _engine
+        # Create all tables
+        Base.metadata.create_all(_engine)
+
+        return _engine
 
 
 def get_session_factory() -> sessionmaker[Session]:
@@ -80,9 +86,12 @@ def get_session_factory() -> sessionmaker[Session]:
     if _session_factory is not None:
         return _session_factory
 
-    engine = get_engine()
-    _session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    return _session_factory
+    with _db_lock:
+        if _session_factory is not None:
+            return _session_factory
+        engine = get_engine()
+        _session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        return _session_factory
 
 
 def get_session() -> Session:
@@ -127,8 +136,10 @@ def close() -> None:
         _engine.dispose()
         _engine = None
         _session_factory = None
+        logger.debug("database closed")
 
 
 def reset() -> None:
     """Reset for testing — close and clear."""
     close()
+    logger.debug("database reset")

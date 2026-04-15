@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from opencode.file.ignore import should_ignore_entry
 from opencode.project.instance import current_or_none
-from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
+from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, validate_path_safety
 
 
 class ListDirParams(BaseModel):
@@ -23,6 +24,12 @@ class ListDirTool(CallableTool[ListDirParams]):
         "Use recursive=true for a tree view (limited to 3 levels deep)."
     )
 
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
     async def call(self, params: ListDirParams, ctx: ToolContext) -> ToolResult:
         dir_path = params.path
         recursive = params.recursive
@@ -30,6 +37,12 @@ class ListDirTool(CallableTool[ListDirParams]):
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
         resolved = os.path.join(base, dir_path) if dir_path and not os.path.isabs(dir_path) else (dir_path or base)
+
+        # Path safety validation — prevent directory traversal
+        if dir_path:
+            path_error = validate_path_safety(resolved, base)
+            if path_error:
+                return ToolError(f"Path not allowed: {path_error}", title=f"List {dir_path or '.'}")
 
         if not os.path.isdir(resolved):
             return ToolError(f"Not a directory: {dir_path or '.'}", title=f"List {dir_path or '.'}")
@@ -88,7 +101,10 @@ def _tree(directory: str, base: str, max_depth: int = 3, _depth: int = 0, _prefi
         if entry.is_dir():
             lines.append(f"{_prefix}{connector}{entry.name}/")
             extension = "    " if is_last else "│   "
-            lines.extend(_tree(entry.path, base, max_depth, _depth + 1, _prefix + extension))
+            try:
+                lines.extend(_tree(entry.path, base, max_depth, _depth + 1, _prefix + extension))
+            except OSError:
+                lines.append(f"{_prefix}{extension}(inaccessible)")
         else:
             lines.append(f"{_prefix}{connector}{entry.name}")
     return lines

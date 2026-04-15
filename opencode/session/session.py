@@ -141,6 +141,12 @@ def remove(session_id: str) -> None:
         db.commit()
     finally:
         db.close()
+    # Clean up per-session in-memory state
+    try:
+        from opencode.tool.todo import clear_todos
+        clear_todos(session_id)
+    except Exception:
+        pass
 
 
 def set_title(session_id: str, title: str) -> None:

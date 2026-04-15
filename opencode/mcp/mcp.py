@@ -42,6 +42,8 @@ class McpServer:
             self._reconnect_attempts = 0
             logger.info("connected", name=self.name, type=server_type)
         except Exception as e:
+            # Clean up partially initialized context stack on failure
+            await self.disconnect()
             self.status = "failed"
             logger.error("connection failed", name=self.name, error=str(e))
 
@@ -63,7 +65,7 @@ class McpServer:
             session = await session_ctx.__aenter__()
             self._context_stack.append(session_ctx)
 
-            await session.initialize()
+            await asyncio.wait_for(session.initialize(), timeout=30)
             await self._refresh_tools(session)
             self._client = session
             logger.info("MCP local connected", name=self.name, tools=len(self.tools))
@@ -89,7 +91,7 @@ class McpServer:
             session = await session_ctx.__aenter__()
             self._context_stack.append(session_ctx)
 
-            await session.initialize()
+            await asyncio.wait_for(session.initialize(), timeout=30)
             await self._refresh_tools(session)
             self._client = session
             logger.info("MCP remote connected", name=self.name, tools=len(self.tools))
@@ -132,14 +134,15 @@ class McpServer:
             raise
 
     async def _try_reconnect(self) -> bool:
-        """Attempt to reconnect to the server."""
+        """Attempt to reconnect to the server with exponential backoff."""
         if self._reconnect_attempts >= _MAX_RECONNECT_ATTEMPTS:
             logger.error("max reconnect attempts reached", name=self.name)
             return False
         self._reconnect_attempts += 1
-        logger.info("reconnecting", name=self.name, attempt=self._reconnect_attempts)
+        delay = _RECONNECT_DELAY * (2 ** (self._reconnect_attempts - 1))  # Exponential backoff
+        logger.info("reconnecting", name=self.name, attempt=self._reconnect_attempts, delay=delay)
         await self.disconnect()
-        await asyncio.sleep(_RECONNECT_DELAY)
+        await asyncio.sleep(delay)
         await self.connect()
         return self.status == "connected"
 

@@ -24,7 +24,17 @@ def _storage_dir() -> Path:
 
 
 def _path(key: list[str]) -> Path:
-    return _storage_dir().joinpath(*key).with_suffix(".json")
+    # Validate key segments to prevent path traversal
+    for segment in key:
+        if ".." in segment or segment.startswith("/") or segment.startswith("\\"):
+            raise ValueError(f"Invalid storage key segment: {segment!r}")
+    p = _storage_dir().joinpath(*key).with_suffix(".json")
+    # Verify resolved path stays within storage dir
+    try:
+        p.resolve().relative_to(_storage_dir().resolve())
+    except ValueError:
+        raise ValueError(f"Storage key resolves outside storage directory: {'/'.join(key)}") from None
+    return p
 
 
 async def read(key: list[str]) -> Any:

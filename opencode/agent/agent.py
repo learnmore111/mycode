@@ -5,6 +5,8 @@ compaction, title, and summary agents with their permission rulesets.
 
 from __future__ import annotations
 
+import copy
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -145,6 +147,7 @@ def _build_agents() -> dict[str, AgentInfo]:
 
 
 _cached_agents: dict[str, AgentInfo] | None = None
+_agents_lock = threading.Lock()
 
 
 def _load_agents() -> dict[str, AgentInfo]:
@@ -153,6 +156,15 @@ def _load_agents() -> dict[str, AgentInfo]:
     if _cached_agents is not None:
         return _cached_agents
 
+    with _agents_lock:
+        if _cached_agents is not None:
+            return _cached_agents
+        _cached_agents = _build_all_agents()
+        return _cached_agents
+
+
+def _build_all_agents() -> dict[str, AgentInfo]:
+    """Internal: build agents from defaults + config (called under lock)."""
     agents = _build_agents()
     cfg = configmod.get()
 
@@ -187,14 +199,14 @@ def _load_agents() -> dict[str, AgentInfo]:
         if acfg.steps is not None:
             agent.steps = acfg.steps
 
-    _cached_agents = agents
     return agents
 
 
 async def get(name: str) -> AgentInfo | None:
-    """Get an agent by name."""
+    """Get an agent by name (returns a copy to prevent cache mutation)."""
     agents = _load_agents()
-    return agents.get(name)
+    agent = agents.get(name)
+    return copy.copy(agent) if agent else None
 
 
 async def list_agents() -> list[AgentInfo]:
@@ -223,3 +235,4 @@ def invalidate() -> None:
     """Clear cached agents."""
     global _cached_agents
     _cached_agents = None
+    logger.debug("agent cache invalidated")
