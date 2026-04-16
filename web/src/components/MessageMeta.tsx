@@ -18,7 +18,7 @@ export default function MessageMeta({ message }: Props) {
   if (cost != null) parts.push(`$${cost.toFixed(4)}`)
 
   return (
-    <div className="mt-2 pt-2 border-t border-border-subtle text-xs text-text-muted">
+    <div className="mt-2 pt-2 border-t border-border text-xs text-text-muted">
       {parts.join(' · ')}
     </div>
   )

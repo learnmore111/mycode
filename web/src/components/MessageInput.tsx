@@ -151,17 +151,17 @@ export default function MessageInput({
           {/* Send button */}
           <button
             onClick={handleSubmit}
-            className={`flex-shrink-0 p-2 rounded-lg transition-all ${
+            className={`flex-shrink-0 p-2.5 rounded-lg transition-all ${
               streaming
-                ? 'bg-accent-red hover:bg-red-500 text-white'
+                ? 'bg-accent-red hover:bg-red-500 text-white shadow-card'
                 : text.trim()
-                ? 'bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-400 hover:to-purple-400 text-white shadow-card'
+                ? 'bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-400 hover:to-purple-400 text-white shadow-card hover:shadow-glow-purple hover:scale-[1.02]'
                 : 'text-text-muted cursor-not-allowed'
             }`}
             disabled={!streaming && !text.trim()}
             title={streaming ? '停止' : '发送 (Enter)'}
           >
-            {streaming ? <Square size={14} /> : <CornerDownLeft size={14} />}
+            {streaming ? <Square size={16} /> : <CornerDownLeft size={16} />}
           </button>
         </div>
       </div>

@@ -10,6 +10,7 @@ Features:
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -162,6 +163,10 @@ async def prompt(
         tool_registry.register_builtins()
         tools = tool_registry.to_llm_tools()
 
+        # Pre-compute system + tools token estimates for compaction checks and context bar fallback
+        system_tokens_est = compaction.estimate_tokens("\n\n".join(system))
+        tools_tokens_est = compaction.estimate_tokens(json.dumps(tools, ensure_ascii=False)) if tools else 0
+
         # Build user message content
         user_text = ""
         for part in prompt_input.parts:
@@ -211,6 +216,7 @@ async def prompt(
         iterations_done = 0
         stop_reason = ""
         prev_skills: list[dict[str, str]] | None = None
+        prev_iter_usage: dict[str, int | float] | None = None  # Per-iteration usage from previous iteration
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
@@ -247,7 +253,10 @@ async def prompt(
             # Fallback to 32K if model context limit is not configured (prevents unbounded growth)
             context_limit = model.limit.context if model.limit.context > 0 else 32_000
             if context_limit > 0 and compaction.should_compact(
-                messages=messages, model_context=context_limit
+                messages=messages,
+                model_context=context_limit,
+                system_tokens=system_tokens_est,
+                tools_tokens=tools_tokens_est,
             ):
                 logger.info("context overflow detected, compacting")
                 messages, compact_metrics = await compaction.compact(messages, **compact_kwargs)
@@ -295,7 +304,17 @@ async def prompt(
                 api_base=model.api.url or None,
             )
 
+            # === Snapshot cumulative tokens BEFORE this iteration ===
+            # After process_stream, the delta = current - snapshot gives per-iteration usage.
+            tokens_snap_input = assistant_msg.tokens_input
+            tokens_snap_output = assistant_msg.tokens_output
+            tokens_snap_cache_read = assistant_msg.tokens_cache_read
+            tokens_snap_cache_write = assistant_msg.tokens_cache_write
+            tokens_snap_reasoning = assistant_msg.tokens_reasoning
+
             # === Context snapshot for UI context viewer ===
+            # actual_usage shows the PREVIOUS iteration's per-iteration values
+            # (on iteration 0 there is no previous data, so None)
             snapshot_data = build_context_snapshot(
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
@@ -304,14 +323,7 @@ async def prompt(
                 context_limit=model.limit.context if model.limit.context > 0 else 0,
                 iteration=iteration,
                 has_history=bool(history),
-                actual_usage={
-                    "input_tokens": assistant_msg.tokens_input,
-                    "output_tokens": assistant_msg.tokens_output,
-                    "cache_read_tokens": assistant_msg.tokens_cache_read,
-                    "cache_write_tokens": assistant_msg.tokens_cache_write,
-                    "reasoning_tokens": assistant_msg.tokens_reasoning,
-                    "total_cost": assistant_msg.cost,
-                } if iteration > 0 else None,
+                actual_usage=prev_iter_usage,
             )
             yield PromptEvent(type="context_snapshot", data=snapshot_data)
 
@@ -400,6 +412,17 @@ async def prompt(
 
             all_parts.extend(iteration_parts)
 
+            # === Compute per-iteration token deltas ===
+            iter_input_tokens = assistant_msg.tokens_input - tokens_snap_input
+            prev_iter_usage = {
+                "input_tokens": iter_input_tokens,
+                "output_tokens": assistant_msg.tokens_output - tokens_snap_output,
+                "cache_read_tokens": assistant_msg.tokens_cache_read - tokens_snap_cache_read,
+                "cache_write_tokens": assistant_msg.tokens_cache_write - tokens_snap_cache_write,
+                "reasoning_tokens": assistant_msg.tokens_reasoning - tokens_snap_reasoning,
+                "total_cost": assistant_msg.cost,  # cumulative cost is still useful
+            }
+
             if result == "stop":
                 break
 
@@ -410,6 +433,13 @@ async def prompt(
 
         # Finalize — persist in background (don't block the done event)
         assistant_msg.time_completed = int(time.time() * 1000)
+
+        # context.used = last iteration's input_tokens (= actual context window occupancy)
+        # Fallback to heuristic estimate including system+tools if no API data available.
+        last_iter_input = prev_iter_usage["input_tokens"] if prev_iter_usage else 0
+        fallback_est = (
+            compaction.estimate_messages_tokens(messages) + system_tokens_est + tools_tokens_est
+        )
 
         yield PromptEvent(type="done", data={
             "session_id": session_id,
@@ -422,9 +452,7 @@ async def prompt(
             },
             "cost": assistant_msg.cost,
             "context": {
-                # Prefer actual API input_tokens over heuristic estimate.
-                # input_tokens = the real context window usage from the provider.
-                "used": assistant_msg.tokens_input if assistant_msg.tokens_input > 0 else compaction.estimate_messages_tokens(messages),
+                "used": last_iter_input if last_iter_input > 0 else fallback_est,
                 "limit": model.limit.context,
             },
             "iterations": iterations_done,

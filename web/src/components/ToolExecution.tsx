@@ -28,7 +28,7 @@ export default function ToolExecution({ part }: Props) {
   }
 
   return (
-    <div className="my-3 border border-border-subtle rounded-lg bg-surface-1 overflow-hidden">
+    <div className="my-3 border border-border-subtle rounded-lg bg-surface-1 shadow-card overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-2 w-full px-3 py-2 text-xs hover:bg-surface-2 transition-colors"
@@ -47,23 +47,23 @@ export default function ToolExecution({ part }: Props) {
         <div className="px-3 pb-3 space-y-2 border-t border-border-subtle">
           {input && (
             <div className="mt-2">
-              <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">Input</div>
-              <pre className="text-xs bg-[#0d0f14] p-3 rounded-md border border-border-subtle overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap text-text-secondary font-mono">
+              <div className="text-xs uppercase font-medium text-text-muted tracking-wider mb-1">Input</div>
+              <pre className="text-xs bg-surface-0 p-3 rounded-md border border-border-subtle overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap text-text-secondary font-mono">
                 {typeof input === 'string' ? input : JSON.stringify(input, null, 2)}
               </pre>
             </div>
           )}
           {output && (
             <div>
-              <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">Output</div>
-              <pre className="text-xs bg-[#0d0f14] p-3 rounded-md border border-border-subtle overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap text-text-secondary font-mono">
+              <div className="text-xs uppercase font-medium text-text-muted tracking-wider mb-1">Output</div>
+              <pre className="text-xs bg-surface-0 p-3 rounded-md border border-border-subtle overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap text-text-secondary font-mono">
                 {typeof output === 'string' ? output : JSON.stringify(output, null, 2)}
               </pre>
             </div>
           )}
           {part.state?.error && (
             <div>
-              <div className="text-[11px] uppercase font-medium text-accent-red tracking-wider mb-1">Error</div>
+              <div className="text-xs uppercase font-medium text-accent-red tracking-wider mb-1">Error</div>
               <pre className="text-xs bg-accent-red/5 p-3 rounded-md border border-accent-red/20 text-accent-red whitespace-pre-wrap font-mono">
                 {part.state.error}
               </pre>

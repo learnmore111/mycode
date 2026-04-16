@@ -10,7 +10,6 @@ from opencode.session.compaction import (
     compact,
     estimate_messages_tokens,
     estimate_tokens,
-    is_overflow,
     prune_tool_outputs,
     should_compact,
     _split_by_turns,
@@ -59,12 +58,23 @@ def test_should_compact_zero_context():
     assert should_compact(messages=msgs, model_context=0) is False
 
 
-def test_is_overflow_true():
-    assert is_overflow(tokens={"input": 90000, "output": 10000}, model_context=100000) is True
+def test_should_compact_includes_system_tools_tokens():
+    """should_compact should account for system prompt and tool definition tokens."""
+    # Messages alone are ~33K tokens (under 85K threshold for 100K context)
+    msgs = [{"role": "user", "content": "x" * 100_000}]  # ~33K tokens
+    # Without system/tools overhead: 33K < 85K → False
+    assert should_compact(messages=msgs, model_context=100_000) is False
+    # With system+tools overhead pushing total over threshold
+    assert should_compact(
+        messages=msgs, model_context=100_000,
+        system_tokens=30_000, tools_tokens=25_000,
+    ) is True
 
 
-def test_is_overflow_false():
-    assert is_overflow(tokens={"input": 50000, "output": 10000}, model_context=100000) is False
+def test_should_compact_defaults_backward_compatible():
+    """Calling without system_tokens/tools_tokens should still work."""
+    msgs = [{"role": "user", "content": "x" * 400_000}]
+    assert should_compact(messages=msgs, model_context=100_000) is True
 
 
 def test_prune_tool_outputs_no_tools():

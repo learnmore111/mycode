@@ -23,11 +23,11 @@ function TokenBar({ used, limit, label }: { used: number; limit: number; label?:
   const color = pct < 50 ? 'bg-accent-green' : pct < 75 ? 'bg-accent-amber' : pct < 90 ? 'bg-orange-400' : 'bg-accent-red'
   return (
     <div>
-      {label && <div className="text-[10px] text-text-muted mb-1">{label}</div>}
+      {label && <div className="text-xs text-text-muted mb-1">{label}</div>}
       <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden">
         <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
       </div>
-      <div className="text-[10px] text-text-muted mt-0.5">
+      <div className="text-xs text-text-muted mt-0.5">
         {used.toLocaleString()} / {limit.toLocaleString()} tokens ({pct.toFixed(1)}%)
       </div>
     </div>
@@ -53,7 +53,7 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="border border-border-subtle rounded-lg overflow-hidden">
+    <div className="border border-border-subtle rounded-lg shadow-card overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-surface-2 transition-colors"
@@ -64,11 +64,11 @@ function Section({
         {badge}
         <span className="flex-1" />
         {tokens != null && (
-          <span className="text-[10px] text-text-muted font-mono">{tokens.toLocaleString()} tok</span>
+          <span className="text-xs text-text-muted font-mono">{tokens.toLocaleString()} tok</span>
         )}
         {cacheStatus && (
           <span
-            className={`text-[10px] px-1.5 py-0.5 rounded ${
+            className={`text-xs px-2 py-0.5 rounded ${
               cacheStatus === 'cached' ? 'bg-accent-green/15 text-accent-green' : 'bg-accent-blue/15 text-accent-blue'
             }`}
           >
@@ -95,9 +95,9 @@ function MessageItem({ msg }: { msg: ContextMessageInfo }) {
       : 'text-text-tertiary'
 
   const badges: React.ReactNode[] = []
-  if (msg.is_compaction_summary) badges.push(<span key="c" className="text-[10px] px-1 py-0.5 rounded bg-accent-purple/15 text-accent-purple">压缩摘要</span>)
-  if (msg.is_system_reminder) badges.push(<span key="r" className="text-[10px] px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-400">系统提醒</span>)
-  if (msg.tool_calls?.length) badges.push(<span key="t" className="text-[10px] px-1 py-0.5 rounded bg-orange-500/15 text-orange-400">{msg.tool_calls.length} 工具调用</span>)
+  if (msg.is_compaction_summary) badges.push(<span key="c" className="text-xs px-1 py-0.5 rounded bg-accent-purple/15 text-accent-purple">压缩摘要</span>)
+  if (msg.is_system_reminder) badges.push(<span key="r" className="text-xs px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-400">系统提醒</span>)
+  if (msg.tool_calls?.length) badges.push(<span key="t" className="text-xs px-1 py-0.5 rounded bg-orange-500/15 text-orange-400">{msg.tool_calls.length} 工具调用</span>)
 
   return (
     <div className="border-b border-border-subtle last:border-b-0">
@@ -111,7 +111,7 @@ function MessageItem({ msg }: { msg: ContextMessageInfo }) {
         <span className="text-text-muted">#{msg.index}</span>
         {badges}
         <span className="flex-1" />
-        <span className="text-[10px] text-text-muted font-mono">{msg.estimated_tokens} tok</span>
+        <span className="text-xs text-text-muted font-mono">{msg.estimated_tokens} tok</span>
         <span
           className={`w-1.5 h-1.5 rounded-full ${
             msg.cache_status === 'cached' ? 'bg-accent-green' : 'bg-accent-blue'
@@ -120,11 +120,11 @@ function MessageItem({ msg }: { msg: ContextMessageInfo }) {
       </button>
       {expanded && msg.content && (
         <div className="px-2 pb-2">
-          <pre className="text-[11px] bg-[#0d0f14] rounded-lg p-2 border border-border-subtle overflow-auto max-h-64 whitespace-pre-wrap text-text-secondary leading-relaxed font-mono">
+          <pre className="text-xs bg-surface-0 rounded-lg p-2 border border-border-subtle overflow-auto max-h-64 whitespace-pre-wrap text-text-secondary leading-relaxed font-mono">
             {msg.content_truncated ? msg.content + `\n\n... (${msg.full_length} 字符)` : msg.content}
           </pre>
           {msg.tool_calls?.map((tc) => (
-            <div key={tc.id} className="mt-1 text-[10px] text-text-muted font-mono">
+            <div key={tc.id} className="mt-1 text-xs text-text-muted font-mono">
               → {tc.tool}({tc.args_preview})
             </div>
           ))}
@@ -139,7 +139,7 @@ function CompactionEventItem({ event: evt }: { event: CompactionEvent }) {
   const time = new Date(evt.time_created).toLocaleTimeString()
 
   return (
-    <div className="border border-border-subtle rounded-lg overflow-hidden">
+    <div className="border border-border-subtle rounded-lg shadow-card overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-2 w-full px-3 py-2 text-xs hover:bg-surface-2 transition-colors"
@@ -148,14 +148,14 @@ function CompactionEventItem({ event: evt }: { event: CompactionEvent }) {
         <span className="text-accent-purple">迭代 #{evt.iteration}</span>
         <span className="text-text-muted">{time}</span>
         <span className="flex-1" />
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-red/15 text-accent-red">
+        <span className="text-xs px-2 py-0.5 rounded bg-accent-red/15 text-accent-red">
           -{evt.removed_turn_count} 轮 / -{evt.old_message_tokens.toLocaleString()} tok
         </span>
       </button>
       {expanded && (
         <div className="px-3 pb-3 border-t border-border-subtle space-y-3">
           {/* Metrics */}
-          <div className="flex gap-4 mt-2 text-[10px] text-text-muted">
+          <div className="flex gap-4 mt-2 text-xs text-text-muted">
             <span>移除消息: {evt.old_message_count}</span>
             <span>移除轮次: {evt.removed_turn_count}</span>
             <span>释放 tokens: {evt.old_message_tokens.toLocaleString()}</span>
@@ -164,15 +164,15 @@ function CompactionEventItem({ event: evt }: { event: CompactionEvent }) {
 
           {/* Summary */}
           <div>
-            <div className="text-[10px] text-accent-purple font-medium mb-1">生成的摘要</div>
-            <pre className="text-[11px] bg-[#0d0f14] rounded-lg p-2 border border-accent-purple/20 overflow-auto max-h-48 whitespace-pre-wrap text-text-secondary leading-relaxed font-mono">
+            <div className="text-xs text-accent-purple font-medium mb-1">生成的摘要</div>
+            <pre className="text-xs bg-surface-0 rounded-lg p-2 border border-accent-purple/20 overflow-auto max-h-48 whitespace-pre-wrap text-text-secondary leading-relaxed font-mono">
               {evt.summary}
             </pre>
           </div>
 
           {/* Original messages */}
           <div>
-            <div className="text-[10px] text-accent-red font-medium mb-1">
+            <div className="text-xs text-accent-red font-medium mb-1">
               被压缩的原始消息 ({evt.old_messages.length})
             </div>
             <div className="border border-border-subtle rounded-lg overflow-hidden max-h-96 overflow-y-auto">
@@ -215,11 +215,11 @@ function OldMessageItem({ index, msg, roleIcon, roleColor }: {
         <span className={`font-mono ${roleColor}`}>{msg.role}</span>
         <span className="text-text-muted">#{index}</span>
         <span className="flex-1" />
-        <span className="text-[10px] text-text-muted truncate max-w-[200px]">{preview}</span>
+        <span className="text-xs text-text-muted truncate max-w-[200px]">{preview}</span>
       </button>
       {expanded && msg.content && (
         <div className="px-2 pb-2">
-          <pre className="text-[11px] bg-[#0d0f14] rounded-lg p-2 border border-border-subtle overflow-auto max-h-64 whitespace-pre-wrap text-text-secondary leading-relaxed font-mono">
+          <pre className="text-xs bg-surface-0 rounded-lg p-2 border border-border-subtle overflow-auto max-h-64 whitespace-pre-wrap text-text-secondary leading-relaxed font-mono">
             {msg.content}
           </pre>
         </div>
@@ -255,7 +255,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
           <Database size={16} className="text-accent-blue" />
           <div className="flex-1">
             <div className="text-sm font-medium text-text-primary">上下文查看器</div>
-            <div className="text-[10px] text-text-muted">
+            <div className="text-xs text-text-muted">
               迭代 #{iteration} · {model}
             </div>
           </div>
@@ -270,7 +270,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
         {/* Token usage bar */}
         <div className="px-4 py-3 border-b border-border-subtle">
           <TokenBar used={summary.total_estimated_tokens} limit={summary.context_limit} label="上下文窗口用量" />
-          <div className="flex gap-4 mt-2 text-[10px]">
+          <div className="flex gap-4 mt-2 text-xs">
             {actual_usage ? (
               <>
                 {actual_usage.cache_read_tokens > 0 && (
@@ -317,7 +317,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
               icon={<Archive size={13} />}
               tokens={compactionEvents.reduce((s, e) => s + e.old_message_tokens, 0)}
               badge={
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-purple/15 text-accent-purple">
+                <span className="text-xs px-2 py-0.5 rounded bg-accent-purple/15 text-accent-purple">
                   共 {compactionEvents.reduce((s, e) => s + e.removed_turn_count, 0)} 轮被压缩
                 </span>
               }
@@ -330,7 +330,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             </Section>
           )}
           {loadingCompaction && (
-            <div className="text-[10px] text-text-muted text-center py-2">加载压缩历史...</div>
+            <div className="text-xs text-text-muted text-center py-2">加载压缩历史...</div>
           )}
 
           {/* System Prompt */}
@@ -340,7 +340,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             tokens={system.estimated_tokens}
             cacheStatus={system.cache_status}
           >
-            <pre className="text-[11px] bg-[#0d0f14] rounded-lg p-2 border border-border-subtle overflow-auto max-h-64 whitespace-pre-wrap text-text-tertiary mt-2 leading-relaxed font-mono">
+            <pre className="text-xs bg-surface-0 rounded-lg p-2 border border-border-subtle overflow-auto max-h-64 whitespace-pre-wrap text-text-tertiary mt-2 leading-relaxed font-mono">
               {system.content.length > 2000
                 ? system.content.slice(0, 2000) + `\n\n... (${system.content.length} 字符)`
                 : system.content}
@@ -356,7 +356,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
           >
             <div className="flex flex-wrap gap-1 mt-2">
               {tools.names.map((name) => (
-                <span key={name} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-tertiary font-mono border border-border-subtle">
+                <span key={name} className="text-xs px-2 py-0.5 rounded bg-surface-2 text-text-tertiary font-mono border border-border-subtle">
                   {name}
                 </span>
               ))}

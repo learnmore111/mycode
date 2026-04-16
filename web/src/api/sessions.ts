@@ -20,6 +20,14 @@ export async function deleteSession(id: string): Promise<void> {
   await apiFetch(`/session/${id}`, { method: 'DELETE' })
 }
 
+export async function restoreSession(id: string): Promise<void> {
+  await apiFetch(`/session/${id}/restore`, { method: 'POST' })
+}
+
+export async function listDeletedSessions(): Promise<Session[]> {
+  return apiFetch<Session[]>('/session/deleted')
+}
+
 export async function getMessages(sessionId: string): Promise<Message[]> {
   return apiFetch<Message[]>(`/session/${sessionId}/messages`)
 }

@@ -17,16 +17,16 @@ export default function PermissionModal({ request, onReply }: Props) {
 
         <div className="p-4 space-y-3">
           <div>
-            <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">操作</div>
+            <div className="text-xs uppercase font-medium text-text-muted tracking-wider mb-1">操作</div>
             <div className="text-sm text-text-primary">{request.permission}</div>
           </div>
 
           {request.patterns.length > 0 && (
             <div>
-              <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">匹配模式</div>
+              <div className="text-xs uppercase font-medium text-text-muted tracking-wider mb-1">匹配模式</div>
               <div className="space-y-1">
                 {request.patterns.map((p, i) => (
-                  <code key={i} className="block text-xs bg-[#0d0f14] px-2 py-1 rounded-md text-text-secondary border border-border-subtle font-mono">
+                  <code key={i} className="block text-sm bg-surface-0 px-3 py-1.5 rounded-md text-text-secondary border border-border-subtle font-mono">
                     {p}
                   </code>
                 ))}
@@ -36,8 +36,8 @@ export default function PermissionModal({ request, onReply }: Props) {
 
           {request.metadata && Object.keys(request.metadata).length > 0 && (
             <div>
-              <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">详情</div>
-              <pre className="text-xs bg-[#0d0f14] p-2 rounded-md max-h-32 overflow-auto text-text-secondary border border-border-subtle font-mono">
+              <div className="text-xs uppercase font-medium text-text-muted tracking-wider mb-1">详情</div>
+              <pre className="text-sm bg-surface-0 p-3 rounded-md max-h-32 overflow-auto text-text-secondary border border-border-subtle font-mono">
                 {JSON.stringify(request.metadata, null, 2)}
               </pre>
             </div>
@@ -47,19 +47,19 @@ export default function PermissionModal({ request, onReply }: Props) {
         <div className="flex gap-2 p-4 border-t border-border-subtle">
           <button
             onClick={() => onReply(request.id, 'reject')}
-            className="flex-1 px-3 py-2 text-sm rounded-lg bg-surface-2 hover:bg-surface-3 text-text-secondary border border-border-subtle transition-colors"
+            className="flex-1 px-3 py-2.5 text-sm rounded-lg bg-surface-2 hover:bg-surface-3 text-text-secondary border border-border-subtle hover:border-border transition-colors"
           >
             拒绝
           </button>
           <button
             onClick={() => onReply(request.id, 'allow')}
-            className="flex-1 px-3 py-2 text-sm rounded-lg bg-accent-blue/10 hover:bg-accent-blue/20 text-accent-blue border border-accent-blue/20 transition-colors"
+            className="flex-1 px-3 py-2.5 text-sm rounded-lg bg-accent-blue/15 hover:bg-accent-blue/25 text-accent-blue border border-accent-blue/25 transition-colors"
           >
             允许一次
           </button>
           <button
             onClick={() => onReply(request.id, 'always')}
-            className="flex-1 px-3 py-2 text-sm rounded-lg bg-accent-green/10 hover:bg-accent-green/20 text-accent-green border border-accent-green/20 transition-colors"
+            className="flex-1 px-3 py-2.5 text-sm rounded-lg bg-accent-green/15 hover:bg-accent-green/25 text-accent-green border border-accent-green/25 transition-colors"
           >
             始终允许
           </button>

@@ -31,6 +31,7 @@ class SessionInfo:
     time_updated: int = 0
     time_compacting: int | None = None
     time_archived: int | None = None
+    visible: bool = True
 
 
 class BusyError(Exception):
@@ -60,6 +61,7 @@ def _from_row(row: SessionTable) -> SessionInfo:
         permission=json.loads(row.permission) if row.permission else None,
         time_created=row.time_created, time_updated=row.time_updated,
         time_compacting=row.time_compacting, time_archived=row.time_archived,
+        visible=bool(row.visible),
     )
 
 
@@ -114,7 +116,7 @@ def list_sessions(*, project_id: str | None = None, limit: int = 100) -> list[Se
     pid = project_id or (ctx.project.id if ctx else None)
     db = get_db_session()
     try:
-        q = db.query(SessionTable)
+        q = db.query(SessionTable).filter(SessionTable.visible == 1)
         if pid:
             q = q.filter(SessionTable.project_id == pid)
         rows = q.order_by(SessionTable.time_updated.desc()).limit(limit).all()
@@ -135,10 +137,14 @@ def touch(session_id: str) -> None:
 
 
 def remove(session_id: str) -> None:
+    """Soft-delete a session (set visible = 0)."""
     db = get_db_session()
     try:
-        db.query(SessionTable).filter(SessionTable.id == session_id).delete()
-        db.commit()
+        row = db.query(SessionTable).filter(SessionTable.id == session_id).first()
+        if row:
+            row.visible = 0
+            row.time_updated = int(time.time() * 1000)
+            db.commit()
     finally:
         db.close()
     # Clean up per-session in-memory state
@@ -147,6 +153,35 @@ def remove(session_id: str) -> None:
         clear_todos(session_id)
     except Exception:
         pass
+
+
+def restore(session_id: str) -> None:
+    """Restore a soft-deleted session (set visible = 1)."""
+    db = get_db_session()
+    try:
+        row = db.query(SessionTable).filter(SessionTable.id == session_id).first()
+        if not row:
+            raise KeyError(f"Session not found: {session_id}")
+        row.visible = 1
+        row.time_updated = int(time.time() * 1000)
+        db.commit()
+    finally:
+        db.close()
+
+
+def list_deleted(*, project_id: str | None = None, limit: int = 100) -> list[SessionInfo]:
+    """List soft-deleted sessions."""
+    ctx = current_or_none()
+    pid = project_id or (ctx.project.id if ctx else None)
+    db = get_db_session()
+    try:
+        q = db.query(SessionTable).filter(SessionTable.visible == 0)
+        if pid:
+            q = q.filter(SessionTable.project_id == pid)
+        rows = q.order_by(SessionTable.time_updated.desc()).limit(limit).all()
+        return [_from_row(r) for r in rows]
+    finally:
+        db.close()
 
 
 def set_title(session_id: str, title: str) -> None:

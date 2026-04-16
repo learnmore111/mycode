@@ -16,11 +16,11 @@ export default function MessageBubble({ message }: Props) {
       {/* Avatar */}
       <div className="flex-shrink-0 mt-0.5">
         {isUser ? (
-          <div className="w-7 h-7 rounded-md bg-surface-3 flex items-center justify-center">
-            <User size={14} className="text-text-secondary" />
+          <div className="w-7 h-7 rounded-lg bg-surface-3 border border-border-subtle flex items-center justify-center">
+            <User size={14} className="text-text-tertiary" />
           </div>
         ) : (
-          <div className="w-7 h-7 rounded-md bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center shadow-glow-purple">
             <Bot size={14} className="text-white" />
           </div>
         )}
@@ -43,7 +43,7 @@ export default function MessageBubble({ message }: Props) {
                 return <ToolExecution key={part.id} part={part} />
               case 'reasoning':
                 return (
-                  <div key={part.id} className="text-sm text-text-tertiary italic border-l-2 border-accent-purple/30 pl-3 my-2">
+                  <div key={part.id} className="text-sm text-text-tertiary italic border-l-2 border-accent-purple/50 pl-3 my-2">
                     {part.content}
                   </div>
                 )

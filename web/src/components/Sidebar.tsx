@@ -1,18 +1,21 @@
-import { Plus, Trash2, MessageSquare, Loader2, PanelLeftClose, PanelLeft, Search } from 'lucide-react'
+import { Plus, Trash2, RotateCcw, MessageSquare, Loader2, PanelLeftClose, PanelLeft, ChevronDown, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 import type { Session } from '../types'
 
 interface Props {
   sessions: Session[]
+  deletedSessions: Session[]
   activeId: string | null
   onSelect: (id: string) => void
   onCreate: () => void
   onDelete: (id: string) => void
+  onRestore: (id: string) => void
   loading: boolean
 }
 
-export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDelete, loading }: Props) {
+export default function Sidebar({ sessions, deletedSessions, activeId, onSelect, onCreate, onDelete, onRestore, loading }: Props) {
   const [collapsed, setCollapsed] = useState(false)
+  const [showDeleted, setShowDeleted] = useState(false)
 
   if (collapsed) {
     return (
@@ -65,7 +68,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
 
       {/* Section label */}
       <div className="px-4 pt-2 pb-1">
-        <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">Sessions</span>
+        <span className="text-xs font-medium text-text-muted uppercase tracking-wider">Sessions</span>
       </div>
 
       {/* Session list */}
@@ -84,15 +87,15 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
             <div
               key={s.id}
               onClick={() => onSelect(s.id)}
-              className={`group flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer transition-all relative ${
+              className={`group flex items-center gap-2 px-2.5 py-2.5 rounded-lg cursor-pointer transition-all relative ${
                 s.id === activeId
-                  ? 'bg-surface-2 text-text-primary'
-                  : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary'
+                  ? 'bg-surface-2 text-text-primary shadow-card'
+                  : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
               }`}
             >
               {/* Active indicator bar */}
               {s.id === activeId && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-accent-blue rounded-r" />
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-accent-blue rounded-r" />
               )}
               <MessageSquare size={13} className="flex-shrink-0 opacity-60" />
               <span className="flex-1 truncate text-xs">{s.title || '未命名会话'}</span>
@@ -108,6 +111,48 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
               </button>
             </div>
           ))
+        )}
+
+        {/* Deleted sessions section */}
+        {deletedSessions.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-border-subtle">
+            <button
+              onClick={() => setShowDeleted(!showDeleted)}
+              className="flex items-center gap-1.5 px-2 py-1 w-full text-left"
+            >
+              {showDeleted
+                ? <ChevronDown size={12} className="text-text-muted" />
+                : <ChevronRight size={12} className="text-text-muted" />
+              }
+              <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+                已删除 ({deletedSessions.length})
+              </span>
+            </button>
+
+            {showDeleted && (
+              <div className="mt-1 space-y-0.5">
+                {deletedSessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className="group flex items-center gap-2 px-2 py-1.5 rounded-md text-text-muted hover:bg-surface-1 transition-all"
+                  >
+                    <MessageSquare size={13} className="flex-shrink-0 opacity-40" />
+                    <span className="flex-1 truncate text-xs opacity-60">{s.title || '未命名会话'}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onRestore(s.id)
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-surface-3 text-text-muted hover:text-accent-green transition-all"
+                      title="恢复"
+                    >
+                      <RotateCcw size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </aside>

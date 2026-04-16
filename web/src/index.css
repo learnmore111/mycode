@@ -7,89 +7,101 @@
 /* ---- Scrollbars ---- */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2a2d36 transparent;
+  scrollbar-color: #383b45 transparent;
 }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background-color: #2a2d36;
+  background-color: #383b45;
   border-radius: 3px;
 }
-::-webkit-scrollbar-thumb:hover { background-color: #3a3d46; }
+::-webkit-scrollbar-thumb:hover { background-color: #4a4d56; }
 
 /* ---- Base ---- */
 body {
-  background: #0a0a0f;
+  background: #0c0d12;
   color: #e4e4e7;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 /* ---- Selection ---- */
 ::selection {
-  background: rgba(59, 130, 246, 0.3);
+  background: rgba(99, 102, 241, 0.35);
   color: #e4e4e7;
 }
 
 /* ---- Input bar ---- */
 .input-bar {
-  background: #16181d;
-  border: 1px solid #2a2d36;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  background: #1a1c23;
+  border: 1px solid #383b45;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .input-bar:focus-within {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25), 0 2px 8px rgba(0,0,0,0.3);
 }
 
 /* ---- Toolbar button ---- */
 .toolbar-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #71717a;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #8a8a96;
+  border: 1px solid transparent;
   transition: all 0.15s;
   white-space: nowrap;
 }
 .toolbar-btn:hover {
-  background: #1c1e24;
+  background: #22242b;
   color: #a1a1aa;
+  border-color: #383b45;
 }
 .toolbar-btn.active {
   background: #1e3a5f;
   color: #60a5fa;
+  border-color: #3b82f6;
 }
 
 /* ---- Toolbar select ---- */
 .toolbar-select {
   appearance: none;
   background: transparent;
-  border: none;
-  color: #71717a;
-  font-size: 12px;
+  border: 1px solid #2a2d36;
+  color: #8a8a96;
+  font-size: 13px;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
   outline: none;
+  transition: all 0.15s;
 }
-.toolbar-select:hover { background: #1c1e24; color: #a1a1aa; }
-.toolbar-select:focus { background: #1c1e24; }
-.toolbar-select option { background: #16181d; color: #e4e4e7; }
+.toolbar-select:hover {
+  background: #22242b;
+  color: #a1a1aa;
+  border-color: #383b45;
+}
+.toolbar-select:focus {
+  background: #22242b;
+  border-color: #6366f1;
+}
+.toolbar-select option { background: #1a1c23; color: #e4e4e7; }
 
 /* ---- Code block enhancements ---- */
 .prose pre {
-  background: #0d0f14 !important;
-  border-color: #1e2028 !important;
+  background: #14161c !important;
+  border-color: #2a2d36 !important;
   font-size: 13px;
   line-height: 1.6;
 }
 .prose code {
   font-size: 0.9em;
-  padding: 1px 5px;
-  background: #1c1e24;
-  border-radius: 4px;
+  padding: 2px 6px;
+  background: #22242b;
+  border-radius: 5px;
 }
 .prose pre code {
   padding: 0;

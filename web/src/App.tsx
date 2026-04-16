@@ -19,13 +19,15 @@ export default function App() {
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex h-screen bg-[#0a0a0f] text-text-primary">
+    <div className="flex h-screen bg-[#0c0d12] text-text-primary">
       <Sidebar
         sessions={session.sessions}
+        deletedSessions={session.deletedSessions}
         activeId={session.activeId}
         onSelect={session.setActiveId}
         onCreate={session.create}
         onDelete={session.remove}
+        onRestore={session.restore}
         loading={session.loading}
       />
       <ChatArea

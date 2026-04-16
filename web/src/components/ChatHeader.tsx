@@ -24,7 +24,7 @@ export default function ChatHeader({ session, contextSnapshot, onViewContext }: 
       {contextSnapshot && (
         <button
           onClick={onViewContext}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 transition-all"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-surface-2 hover:shadow-glow-blue border border-transparent hover:border-border-subtle transition-all"
           title="查看完整上下文"
         >
           <Database size={13} />

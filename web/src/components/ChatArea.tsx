@@ -84,7 +84,7 @@ export default function ChatArea({
                     setTimeout(() => onSend(s.text), 100)
                   }
                 }}
-                className="flex items-center gap-3 w-full px-4 py-3 rounded-lg text-sm text-text-secondary bg-surface-1 border border-border-subtle hover:bg-surface-2 hover:border-border hover:text-text-primary transition-all text-left"
+                className="flex items-center gap-3 w-full px-4 py-3.5 rounded-lg text-sm text-text-secondary bg-surface-1 border border-border-subtle shadow-card hover:shadow-elevated hover:bg-surface-2 hover:border-indigo-500/30 hover:text-text-primary transition-all text-left"
               >
                 <s.icon size={16} className={s.color} />
                 {s.text}

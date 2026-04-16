@@ -18,6 +18,7 @@ export interface Session {
   parentID?: string
   summary?: string
   share?: string
+  visible?: boolean
   time: TimeInfo
 }
 

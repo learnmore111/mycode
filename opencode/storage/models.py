@@ -82,6 +82,7 @@ class SessionTable(Base):
     time_updated = Column(Integer, nullable=False, index=True)
     time_compacting = Column(Integer, nullable=True)
     time_archived = Column(Integer, nullable=True)
+    visible = Column(Integer, nullable=False, server_default="1", default=1)
 
 
 class MessageTable(Base):

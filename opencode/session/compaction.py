@@ -80,19 +80,23 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     return total
 
 
-def should_compact(*, messages: list[dict[str, Any]], model_context: int) -> bool:
-    """Check if the conversation needs compaction based on message token estimate."""
+def should_compact(
+    *,
+    messages: list[dict[str, Any]],
+    model_context: int,
+    system_tokens: int = 0,
+    tools_tokens: int = 0,
+) -> bool:
+    """Check if the conversation needs compaction based on total context estimate.
+
+    Includes system prompt and tool definitions in the estimate, since they
+    occupy context window space alongside the messages.
+    """
     if model_context <= 0:
         return False
-    est = estimate_messages_tokens(messages)
+    est = estimate_messages_tokens(messages) + system_tokens + tools_tokens
     threshold = int(model_context * OVERFLOW_RATIO)
     return est > threshold
-
-
-def is_overflow(*, tokens: dict[str, int], model_context: int) -> bool:
-    """Check if token usage exceeds model context limit."""
-    total = tokens.get("input", 0) + tokens.get("output", 0)
-    return total > model_context * OVERFLOW_RATIO
 
 
 def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:

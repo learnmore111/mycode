@@ -10,8 +10,10 @@ from sse_starlette.sse import EventSourceResponse
 from opencode.session.prompt import PromptInput, prompt
 from opencode.session.session import (
     SessionInfo,
+    list_deleted,
     list_sessions,
     remove,
+    restore,
     set_title,
 )
 from opencode.session.session import create as create_session
@@ -53,6 +55,7 @@ def _session_json(s: SessionInfo) -> dict[str, Any]:
         "id": s.id, "slug": s.slug, "projectID": s.project_id,
         "directory": s.directory, "title": s.title, "version": s.version,
         "parentID": s.parent_id, "summary": s.summary, "share": s.share,
+        "visible": s.visible,
         "time": {"created": s.time_created, "updated": s.time_updated,
                  "compacting": s.time_compacting, "archived": s.time_archived},
     }
@@ -63,6 +66,15 @@ async def session_list(directory: str = Query(default="."), limit: int = Query(d
     from opencode.project.instance import provide
     async def _fn():
         return [_session_json(s) for s in list_sessions(limit=limit)]
+    return await provide(directory, _fn)
+
+
+@router.get("/deleted")
+async def session_list_deleted(directory: str = Query(default="."), limit: int = Query(default=100)):
+    """List soft-deleted sessions."""
+    from opencode.project.instance import provide
+    async def _fn():
+        return [_session_json(s) for s in list_deleted(limit=limit)]
     return await provide(directory, _fn)
 
 
@@ -93,6 +105,19 @@ async def session_delete(session_id: str, directory: str = Query(default=".")):
     async def _fn():
         remove(session_id)
         return {"ok": True}
+    return await provide(directory, _fn)
+
+
+@router.post("/{session_id}/restore")
+async def session_restore(session_id: str, directory: str = Query(default=".")):
+    """Restore a soft-deleted session."""
+    from opencode.project.instance import provide
+    async def _fn():
+        try:
+            restore(session_id)
+            return {"ok": True}
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
     return await provide(directory, _fn)
 
 
@@ -223,7 +248,7 @@ async def session_abort(session_id: str):
 @router.get("/{session_id}/compaction-events")
 async def session_compaction_events(session_id: str, directory: str = Query(default=".")):
     """Get all compaction events for a session.
-    
+
     Returns a list of compaction events with metrics and summaries of old messages.
     This allows users to see what was compressed during the session.
     """
