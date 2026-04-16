@@ -22,6 +22,59 @@ export function useChat(sessionId: string | null) {
     try {
       const msgs = await getMessages(sessionId)
       setMessages(msgs)
+
+      // Build context snapshot from last assistant message's real token data
+      const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant' && m.tokens)
+      if (lastAssistant?.tokens?.input) {
+        setContextSnapshot((prev) => {
+          // Sum up token usage across all assistant messages in this session
+          const totalInput = lastAssistant.tokens?.input ?? 0
+          const totalOutput = msgs
+            .filter((m) => m.role === 'assistant')
+            .reduce((s, m) => s + (m.tokens?.output ?? 0), 0)
+          const totalCost = msgs
+            .filter((m) => m.role === 'assistant')
+            .reduce((s, m) => s + (m.cost ?? 0), 0)
+          const cacheRead = lastAssistant.tokens?.cacheRead ?? 0
+
+          // Use previous snapshot as base if available, otherwise build minimal one
+          const base = prev ?? {
+            system: { content: '', estimated_tokens: 0, cache_status: 'cached' },
+            tools: { count: 0, names: [], estimated_tokens: 0, cache_status: 'cached' },
+            messages: [],
+            compaction: { has_boundary: false, boundary_index: null },
+            summary: {
+              total_estimated_tokens: 0,
+              cached_estimated_tokens: 0,
+              new_estimated_tokens: 0,
+              context_limit: 0,
+              usage_percent: 0,
+            },
+            actual_usage: null,
+            iteration: 0,
+            model: lastAssistant.modelId ? `${lastAssistant.providerId ?? ''}/${lastAssistant.modelId}` : 'unknown',
+          }
+
+          const limit = base.summary.context_limit || 131072 // fallback
+          return {
+            ...base,
+            summary: {
+              ...base.summary,
+              total_estimated_tokens: totalInput,
+              context_limit: limit,
+              usage_percent: limit > 0 ? Math.round(1000 * totalInput / limit) / 10 : 0,
+            },
+            actual_usage: {
+              input_tokens: totalInput,
+              output_tokens: totalOutput,
+              cache_read_tokens: cacheRead,
+              cache_write_tokens: lastAssistant.tokens?.cacheWrite ?? 0,
+              reasoning_tokens: lastAssistant.tokens?.reasoning ?? 0,
+              total_cost: totalCost,
+            },
+          }
+        })
+      }
     } catch (err) {
       console.error('Failed to load messages', err)
     } finally {

@@ -422,10 +422,9 @@ async def prompt(
             },
             "cost": assistant_msg.cost,
             "context": {
-                # "used" = estimated tokens of the current message history
-                # This represents how much of the context window is occupied,
-                # NOT the cumulative API token consumption across iterations.
-                "used": compaction.estimate_messages_tokens(messages),
+                # Prefer actual API input_tokens over heuristic estimate.
+                # input_tokens = the real context window usage from the provider.
+                "used": assistant_msg.tokens_input if assistant_msg.tokens_input > 0 else compaction.estimate_messages_tokens(messages),
                 "limit": model.limit.context,
             },
             "iterations": iterations_done,
