@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections import namedtuple
 from typing import TYPE_CHECKING, Any
 
 from opencode.session import llm as llmmod
@@ -23,6 +24,14 @@ if TYPE_CHECKING:
     from opencode.provider.schema import Model
 
 logger = logmod.create(service="session.compaction")
+
+CompactionMetrics = namedtuple('CompactionMetrics', [
+    'old_message_count',     # number of old messages that were summarized
+    'old_message_tokens',    # estimated tokens in old messages
+    'summary_length',        # length of the generated summary
+    'removed_turn_count',    # number of user turns removed
+])
+
 
 PRUNE_MINIMUM = 20_000  # tokens
 PRUNE_PROTECT = 40_000  # tokens
@@ -44,8 +53,14 @@ what needs to be done next, and key user requests or constraints."""
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate (1 token ≈ 4 chars for English)."""
-    return len(text) // 4
+    """Rough token estimate.
+
+    Uses byte length for accuracy across languages:
+    - English: ~1 token per 4 bytes (ASCII, 1 byte/char)
+    - Chinese/Japanese/Korean: ~1 token per 3 bytes (UTF-8, 3 bytes/char ≈ 1-2 tokens/char)
+    - Mixed text: byte-based estimate handles both naturally
+    """
+    return len(text.encode("utf-8")) // 3
 
 
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
@@ -338,4 +353,11 @@ async def compact(
     )
 
     # Step 7: assemble compacted conversation
-    return _build_compact_result(summary, recent)
+    metrics = CompactionMetrics(
+        old_message_count=len(old),
+        old_message_tokens=estimate_messages_tokens(old),
+        summary_length=len(summary),
+        removed_turn_count=sum(1 for m in old if m.get("role") == "user"),
+    )
+    result = _build_compact_result(summary, recent)
+    return result, metrics

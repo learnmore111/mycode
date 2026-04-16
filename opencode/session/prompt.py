@@ -244,13 +244,20 @@ async def prompt(
             step = guard.begin_step(iteration)
 
             # Context compaction check
-            context_limit = model.limit.context if model.limit.context > 0 else 0
+            # Fallback to 32K if model context limit is not configured (prevents unbounded growth)
+            context_limit = model.limit.context if model.limit.context > 0 else 32_000
             if context_limit > 0 and compaction.should_compact(
                 messages=messages, model_context=context_limit
             ):
                 logger.info("context overflow detected, compacting")
-                messages = await compaction.compact(messages, **compact_kwargs)
-                yield PromptEvent(type="compact", data={"session_id": session_id})
+                messages, compact_metrics = await compaction.compact(messages, **compact_kwargs)
+                yield PromptEvent(type="compact", data={
+                    "session_id": session_id,
+                    "old_message_count": compact_metrics.old_message_count,
+                    "old_message_tokens": compact_metrics.old_message_tokens,
+                    "summary_length": compact_metrics.summary_length,
+                    "removed_turn_count": compact_metrics.removed_turn_count,
+                })
 
             # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
             reminder_text, prev_skills = _build_system_reminders(prompt_input, prev_skills)
@@ -272,7 +279,7 @@ async def prompt(
             )
 
             # === Context snapshot for UI context viewer ===
-            yield PromptEvent(type="context_snapshot", data=build_context_snapshot(
+            snapshot_data = build_context_snapshot(
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
                 messages=iter_messages,
@@ -288,7 +295,8 @@ async def prompt(
                     "reasoning_tokens": assistant_msg.tokens_reasoning,
                     "total_cost": assistant_msg.cost,
                 } if iteration > 0 else None,
-            ))
+            )
+            yield PromptEvent(type="context_snapshot", data=snapshot_data)
 
             # === Debug: dump input before LLM call ===
             if debug:
