@@ -409,3 +409,33 @@ def test_compact_metrics_zero_when_no_compaction():
     assert metrics.old_message_count == 0
     assert metrics.removed_turn_count == 0
     assert result == msgs
+
+
+def test_compact_metrics_include_old_messages():
+    """CompactionMetrics should include old_messages and summary for audit trail."""
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "user", "content": "q4"},
+        {"role": "assistant", "content": "a4"},
+    ]
+
+    kwargs = _make_compact_kwargs()
+
+    with (
+        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Test summary")),
+        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+    ):
+        result, metrics = asyncio.run(compact(msgs, **kwargs))
+
+    # Verify old_messages is included
+    assert len(metrics.old_messages) == 2  # First 2 messages
+    assert metrics.old_messages[0]["content"] == "q1"
+    
+    # Verify summary is included
+    assert metrics.summary == "Test summary"
+    assert metrics.summary_length == len("Test summary")

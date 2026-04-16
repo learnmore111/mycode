@@ -193,8 +193,12 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
         abort_event = _aio.Event()
         set_abort_signal(session_id, abort_event)
         try:
+            # Rebuild conversation history from DB so the model sees prior turns
+            from opencode.session.message import rebuild_history_from_db
+            history = rebuild_history_from_db(session_id)
+
             inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
-            async for event in prompt(inp, bus):
+            async for event in prompt(inp, bus, history=history):
                 yield {"event": event.type, "data": json.dumps(event.data)}
         except _aio.CancelledError:
             logger.debug("SSE stream cancelled by client", session_id=session_id)
@@ -214,3 +218,17 @@ async def session_abort(session_id: str):
         signal.set()
         return {"ok": True, "aborted": True}
     return {"ok": True, "aborted": False, "message": "No active processing for this session"}
+
+
+@router.get("/{session_id}/compaction-events")
+async def session_compaction_events(session_id: str, directory: str = Query(default=".")):
+    """Get all compaction events for a session.
+    
+    Returns a list of compaction events with metrics and summaries of old messages.
+    This allows users to see what was compressed during the session.
+    """
+    async def _fn():
+        from opencode.session.message import get_compaction_events
+        return get_compaction_events(session_id)
+
+    return await _fn()

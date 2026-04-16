@@ -435,3 +435,171 @@ def persist_turn(session_id: str, msg: MessageInfo, parts: list[Part]) -> None:
         raise
     finally:
         db.close()
+
+
+def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
+    """Reconstruct OpenAI-format conversation history from the database.
+
+    Loads all messages and parts for a session and converts them into the
+    ``[{"role": ..., "content": ...}, ...]`` format expected by ``prompt(history=...)``.
+
+    Skips system messages (they are re-injected by prompt.py at runtime).
+
+    Returns an empty list if the session has no messages yet.
+    """
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import MessageTable, PartTable
+
+    db = get_db_session()
+    try:
+        messages_rows = (
+            db.query(MessageTable)
+            .filter(MessageTable.session_id == session_id)
+            .order_by(MessageTable.time_created)
+            .all()
+        )
+        if not messages_rows:
+            return []
+
+        message_ids = [m.id for m in messages_rows]
+        parts_rows = (
+            db.query(PartTable)
+            .filter(PartTable.message_id.in_(message_ids))
+            .order_by(PartTable.time_created)
+            .all()
+        )
+
+        # Group parts by message_id
+        parts_by_msg: dict[str, list] = {}
+        for p in parts_rows:
+            parts_by_msg.setdefault(p.message_id, []).append(p)
+
+        result: list[dict[str, Any]] = []
+
+        for msg in messages_rows:
+            # Skip system messages — they are re-injected at runtime
+            if msg.role == "system":
+                continue
+
+            msg_parts = parts_by_msg.get(msg.id, [])
+            text_parts = [p for p in msg_parts if p.type == "text"]
+            tool_parts = [p for p in msg_parts if p.type == "tool"]
+
+            if msg.role == "user":
+                text_content = "".join(p.content or "" for p in text_parts)
+                if text_content:
+                    result.append({"role": "user", "content": text_content})
+
+            elif msg.role == "assistant":
+                text_content = "".join(p.content or "" for p in text_parts)
+
+                if tool_parts:
+                    # Assistant message with tool calls — match processor.build_tool_results_messages() format
+                    tool_calls_list = []
+                    for tp in tool_parts:
+                        state = tp.state or {}
+                        tool_input = state.get("input", {})
+                        tool_calls_list.append({
+                            "id": tp.tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tp.tool,
+                                "arguments": json.dumps(tool_input),
+                            },
+                        })
+
+                    result.append({
+                        "role": "assistant",
+                        "content": text_content or None,
+                        "tool_calls": tool_calls_list,
+                    })
+
+                    # Tool result messages
+                    for tp in tool_parts:
+                        state = tp.state or {}
+                        output = state.get("output", "")
+                        tool_message = state.get("message", "")
+                        if tool_message:
+                            output = f"{output}\n\n{tool_message}"
+                        result.append({
+                            "role": "tool",
+                            "tool_call_id": tp.tool_call_id,
+                            "content": output,
+                        })
+
+                elif text_content:
+                    # Text-only assistant message
+                    result.append({"role": "assistant", "content": text_content})
+
+        return result
+    finally:
+        db.close()
+
+
+def save_compaction_event(
+    session_id: str,
+    iteration: int,
+    metrics: dict[str, int],
+    old_messages: list[dict[str, Any]],
+    summary: str,
+) -> None:
+    """Persist a compaction event with pre-compaction context for audit trail.
+    
+    Stores the metrics and old messages so they can be viewed later.
+    This enables users to understand what was lost during compaction.
+    """
+    import time
+    import uuid
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import CompactionEventTable
+    
+    event_id = f"comp-{uuid.uuid4().hex[:12]}"
+    row = CompactionEventTable(
+        id=event_id,
+        session_id=session_id,
+        iteration=iteration,
+        old_message_count=metrics['old_message_count'],
+        old_message_tokens=metrics['old_message_tokens'],
+        summary_length=metrics['summary_length'],
+        removed_turn_count=metrics['removed_turn_count'],
+        old_messages=old_messages,
+        summary=summary,
+        time_created=int(time.time() * 1000),
+    )
+    
+    db = get_db_session()
+    try:
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
+
+
+def get_compaction_events(session_id: str) -> list[dict[str, Any]]:
+    """Retrieve all compaction events for a session.
+    
+    Returns a list of compaction events with their metrics and summaries.
+    """
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import CompactionEventTable
+    
+    db = get_db_session()
+    try:
+        rows = db.query(CompactionEventTable).filter_by(session_id=session_id).order_by(CompactionEventTable.iteration).all()
+        return [
+            {
+                "id": row.id,
+                "session_id": row.session_id,
+                "iteration": row.iteration,
+                "old_message_count": row.old_message_count,
+                "old_message_tokens": row.old_message_tokens,
+                "summary_length": row.summary_length,
+                "removed_turn_count": row.removed_turn_count,
+                "old_messages": row.old_messages,
+                "summary": row.summary,
+                "time_created": row.time_created,
+            }
+            for row in rows
+        ]
+    finally:
+        db.close()

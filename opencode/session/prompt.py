@@ -258,6 +258,23 @@ async def prompt(
                     "summary_length": compact_metrics.summary_length,
                     "removed_turn_count": compact_metrics.removed_turn_count,
                 })
+                # Save compaction event for audit trail (background)
+                import asyncio as _aio_compact
+                from opencode.session.message import save_compaction_event
+                def _save_compact_event() -> None:
+                    save_compaction_event(
+                        session_id=session_id,
+                        iteration=iteration,
+                        metrics={
+                            'old_message_count': compact_metrics.old_message_count,
+                            'old_message_tokens': compact_metrics.old_message_tokens,
+                            'summary_length': compact_metrics.summary_length,
+                            'removed_turn_count': compact_metrics.removed_turn_count,
+                        },
+                        old_messages=compact_metrics.old_messages,
+                        summary=compact_metrics.summary,
+                    )
+                await _aio_compact.to_thread(_save_compact_event)
 
             # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
             reminder_text, prev_skills = _build_system_reminders(prompt_input, prev_skills)

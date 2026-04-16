@@ -183,3 +183,20 @@ export interface StreamingState {
   parts: StreamingPart[]
   sessionId?: string
 }
+
+// ---- Compaction Events ----
+export interface CompactionEvent {
+  id: string
+  session_id: string
+  iteration: number
+  old_message_count: number
+  old_message_tokens: number
+  summary_length: number
+  removed_turn_count: number
+  old_messages: Array<{
+    role: string
+    content?: string
+  }>
+  summary: string
+  time_created: number
+}

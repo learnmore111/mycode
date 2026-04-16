@@ -30,6 +30,8 @@ CompactionMetrics = namedtuple('CompactionMetrics', [
     'old_message_tokens',    # estimated tokens in old messages
     'summary_length',        # length of the generated summary
     'removed_turn_count',    # number of user turns removed
+    'old_messages',          # the original old messages (for audit trail)
+    'summary',               # the generated summary text
 ])
 
 
@@ -358,6 +360,8 @@ async def compact(
         old_message_tokens=estimate_messages_tokens(old),
         summary_length=len(summary),
         removed_turn_count=sum(1 for m in old if m.get("role") == "user"),
+        old_messages=list(old),
+        summary=summary,
     )
     result = _build_compact_result(summary, recent)
     return result, metrics
