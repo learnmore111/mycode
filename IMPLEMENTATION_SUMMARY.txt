@@ -1,0 +1,188 @@
+═══════════════════════════════════════════════════════════════════════════════
+           COMPACTION FEATURE - COMPLETE 3-PHASE IMPLEMENTATION
+═══════════════════════════════════════════════════════════════════════════════
+
+TOTAL COMMITS: 2 new commits (f2f0cc5, 9c83e18) on top of previous 7
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 1: Frontend Event Handler ✅ COMPLETE
+═══════════════════════════════════════════════════════════════════════════════
+
+Files Modified: 1
+- web/src/hooks/useChat.ts
+
+Changes:
++ Added 'compact' event case handler
++ Logs metrics to console for debugging  
++ Structured for future UI notifications
++ Integrates cleanly with existing switch statement
+
+Impact: Backend compaction events no longer ignored by frontend
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 2: Metrics & Event Enhancement ✅ COMPLETE
+═══════════════════════════════════════════════════════════════════════════════
+
+Files Modified: 4
+- opencode/session/compaction.py
+  + Fixed token estimation for UTF-8 multi-byte chars (÷3 instead of ÷4)
+  + Added CompactionMetrics namedtuple with 4 fields
+  + Changed return from message_list to (message_list, metrics)
+  + Improved accuracy for Chinese, Japanese, Korean text
+
+- opencode/session/prompt.py
+  + Unpacks metrics tuple from compact() call
+  + Includes metrics in compact event payload:
+    * old_message_count
+    * old_message_tokens
+    * summary_length
+    * removed_turn_count
+
+- tests/test_compaction.py
+  + Updated all 3 compact() calls to unpack tuple
+  + Added test_compact_returns_metrics() 
+  + Added test_compact_metrics_zero_when_no_compaction()
+  + Updated token estimates for new calculation
+
+- web/src/hooks/useChat.ts
+  + Enhanced handler to log metrics with types
+  + Console output: removedMessages, freedTokens, summaryLength, removedTurns
+
+Impact: 
+- UI receives real-time compaction metrics
+- Enables performance monitoring
+- Developers can see compression effectiveness
+
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 3: Persist Pre-Compaction Context ✅ COMPLETE
+═══════════════════════════════════════════════════════════════════════════════
+
+Files Modified: 8
+- opencode/storage/models.py (NEW TABLE)
+  + CompactionEventTable schema
+  + Fields: id, session_id, iteration, metrics (4 fields), old_messages (JSON),
+           summary, time_created
+  + Indexed by session_id for efficient queries
+
+- opencode/session/message.py (NEW FUNCTIONS)
+  + save_compaction_event() - persists with full context
+  + get_compaction_events() - retrieves audit trail
+
+- opencode/session/compaction.py (ENHANCED)
+  + CompactionMetrics now includes:
+    * old_messages - full message array
+    * summary - generated summary text
+
+- opencode/session/prompt.py (INTEGRATION)
+  + After yielding compact event:
+    * Calls save_compaction_event() asynchronously
+    * Non-blocking (thread pool)
+    * Full context preserved
+
+- opencode/server/routes/session.py (NEW ENDPOINT)
+  + GET /api/session/{session_id}/compaction-events
+  + Returns complete compaction history
+
+- web/src/api/compaction.ts (NEW MODULE)
+  + getCompactionEvents(sessionId) - fetches from API
+
+- web/src/types/index.ts (NEW TYPE)
+  + CompactionEvent interface - fully typed
+
+- tests/test_compaction.py
+  + test_compact_metrics_include_old_messages() - validates persistence
+
+Impact:
+- Permanent audit trail of all compressions
+- Old messages recoverable for review
+- Users understand what was removed
+- Foundation for UI display of history
+
+═══════════════════════════════════════════════════════════════════════════════
+KEY IMPROVEMENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. VISIBILITY: Backend → Frontend
+   - Compaction no longer silent
+   - Metrics visible to users
+   - Console debugging available
+
+2. ACCOUNTABILITY: Metrics & Persistence
+   - Know exactly what was removed each time
+   - Tokens freed quantified
+   - Turns removed tracked
+
+3. AUDITABILITY: Database Persistence
+   - Complete history stored permanently
+   - Old messages recoverable
+   - Supports future recovery features
+
+4. QUALITY: UTF-8 Token Estimation
+   - Multi-byte character support
+   - Accurate for international text
+   - More reliable compression metrics
+
+═══════════════════════════════════════════════════════════════════════════════
+DATA STRUCTURES
+═══════════════════════════════════════════════════════════════════════════════
+
+CompactionMetrics (namedtuple):
+  - old_message_count: int
+  - old_message_tokens: int
+  - summary_length: int
+  - removed_turn_count: int
+  - old_messages: list[dict]
+  - summary: str
+
+SSE Event (frontend):
+  type: 'compact'
+  data: {
+    session_id: string
+    old_message_count: number
+    old_message_tokens: number
+    summary_length: number
+    removed_turn_count: number
+  }
+
+CompactionEvent (database):
+  id, session_id, iteration, old_message_count, old_message_tokens,
+  summary_length, removed_turn_count, old_messages, summary, time_created
+
+═══════════════════════════════════════════════════════════════════════════════
+TESTING COVERAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+Updated Tests:
+- All compact() callers now unpack tuple (3 locations)
+- Token estimation tests updated for new calculation
+
+New Tests:
+- test_compact_returns_metrics() - Phase 2
+- test_compact_metrics_zero_when_no_compaction() - Phase 2
+- test_compact_metrics_include_old_messages() - Phase 3
+
+═══════════════════════════════════════════════════════════════════════════════
+NEXT STEPS (OPTIONAL)
+═══════════════════════════════════════════════════════════════════════════════
+
+Phase 4 - UI Components:
+- CompactionTimeline component to display history
+- ExpandableCompactionEvent to show old messages
+- Compression effectiveness analytics
+
+Phase 5 - Recovery Features:
+- Undo compaction functionality
+- Selective message preservation
+- Compaction strategy optimization
+
+═══════════════════════════════════════════════════════════════════════════════
+DEPLOYMENT CHECKLIST
+═══════════════════════════════════════════════════════════════════════════════
+
+□ Database Migration - Create CompactionEventTable (SQLAlchemy handles)
+□ New API Endpoint - GET /api/session/{id}/compaction-events
+□ Frontend - Import new types from compaction.ts
+□ No Breaking Changes - Fully backward compatible
+□ Async Safety - No blocking operations in critical path
+
+═══════════════════════════════════════════════════════════════════════════════

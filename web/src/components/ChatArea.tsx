@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Code2, Sparkles } from 'lucide-react'
+import { Code2, Sparkles, Scan, Wrench, Bug, RefreshCw } from 'lucide-react'
 import type { Session, Message, StreamingPart, AgentInfo, ContextSnapshot } from '../types'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
@@ -27,10 +27,10 @@ interface Props {
 }
 
 const SUGGESTIONS = [
-  '分析当前项目的架构和技术栈',
-  '帮我写一个 REST API 接口',
-  '查找并修复代码中的 bug',
-  '重构这段代码，提升可读性',
+  { icon: Scan, text: '分析当前项目的架构和技术栈', color: 'text-accent-blue' },
+  { icon: Wrench, text: '帮我写一个 REST API 接口', color: 'text-accent-green' },
+  { icon: Bug, text: '查找并修复代码中的 bug', color: 'text-accent-amber' },
+  { icon: RefreshCw, text: '重构这段代码，提升可读性', color: 'text-accent-purple' },
 ]
 
 export default function ChatArea({
@@ -53,6 +53,7 @@ export default function ChatArea({
   contextSnapshot,
 }: Props) {
   const [showContext, setShowContext] = useState(false)
+
   // Welcome screen — no active session
   if (!session) {
     return (
@@ -60,37 +61,35 @@ export default function ChatArea({
         {/* Center content */}
         <div className="flex-1 flex flex-col items-center justify-center px-6">
           {/* Logo + Title */}
-          <div className="mb-3">
-            <div className="w-14 h-14 rounded-2xl bg-white/10 backdrop-blur flex items-center justify-center border border-white/10">
-              <Code2 size={28} className="text-blue-300" />
+          <div className="mb-4">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center shadow-elevated">
+              <Code2 size={24} className="text-white" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">你说，MyCode 来创造</h1>
-          <p className="text-white/45 text-sm mb-10">智慧捕捉分析需求，构建全新完整应用，持续迭代业务存量</p>
+          <h1 className="text-xl font-semibold text-text-primary mb-2 tracking-tight">你说，MyCode 来创造</h1>
+          <p className="text-text-tertiary text-sm mb-8">智慧捕捉分析需求，构建全新完整应用，持续迭代业务存量</p>
 
           {/* Suggestions */}
-          <div className="glass-card rounded-2xl p-5 max-w-lg w-full">
-            <div className="flex items-center gap-2 text-white/50 text-xs mb-3">
+          <div className="max-w-lg w-full space-y-2">
+            <div className="flex items-center gap-2 text-text-muted text-xs mb-3">
               <Sparkles size={13} />
-              <span>不知道从哪里开始？试试这些：</span>
+              <span>不知道从哪里开始？试试这些</span>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {SUGGESTIONS.map((s, i) => (
-                <button
-                  key={i}
-                  onClick={async () => {
-                    const sess = await onCreate()
-                    if (sess) {
-                      // Small delay to let session activate
-                      setTimeout(() => onSend(s), 100)
-                    }
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs text-white/60 bg-white/5 hover:bg-white/10 hover:text-white/80 border border-white/8 transition-all"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
+            {SUGGESTIONS.map((s, i) => (
+              <button
+                key={i}
+                onClick={async () => {
+                  const sess = await onCreate()
+                  if (sess) {
+                    setTimeout(() => onSend(s.text), 100)
+                  }
+                }}
+                className="flex items-center gap-3 w-full px-4 py-3 rounded-lg text-sm text-text-secondary bg-surface-1 border border-border-subtle hover:bg-surface-2 hover:border-border hover:text-text-primary transition-all text-left"
+              >
+                <s.icon size={16} className={s.color} />
+                {s.text}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -139,7 +138,7 @@ export default function ChatArea({
         loadingHistory={loadingHistory}
       />
       {error && (
-        <div className="mx-4 mb-2 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-300 text-sm">
+        <div className="mx-4 mb-2 px-3 py-2 bg-accent-red/10 border border-accent-red/20 rounded-lg text-accent-red text-sm">
           {error}
         </div>
       )}
@@ -157,7 +156,7 @@ export default function ChatArea({
         />
       </div>
       {showContext && contextSnapshot && (
-        <ContextViewer snapshot={contextSnapshot} onClose={() => setShowContext(false)} />
+        <ContextViewer snapshot={contextSnapshot} sessionId={session.id} onClose={() => setShowContext(false)} />
       )}
     </div>
   )

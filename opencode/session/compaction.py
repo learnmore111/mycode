@@ -276,7 +276,7 @@ async def compact(
     model: Model,
     api_key: str | None = None,
     api_base: str | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], CompactionMetrics]:
     """Compact conversation history using sliding-window + summary strategy.
 
     Cache-friendly pipeline:
@@ -287,13 +287,18 @@ async def compact(
     4. Call the LLM with the **same system prompt + tools** as the main agent
        so the API prefix cache is shared.
     5. Extract the ``<summary>`` block, strip ``<analysis>`` scratchpad.
-    6. Return: ``[user_summary_msg] + recent_turns``.
+    6. Return: ``([user_summary_msg] + recent_turns, metrics)``.
     """
+    _empty_metrics = CompactionMetrics(
+        old_message_count=0, old_message_tokens=0, summary_length=0,
+        removed_turn_count=0, old_messages=[], summary="",
+    )
+
     # Step 1: prune tool outputs (in-place on the original messages)
     messages, freed = prune_tool_outputs(messages)
     if freed > PRUNE_MINIMUM:
         logger.info("pruning freed enough tokens, skipping full compaction", freed=freed)
-        return messages
+        return messages, _empty_metrics
 
     # Step 2: split into old / recent
     old, recent = _split_by_turns(messages, keep_turns=COMPACT_KEEP_TURNS)
@@ -303,9 +308,9 @@ async def compact(
         pruned_again, freed_again = prune_tool_outputs(messages)
         if freed_again > 0:
             logger.info("no old turns to compact, but pruned more tool outputs", freed=freed_again)
-            return pruned_again
+            return pruned_again, _empty_metrics
         logger.info("no old turns to compact, returning as-is")
-        return messages
+        return messages, _empty_metrics
 
     # Step 3: truncate tool outputs in old messages for the summary call
     truncated_old = _truncate_tool_outputs_for_summary(old)
@@ -336,14 +341,14 @@ async def compact(
                 summary_text += event.text
             elif isinstance(event, llmmod.ErrorEvent):
                 logger.error("compaction LLM stream error", error=event.error)
-                return messages  # fallback: return pruned but unsummarised
+                return messages, _empty_metrics  # fallback: return pruned but unsummarised
     except Exception as e:
         logger.error("compaction LLM call failed", error=str(e))
-        return messages  # fallback
+        return messages, _empty_metrics  # fallback
 
     if not summary_text.strip():
         logger.warn("compaction produced empty summary")
-        return messages
+        return messages, _empty_metrics
 
     # Step 6: extract <summary> block, strip <analysis> scratchpad
     summary = _extract_summary(summary_text)

@@ -14,3 +14,5 @@ opencode.jsonc
 .opencode/
 kimi-cli
 agent-mem-note
+node_modules/
+web/dist/

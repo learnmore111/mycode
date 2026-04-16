@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { Session } from '../types'
-import { listSessions, createSession, deleteSession } from '../api/sessions'
+import { listSessions, createSession } from '../api/sessions'
 
 export function useSession() {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -30,8 +30,8 @@ export function useSession() {
   }, [])
 
   const remove = useCallback(
-    async (id: string) => {
-      await deleteSession(id)
+    (id: string) => {
+      // Only remove from UI display and clear active state; do NOT delete from database
       setSessions((prev) => prev.filter((s) => s.id !== id))
       if (activeId === id) setActiveId(null)
     },

@@ -66,10 +66,11 @@ class CreateSkillTool(CallableTool[CreateSkillParams]):
         inst = current_or_none()
         base = inst.directory if inst else os.getcwd()
 
-        if scope == "global":
-            skills_dir = Path.home() / ".opencode" / "skills"
-        else:  # project
-            skills_dir = Path(base) / ".opencode" / "skills"
+        skills_dir = (
+            Path.home() / ".opencode" / "skills"
+            if scope == "global"
+            else Path(base) / ".opencode" / "skills"
+        )
 
         # Ensure directory exists
         skills_dir.mkdir(parents=True, exist_ok=True)

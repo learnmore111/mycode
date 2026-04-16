@@ -16,55 +16,55 @@ export default function ToolExecution({ part }: Props) {
   const StatusIcon = () => {
     switch (status) {
       case 'running':
-        return <Loader2 size={12} className="animate-spin text-yellow-300" />
+        return <Loader2 size={12} className="animate-spin text-accent-amber" />
       case 'completed':
       case 'success':
-        return <CheckCircle2 size={12} className="text-green-400" />
+        return <CheckCircle2 size={12} className="text-accent-green" />
       case 'error':
-        return <XCircle size={12} className="text-red-400" />
+        return <XCircle size={12} className="text-accent-red" />
       default:
-        return <Terminal size={12} className="text-white/40" />
+        return <Terminal size={12} className="text-text-muted" />
     }
   }
 
   return (
-    <div className="my-2 border border-white/10 rounded-lg bg-black/20 overflow-hidden">
+    <div className="my-3 border border-border-subtle rounded-lg bg-surface-1 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2 text-xs hover:bg-white/5 transition-colors"
+        className="flex items-center gap-2 w-full px-3 py-2 text-xs hover:bg-surface-2 transition-colors"
       >
-        {expanded ? <ChevronDown size={12} className="text-white/40" /> : <ChevronRight size={12} className="text-white/40" />}
+        {expanded ? <ChevronDown size={12} className="text-text-muted" /> : <ChevronRight size={12} className="text-text-muted" />}
         <StatusIcon />
-        <span className="font-mono text-white/70">{toolName}</span>
+        <span className="font-mono text-sm text-text-secondary">{toolName}</span>
         {!expanded && input && (
-          <span className="text-white/30 truncate ml-2">
+          <span className="text-text-muted truncate ml-2 font-mono text-xs">
             {typeof input === 'string' ? input : JSON.stringify(input).slice(0, 60)}
           </span>
         )}
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 space-y-2">
+        <div className="px-3 pb-3 space-y-2 border-t border-border-subtle">
           {input && (
-            <div>
-              <div className="text-[10px] uppercase text-white/30 mb-1">Input</div>
-              <pre className="text-xs bg-black/30 p-2 rounded border border-white/5 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap text-white/70">
+            <div className="mt-2">
+              <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">Input</div>
+              <pre className="text-xs bg-[#0d0f14] p-3 rounded-md border border-border-subtle overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap text-text-secondary font-mono">
                 {typeof input === 'string' ? input : JSON.stringify(input, null, 2)}
               </pre>
             </div>
           )}
           {output && (
             <div>
-              <div className="text-[10px] uppercase text-white/30 mb-1">Output</div>
-              <pre className="text-xs bg-black/30 p-2 rounded border border-white/5 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap text-white/70">
+              <div className="text-[11px] uppercase font-medium text-text-muted tracking-wider mb-1">Output</div>
+              <pre className="text-xs bg-[#0d0f14] p-3 rounded-md border border-border-subtle overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap text-text-secondary font-mono">
                 {typeof output === 'string' ? output : JSON.stringify(output, null, 2)}
               </pre>
             </div>
           )}
           {part.state?.error && (
             <div>
-              <div className="text-[10px] uppercase text-red-400 mb-1">Error</div>
-              <pre className="text-xs bg-red-500/10 p-2 rounded border border-red-500/20 text-red-300 whitespace-pre-wrap">
+              <div className="text-[11px] uppercase font-medium text-accent-red tracking-wider mb-1">Error</div>
+              <pre className="text-xs bg-accent-red/5 p-3 rounded-md border border-accent-red/20 text-accent-red whitespace-pre-wrap font-mono">
                 {part.state.error}
               </pre>
             </div>

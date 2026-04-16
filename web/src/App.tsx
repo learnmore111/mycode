@@ -19,7 +19,7 @@ export default function App() {
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex h-screen bg-gradient-main text-gray-100">
+    <div className="flex h-screen bg-[#0a0a0f] text-text-primary">
       <Sidebar
         sessions={session.sessions}
         activeId={session.activeId}
