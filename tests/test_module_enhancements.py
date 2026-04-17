@@ -20,7 +20,6 @@ from opencode.session.message import (
     UserMessage,
     create_system_message,
     create_user_message,
-    get_messages_after_compact_boundary,
     normalize_messages_for_api,
 )
 
@@ -105,26 +104,6 @@ def test_normalize_include_system():
     assert len(result) == 1
     assert result[0]["role"] == "system"
 
-
-def test_get_messages_after_compact_boundary():
-    messages = [
-        {"role": "user", "content": "old"},
-        {"role": "system", "subtype": "compact_boundary", "content": "[Summary]"},
-        {"role": "user", "content": "new"},
-    ]
-    result = get_messages_after_compact_boundary(messages)
-    assert len(result) == 2
-    assert result[0]["subtype"] == "compact_boundary"
-    assert result[1]["content"] == "new"
-
-
-def test_get_messages_no_boundary():
-    messages = [
-        {"role": "user", "content": "a"},
-        {"role": "assistant", "content": "b"},
-    ]
-    result = get_messages_after_compact_boundary(messages)
-    assert result == messages
 
 
 # ── Memory freshness ───────────────────────────────────────────────

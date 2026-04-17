@@ -8,6 +8,7 @@ Limitations:
   - Only built-in tools can be batched (no MCP or external tools)
   - Batch calls cannot be nested (no batch-inside-batch)
   - Maximum 25 calls per batch
+  - Permission rules are enforced per-call
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
+from opencode.permission.evaluate import evaluate as eval_permission
+from opencode.permission.schema import Rule
 from opencode.tool import registry as tool_registry
 from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 from opencode.util import log as logmod
@@ -37,6 +40,7 @@ class BatchParams(BaseModel):
     """Parameters for the batch tool."""
     description: str = Field(default="batch execution", description="A brief description of what this batch accomplishes")
     calls: list[BatchCallItem] = Field(description="Array of tool calls to execute in parallel", max_length=MAX_BATCH_SIZE)
+    agent_ruleset: list[dict] = Field(default_factory=list, description="Internal: agent permission ruleset (injected by processor)")
 
 
 class BatchTool(CallableTool[BatchParams]):
@@ -48,6 +52,18 @@ class BatchTool(CallableTool[BatchParams]):
         "Each call in the array is executed concurrently via asyncio.gather. "
         "Maximum 25 calls per batch. Only built-in tools are supported (no nested batch or task)."
     )
+
+    def is_read_only(self, args: dict | None = None) -> bool:
+        """Batch may contain mutating tools, so it's not read-only."""
+        return False
+
+    def is_destructive(self, args: dict | None = None) -> bool:
+        """Batch may contain destructive tools."""
+        return False
+
+    def is_concurrency_safe(self, args: dict | None = None) -> bool:
+        """Batch is not safe to run concurrently with other tools."""
+        return False
 
     async def call(self, params: BatchParams, ctx: ToolContext) -> ToolResult:
         calls = params.calls
@@ -67,6 +83,16 @@ class BatchTool(CallableTool[BatchParams]):
                 metadata={"total": len(calls), "succeeded": 0, "failed": 0},
             )
 
+        # Build permission ruleset from context (if available)
+        agent_ruleset: list[Rule] = [
+            Rule(
+                permission=r.get("permission", "*"),
+                pattern=r.get("pattern", "*"),
+                action=r.get("action", "ask"),
+            )
+            for r in params.agent_ruleset
+        ] if params.agent_ruleset else []
+
         # Validate all calls before executing any
         validated: list[tuple[BatchCallItem, object]] = []  # (call_spec, tool_impl)
         errors: list[str] = []
@@ -79,6 +105,14 @@ class BatchTool(CallableTool[BatchParams]):
             if not tool_impl:
                 errors.append(f"[{i}] Unknown tool: {tool_name}")
                 continue
+
+            # Permission check if ruleset is available
+            if agent_ruleset:
+                result = eval_permission(tool_name, "*", agent_ruleset)
+                if result.action != "allow":
+                    errors.append(f"[{i}] Tool '{tool_name}' denied by permission rules (action={result.action})")
+                    continue
+
             validated.append((call_item, tool_impl))
 
         if errors and not validated:

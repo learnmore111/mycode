@@ -14,7 +14,6 @@ from typing import Any, Literal
 
 from opencode.util import ids
 
-
 # ---------------------------------------------------------------------------
 # Message origin tracking
 # ---------------------------------------------------------------------------
@@ -208,7 +207,7 @@ def normalize_messages_for_api(
 
     Performs:
     1. Filter out SystemMessage with subtype='local_command' (never sent to API)
-    2. Filter out compact_boundary markers (internal state only)
+    2. Filter out compact_boundary markers (reserved, internal state only)
     3. Optionally include system messages as user context
     4. Ensure message format is API-compatible
     """
@@ -220,7 +219,7 @@ def normalize_messages_for_api(
         if role == "system" and msg.get("subtype") == "local_command":
             continue
 
-        # Skip compact_boundary markers
+        # Skip compact_boundary markers (reserved for future use)
         if role == "system" and msg.get("subtype") == "compact_boundary":
             continue
 
@@ -235,25 +234,6 @@ def normalize_messages_for_api(
 
         normalized.append(msg)
     return normalized
-
-
-def get_messages_after_compact_boundary(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Return only messages after the last compact_boundary.
-
-    Used by the compaction system: after compaction, a compact_boundary
-    marker is inserted. On next API call, only messages after the boundary
-    are sent (the boundary itself contains the summary).
-    """
-    last_boundary_idx = -1
-    for i, msg in enumerate(messages):
-        if msg.get("role") == "system" and msg.get("subtype") == "compact_boundary":
-            last_boundary_idx = i
-
-    if last_boundary_idx >= 0:
-        return messages[last_boundary_idx:]  # Include boundary (it has the summary)
-    return messages
 
 
 # --------------- Persistence helpers ---------------
@@ -332,7 +312,6 @@ def save_part(part: Part) -> None:
 def save_parts(parts: list[Part]) -> None:
     """Persist multiple parts in a single transaction."""
     from opencode.storage.database import get_session as get_db_session
-    from opencode.storage.models import PartTable
 
     if not parts:
         return
@@ -569,15 +548,16 @@ def save_compaction_event(
     summary: str,
 ) -> None:
     """Persist a compaction event with pre-compaction context for audit trail.
-    
+
     Stores the metrics and old messages so they can be viewed later.
     This enables users to understand what was lost during compaction.
     """
     import time
     import uuid
+
     from opencode.storage.database import get_session as get_db_session
     from opencode.storage.models import CompactionEventTable
-    
+
     event_id = f"comp-{uuid.uuid4().hex[:12]}"
     row = CompactionEventTable(
         id=event_id,
@@ -591,7 +571,7 @@ def save_compaction_event(
         summary=summary,
         time_created=int(time.time() * 1000),
     )
-    
+
     db = get_db_session()
     try:
         db.add(row)
@@ -602,12 +582,12 @@ def save_compaction_event(
 
 def get_compaction_events(session_id: str) -> list[dict[str, Any]]:
     """Retrieve all compaction events for a session.
-    
+
     Returns a list of compaction events with their metrics and summaries.
     """
     from opencode.storage.database import get_session as get_db_session
     from opencode.storage.models import CompactionEventTable
-    
+
     db = get_db_session()
     try:
         rows = db.query(CompactionEventTable).filter_by(session_id=session_id).order_by(CompactionEventTable.iteration).all()
