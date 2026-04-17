@@ -13,6 +13,23 @@ export function useChat(sessionId: string | null) {
   const [contextSnapshot, setContextSnapshot] = useState<ContextSnapshot | null>(null)
   const controllerRef = useRef<AbortController | null>(null)
 
+  const reloadPersistedState = useCallback(async () => {
+    if (!sessionId) return
+
+    const [msgs, snapshot] = await Promise.all([
+      getMessages(sessionId),
+      getContextSnapshot(sessionId).catch((err) => {
+        console.error('Failed to load context snapshot', err)
+        return null
+      }),
+    ])
+
+    setMessages(msgs)
+    if (snapshot) {
+      setContextSnapshot(snapshot)
+    }
+  }, [sessionId])
+
   const loadHistory = useCallback(async () => {
     if (!sessionId) {
       setMessages([])
@@ -21,21 +38,13 @@ export function useChat(sessionId: string | null) {
     }
     setLoadingHistory(true)
     try {
-      const [msgs, snapshot] = await Promise.all([
-        getMessages(sessionId),
-        getContextSnapshot(sessionId).catch((err) => {
-          console.error('Failed to load context snapshot', err)
-          return null
-        }),
-      ])
-      setMessages(msgs)
-      setContextSnapshot(snapshot)
+      await reloadPersistedState()
     } catch (err) {
       console.error('Failed to load messages', err)
     } finally {
       setLoadingHistory(false)
     }
-  }, [sessionId])
+  }, [sessionId, reloadPersistedState])
 
   const send = useCallback(
     (
@@ -145,7 +154,7 @@ export function useChat(sessionId: string | null) {
                   const tokens = event.data.tokens as { input?: number; output?: number; cache_read?: number; cache_write?: number; reasoning?: number } | undefined
                   const ctx = event.data.context as { used?: number; limit?: number } | undefined
                   if (tokens && ctx && ctx.limit) {
-                    const realUsed = tokens.input ?? 0
+                    const realUsed = ctx.used ?? tokens.input ?? 0
                     const realLimit = ctx.limit
                     setContextSnapshot((prev) => {
                       if (!prev) return prev
@@ -169,12 +178,6 @@ export function useChat(sessionId: string | null) {
                     })
                   }
                 }
-                // Reload full messages from DB to get persisted versions
-                if (sessionId) {
-                  getMessages(sessionId).then((msgs) => {
-                    setMessages(msgs)
-                  })
-                }
                 setStreaming(false)
                 setStreamText('')
                 setStreamParts([])
@@ -186,12 +189,11 @@ export function useChat(sessionId: string | null) {
             setStreaming(false)
           },
           onDone: () => {
-            // SSE stream closed - if 'done' event wasn't received, reload anyway
-            if (sessionId) {
-              getMessages(sessionId).then((msgs) => {
-                setMessages(msgs)
-              })
-            }
+            // SSE stream closed after backend persistence, so reload the
+            // canonical messages + context snapshot from the database.
+            reloadPersistedState().catch((err) => {
+              console.error('Failed to reload persisted session state', err)
+            })
             setStreaming(false)
             setStreamText('')
             setStreamParts([])
@@ -202,7 +204,7 @@ export function useChat(sessionId: string | null) {
 
       controllerRef.current = controller
     },
-    [sessionId],
+    [sessionId, reloadPersistedState],
   )
 
   const abort = useCallback(async () => {
