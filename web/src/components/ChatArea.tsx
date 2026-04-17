@@ -1,10 +1,20 @@
-import { useState } from 'react'
-import { Sparkles, ArrowRight } from 'lucide-react'
-import type { Session, Message, StreamingPart, AgentInfo, ContextSnapshot } from '../types'
+import { useMemo, useState } from 'react'
+import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X } from 'lucide-react'
+import type { Session, Message, StreamingPart, AgentInfo, ContextSnapshot, SessionCodeChange } from '../types'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
 import ContextViewer from './ContextViewer'
+import { extractSessionCodeChanges } from '../utils/sessionInsights'
+
+interface PausedRunState {
+  sessionId: string
+  lastUserText: string
+  partialText?: string
+  pausedAt: number
+  model?: string
+  agent?: string
+}
 
 interface Props {
   session: Session | null
@@ -16,6 +26,10 @@ interface Props {
   loadingHistory: boolean
   onSend: (text: string) => void
   onAbort: () => void
+  onResume: () => void
+  onDismissPausedRun: () => void
+  pausedRun: PausedRunState | null
+  chatStatus: 'idle' | 'streaming' | 'paused'
   onCreate: () => Promise<Session>
   models: { id: string; name: string; provider: string }[]
   agents: AgentInfo[]
@@ -24,6 +38,8 @@ interface Props {
   onModelChange: (m: string | undefined) => void
   onAgentChange: (a: string | undefined) => void
   contextSnapshot?: ContextSnapshot | null
+  canReturnToLastSession?: boolean
+  onReturnToLastSession?: () => void
 }
 
 const SUGGESTIONS = [
@@ -32,6 +48,93 @@ const SUGGESTIONS = [
   { text: '查找并修复代码中的 bug', icon: '🔍' },
   { text: '重构这段代码，提升可读性', icon: '✨' },
 ]
+
+function ChangesPanel({
+  pausedRun,
+  codeChanges,
+  onResume,
+  onDismissPausedRun,
+}: {
+  pausedRun: PausedRunState | null
+  codeChanges: SessionCodeChange[]
+  onResume: () => void
+  onDismissPausedRun: () => void
+}) {
+  if (!pausedRun && codeChanges.length === 0) return null
+
+  return (
+    <div className="mx-4 mt-4 rounded-2xl border border-line bg-surface-0 shadow-sm overflow-hidden">
+      <div className="px-4 py-3 border-b border-line-subtle flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-ink-strong">恢复与改动回顾</div>
+          <div className="text-xs text-ink-muted mt-0.5">
+            {pausedRun ? '当前会话已暂停，可继续从中断处恢复。' : '这里汇总了本会话最近涉及的代码修改。'}
+          </div>
+        </div>
+        {pausedRun && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onDismissPausedRun}
+              className="p-2 rounded-xl text-ink-muted hover:bg-surface-hover hover:text-ink transition-colors"
+              title="忽略暂停状态"
+            >
+              <X size={14} />
+            </button>
+            <button
+              onClick={onResume}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors"
+            >
+              <Play size={12} />
+              <span>恢复继续</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="px-4 py-3 space-y-3">
+        {pausedRun && (
+          <div className="rounded-xl bg-status-warning-light border border-status-warning/15 px-3.5 py-3">
+            <div className="flex items-center gap-2 text-status-warning text-xs font-semibold mb-1.5">
+              <PauseCircle size={12} />
+              <span>暂停前的最后请求</span>
+            </div>
+            <div className="text-sm text-ink-secondary leading-relaxed">{pausedRun.lastUserText}</div>
+            {pausedRun.partialText && (
+              <div className="mt-2 text-xs text-ink-muted line-clamp-2">
+                已生成部分响应：{pausedRun.partialText}
+              </div>
+            )}
+          </div>
+        )}
+
+        {codeChanges.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 text-xs font-semibold text-ink-secondary mb-2">
+              <FileCode2 size={12} className="text-accent" />
+              <span>最近代码修改</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {codeChanges.map((change) => (
+                <div
+                  key={change.id}
+                  className="max-w-full rounded-xl border border-line bg-surface-1 px-3 py-2"
+                  title={change.preview || change.filePath || change.tool}
+                >
+                  <div className="text-xs font-medium text-ink-strong truncate max-w-[280px]">
+                    {change.filePath || `${change.tool} 修改`}
+                  </div>
+                  <div className="text-xxs text-ink-muted mt-0.5">
+                    {change.tool === 'summary' ? '会话摘要' : `工具：${change.tool}`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function ChatArea({
   session,
@@ -43,6 +146,10 @@ export default function ChatArea({
   loadingHistory,
   onSend,
   onAbort,
+  onResume,
+  onDismissPausedRun,
+  pausedRun,
+  chatStatus,
   onCreate,
   models,
   agents,
@@ -51,15 +158,20 @@ export default function ChatArea({
   onModelChange,
   onAgentChange,
   contextSnapshot,
+  canReturnToLastSession = false,
+  onReturnToLastSession,
 }: Props) {
   const [showContext, setShowContext] = useState(false)
 
-  // Welcome screen — no active session
+  const codeChanges = useMemo(
+    () => extractSessionCodeChanges(messages, session?.summary),
+    [messages, session?.summary],
+  )
+
   if (!session) {
     return (
       <div className="flex-1 flex flex-col bg-surface-1">
         <div className="flex-1 flex flex-col items-center justify-center px-6">
-          {/* Logo area */}
           <div className="mb-8 flex flex-col items-center gap-3">
             <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center shadow-sm">
               <Sparkles size={22} className="text-white" />
@@ -68,7 +180,6 @@ export default function ChatArea({
             <p className="text-sm text-ink-tertiary">选择一个常用指令或直接输入你的问题</p>
           </div>
 
-          {/* Suggestion cards */}
           <div className="max-w-lg w-full grid grid-cols-2 gap-2.5">
             {SUGGESTIONS.map((item, i) => (
               <button
@@ -91,7 +202,6 @@ export default function ChatArea({
           </div>
         </div>
 
-        {/* Bottom input */}
         <div className="px-6 pb-8">
           <MessageInput
             onSend={async (text) => {
@@ -114,7 +224,6 @@ export default function ChatArea({
     )
   }
 
-  // Active session — conversation view
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-surface-1">
       <ChatHeader
@@ -127,6 +236,15 @@ export default function ChatArea({
         onAgentChange={onAgentChange}
         contextSnapshot={contextSnapshot}
         onViewContext={() => setShowContext(true)}
+        isPaused={chatStatus === 'paused'}
+        canReturnToLastSession={canReturnToLastSession}
+        onReturnToLastSession={onReturnToLastSession}
+      />
+      <ChangesPanel
+        pausedRun={pausedRun}
+        codeChanges={codeChanges}
+        onResume={onResume}
+        onDismissPausedRun={onDismissPausedRun}
       />
       <MessageList
         messages={messages}

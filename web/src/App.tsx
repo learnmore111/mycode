@@ -13,7 +13,6 @@ export default function App() {
   const permission = usePermission()
   const providerState = useProviders()
 
-  // Load messages when active session changes
   useEffect(() => {
     chat.loadHistory()
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -40,6 +39,10 @@ export default function App() {
         loadingHistory={chat.loadingHistory}
         onSend={(text) => chat.send(text, { model: providerState.selectedModel, agent: providerState.selectedAgent })}
         onAbort={chat.abort}
+        onResume={chat.resume}
+        onDismissPausedRun={chat.dismissPausedRun}
+        pausedRun={chat.pausedRun}
+        chatStatus={chat.status}
         onCreate={session.create}
         models={providerState.models}
         agents={providerState.agents}
@@ -48,6 +51,8 @@ export default function App() {
         onModelChange={providerState.setSelectedModel}
         onAgentChange={providerState.setSelectedAgent}
         contextSnapshot={chat.contextSnapshot}
+        canReturnToLastSession={session.canReturnToLastSession}
+        onReturnToLastSession={session.returnToLastSession}
       />
       {permission.pending.length > 0 && (
         <PermissionModal request={permission.pending[0]} onReply={permission.reply} />

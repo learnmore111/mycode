@@ -8,6 +8,21 @@ export interface TimeInfo {
 }
 
 // ---- Session ----
+export interface SessionSummaryDiffItem {
+  file?: string
+  path?: string
+  label?: string
+}
+
+export type SessionSummaryDiff = string | SessionSummaryDiffItem
+
+export interface SessionSummary {
+  additions?: number
+  deletions?: number
+  files?: number
+  diffs?: SessionSummaryDiff[]
+}
+
 export interface Session {
   id: string
   slug: string
@@ -16,7 +31,7 @@ export interface Session {
   title: string
   version: string
   parentID?: string
-  summary?: string
+  summary?: SessionSummary
   share?: string
   visible?: boolean
   time: TimeInfo
@@ -183,6 +198,14 @@ export interface StreamingState {
   text: string
   parts: StreamingPart[]
   sessionId?: string
+}
+
+export interface SessionCodeChange {
+  id: string
+  tool: string
+  filePath: string | null
+  time: number
+  preview?: string
 }
 
 // ---- Compaction Events ----
