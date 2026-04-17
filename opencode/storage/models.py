@@ -82,6 +82,7 @@ class SessionTable(Base):
     time_updated = Column(Integer, nullable=False, index=True)
     time_compacting = Column(Integer, nullable=True)
     time_archived = Column(Integer, nullable=True)
+    visible = Column(Integer, nullable=False, server_default="1", default=1)
 
 
 class MessageTable(Base):
@@ -156,3 +157,36 @@ class PermissionTable(Base):
     @data.setter
     def data(self, value: list[dict[str, Any]]) -> None:
         self._data = json.dumps(value)
+
+
+class CompactionEventTable(Base):
+    """Tracks context compaction events and metrics."""
+    __tablename__ = "compaction_event"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, nullable=False, index=True)
+    iteration = Column(Integer, nullable=False)
+    # Compaction metrics
+    old_message_count = Column(Integer, nullable=False)
+    old_message_tokens = Column(Integer, nullable=False)
+    summary_length = Column(Integer, nullable=False)
+    removed_turn_count = Column(Integer, nullable=False)
+    # The old messages that were removed (JSON array)
+    _old_messages = Column("old_messages", Text, nullable=False)
+    # The generated summary
+    summary = Column(Text, nullable=False)
+    # Time
+    time_created = Column(Integer, nullable=False)
+
+    @property
+    def old_messages(self) -> list[dict[str, Any]]:
+        """Deserialize old messages from JSON."""
+        try:
+            return json.loads(self._old_messages) if self._old_messages else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    @old_messages.setter
+    def old_messages(self, value: list[dict[str, Any]]) -> None:
+        """Serialize old messages to JSON."""
+        self._old_messages = json.dumps(value)

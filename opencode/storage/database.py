@@ -24,7 +24,9 @@ logger = logmod.create(service="db")
 
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
-_db_lock = threading.Lock()
+# Use RLock (reentrant lock) because get_session_factory() holds the lock
+# and calls get_engine() which also needs to acquire the same lock.
+_db_lock = threading.RLock()
 
 
 def get_db_path() -> str:
@@ -76,6 +78,9 @@ def get_engine() -> Engine:
 
         # Create all tables
         Base.metadata.create_all(_engine)
+
+        # Lightweight migrations for columns added after initial schema
+        _migrate(_engine)
 
         return _engine
 
@@ -143,3 +148,40 @@ def reset() -> None:
     """Reset for testing — close and clear."""
     close()
     logger.debug("database reset")
+
+
+def _migrate(engine: Engine) -> None:
+    """Run lightweight column migrations for existing databases.
+
+    SQLAlchemy's ``create_all`` only creates missing **tables**; it will not add
+    new columns to tables that already exist.  This function inspects the live
+    schema and adds any missing columns so that upgrades are seamless.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(engine)
+
+    _add_column_if_missing(
+        engine, inspector,
+        table="session",
+        column="visible",
+        ddl="ALTER TABLE session ADD COLUMN visible INTEGER NOT NULL DEFAULT 1",
+    )
+
+
+def _add_column_if_missing(
+    engine: Engine,
+    inspector: Any,
+    *,
+    table: str,
+    column: str,
+    ddl: str,
+) -> None:
+    """Add a column to *table* if it does not already exist."""
+    from sqlalchemy import text
+
+    columns = {c["name"] for c in inspector.get_columns(table)}
+    if column not in columns:
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+        logger.info("migration: added column", table=table, column=column)

@@ -58,6 +58,92 @@ def serve(port: int, host: str) -> None:
 
 
 @cli.command()
+@click.option("--port", default=4096, help="Backend API port")
+@click.option("--host", default="127.0.0.1", help="Backend hostname to bind")
+@click.option("--frontend-port", default=3000, help="Frontend dev server port")
+def dev(port: int, host: str, frontend_port: int) -> None:
+    """Start both backend API server and frontend dev server for development."""
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    from opencode.util import log as logmod
+
+    logger = logmod.create(service="cli.dev")
+
+    # Resolve the web/ directory relative to this project
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    web_dir = os.path.join(project_root, "web")
+
+    if not os.path.isdir(web_dir):
+        click.echo(f"Error: web directory not found at {web_dir}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Starting backend API server on http://{host}:{port}")
+    click.echo(f"Starting frontend dev server on http://localhost:{frontend_port}")
+    click.echo("Press Ctrl+C to stop both servers.\n")
+
+    procs: list[subprocess.Popen[bytes]] = []
+
+    def cleanup(signum: int | None = None, frame: object = None) -> None:
+        for p in procs:
+            try:
+                p.terminate()
+            except OSError:
+                pass
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+
+    try:
+        # Start backend API server
+        backend_cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "opencode.server.app:create_app",
+            "--factory",
+            f"--host={host}",
+            f"--port={port}",
+            "--log-level=info",
+        ]
+        backend_proc = subprocess.Popen(backend_cmd, cwd=project_root)
+        procs.append(backend_proc)
+        logger.info("backend started", pid=backend_proc.pid, port=port)
+
+        # Start frontend Vite dev server
+        # Try npx first, fall back to npm run dev
+        frontend_cmd = ["npx", "vite", "--port", str(frontend_port)]
+        frontend_proc = subprocess.Popen(frontend_cmd, cwd=web_dir)
+        procs.append(frontend_proc)
+        logger.info("frontend started", pid=frontend_proc.pid, port=frontend_port)
+
+        click.echo(f"Backend API:  http://{host}:{port}")
+        click.echo(f"Frontend UI:  http://localhost:{frontend_port}")
+        click.echo()
+
+        # Wait for either process to exit
+        while True:
+            for p in procs:
+                ret = p.poll()
+                if ret is not None:
+                    click.echo(f"Process (pid={p.pid}) exited with code {ret}, shutting down...")
+                    cleanup()
+            time.sleep(0.5)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        cleanup()
+
+
+@cli.command()
 @click.argument("directory", default=".")
 @click.option("--model", "-m", default=None, help="Model to use (provider/model)")
 @click.option("--agent", "-a", default=None, help="Agent to use")

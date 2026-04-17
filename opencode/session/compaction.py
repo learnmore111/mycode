@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections import namedtuple
 from typing import TYPE_CHECKING, Any
 
 from opencode.session import llm as llmmod
@@ -24,11 +25,33 @@ if TYPE_CHECKING:
 
 logger = logmod.create(service="session.compaction")
 
+CompactionMetrics = namedtuple('CompactionMetrics', [
+    'old_message_count',     # number of old messages that were summarized
+    'old_message_tokens',    # estimated tokens in old messages
+    'summary_length',        # length of the generated summary
+    'removed_turn_count',    # number of user turns removed
+    'old_messages',          # the original old messages (for audit trail)
+    'summary',               # the generated summary text
+])
+
+
 PRUNE_MINIMUM = 20_000  # tokens
 PRUNE_PROTECT = 40_000  # tokens
 OVERFLOW_RATIO = 0.85  # trigger at 85% of context window
 COMPACT_KEEP_TURNS = 3  # number of recent user turns to preserve verbatim
 SUMMARY_TOOL_OUTPUT_LIMIT = 1000  # chars — truncate tool outputs before summary call
+
+# Provider-specific cache TTL (seconds).
+# Used to detect whether the API prefix cache has likely expired between turns.
+# Conservative values — err on the side of assuming expiry.
+_CACHE_TTL: dict[str, int] = {
+    "@ai-sdk/anthropic": 300,       # 5 min (default; extended TTL = 1h but not auto)
+    "@ai-sdk/openai": 300,          # 5-10 min inactive; use lower bound
+    "@ai-sdk/google": 3600,         # 1h default explicit cache
+    "@ai-sdk/amazon-bedrock": 300,  # Bedrock Anthropic models — same as Anthropic
+    "@ai-sdk/deepinfra": 300,       # conservative default
+}
+_CACHE_TTL_DEFAULT = 300  # fallback for unknown providers
 
 # Template for wrapping the summary as a user message in the compacted result.
 COMPACT_USER_MSG_TEMPLATE = """This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
@@ -44,8 +67,14 @@ what needs to be done next, and key user requests or constraints."""
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate (1 token ≈ 4 chars for English)."""
-    return len(text) // 4
+    """Rough token estimate.
+
+    Uses byte length for accuracy across languages:
+    - English: ~1 token per 4 bytes (ASCII, 1 byte/char)
+    - Chinese/Japanese/Korean: ~1 token per 3 bytes (UTF-8, 3 bytes/char ≈ 1-2 tokens/char)
+    - Mixed text: byte-based estimate handles both naturally
+    """
+    return len(text.encode("utf-8")) // 3
 
 
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
@@ -63,19 +92,23 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     return total
 
 
-def should_compact(*, messages: list[dict[str, Any]], model_context: int) -> bool:
-    """Check if the conversation needs compaction based on message token estimate."""
+def should_compact(
+    *,
+    messages: list[dict[str, Any]],
+    model_context: int,
+    system_tokens: int = 0,
+    tools_tokens: int = 0,
+) -> bool:
+    """Check if the conversation needs compaction based on total context estimate.
+
+    Includes system prompt and tool definitions in the estimate, since they
+    occupy context window space alongside the messages.
+    """
     if model_context <= 0:
         return False
-    est = estimate_messages_tokens(messages)
+    est = estimate_messages_tokens(messages) + system_tokens + tools_tokens
     threshold = int(model_context * OVERFLOW_RATIO)
     return est > threshold
-
-
-def is_overflow(*, tokens: dict[str, int], model_context: int) -> bool:
-    """Check if token usage exceeds model context limit."""
-    total = tokens.get("input", 0) + tokens.get("output", 0)
-    return total > model_context * OVERFLOW_RATIO
 
 
 def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -125,6 +158,39 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
         logger.info("pruned tool outputs", count=len(prunable), tokens_freed=pruned)
 
     return messages, pruned
+
+
+def get_cache_ttl(model: Model) -> int:
+    """Return the cache TTL in seconds for a model's provider."""
+    return _CACHE_TTL.get(model.api.npm, _CACHE_TTL_DEFAULT)
+
+
+def is_cache_likely_expired(model: Model, last_llm_time_ms: int | None) -> bool:
+    """Check whether the API prefix cache has likely expired.
+
+    Args:
+        model: The model being used.
+        last_llm_time_ms: Epoch milliseconds of the last LLM completion.
+            None means no prior interaction (first turn) — cache is empty.
+
+    Returns:
+        True if the cache has likely expired and proactive pruning is advisable.
+    """
+    if last_llm_time_ms is None:
+        return False  # first turn — nothing cached yet, no benefit from pruning
+
+    import time
+    elapsed_s = (time.time() * 1000 - last_llm_time_ms) / 1000
+    ttl = get_cache_ttl(model)
+    expired = elapsed_s > ttl
+    if expired:
+        logger.info(
+            "cache likely expired",
+            elapsed_s=int(elapsed_s),
+            ttl=ttl,
+            provider=model.api.npm,
+        )
+    return expired
 
 
 def _split_by_turns(
@@ -259,7 +325,7 @@ async def compact(
     model: Model,
     api_key: str | None = None,
     api_base: str | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], CompactionMetrics]:
     """Compact conversation history using sliding-window + summary strategy.
 
     Cache-friendly pipeline:
@@ -270,13 +336,18 @@ async def compact(
     4. Call the LLM with the **same system prompt + tools** as the main agent
        so the API prefix cache is shared.
     5. Extract the ``<summary>`` block, strip ``<analysis>`` scratchpad.
-    6. Return: ``[user_summary_msg] + recent_turns``.
+    6. Return: ``([user_summary_msg] + recent_turns, metrics)``.
     """
+    _empty_metrics = CompactionMetrics(
+        old_message_count=0, old_message_tokens=0, summary_length=0,
+        removed_turn_count=0, old_messages=[], summary="",
+    )
+
     # Step 1: prune tool outputs (in-place on the original messages)
     messages, freed = prune_tool_outputs(messages)
     if freed > PRUNE_MINIMUM:
         logger.info("pruning freed enough tokens, skipping full compaction", freed=freed)
-        return messages
+        return messages, _empty_metrics
 
     # Step 2: split into old / recent
     old, recent = _split_by_turns(messages, keep_turns=COMPACT_KEEP_TURNS)
@@ -286,9 +357,9 @@ async def compact(
         pruned_again, freed_again = prune_tool_outputs(messages)
         if freed_again > 0:
             logger.info("no old turns to compact, but pruned more tool outputs", freed=freed_again)
-            return pruned_again
+            return pruned_again, _empty_metrics
         logger.info("no old turns to compact, returning as-is")
-        return messages
+        return messages, _empty_metrics
 
     # Step 3: truncate tool outputs in old messages for the summary call
     truncated_old = _truncate_tool_outputs_for_summary(old)
@@ -319,14 +390,14 @@ async def compact(
                 summary_text += event.text
             elif isinstance(event, llmmod.ErrorEvent):
                 logger.error("compaction LLM stream error", error=event.error)
-                return messages  # fallback: return pruned but unsummarised
+                return messages, _empty_metrics  # fallback: return pruned but unsummarised
     except Exception as e:
         logger.error("compaction LLM call failed", error=str(e))
-        return messages  # fallback
+        return messages, _empty_metrics  # fallback
 
     if not summary_text.strip():
         logger.warn("compaction produced empty summary")
-        return messages
+        return messages, _empty_metrics
 
     # Step 6: extract <summary> block, strip <analysis> scratchpad
     summary = _extract_summary(summary_text)
@@ -338,4 +409,13 @@ async def compact(
     )
 
     # Step 7: assemble compacted conversation
-    return _build_compact_result(summary, recent)
+    metrics = CompactionMetrics(
+        old_message_count=len(old),
+        old_message_tokens=estimate_messages_tokens(old),
+        summary_length=len(summary),
+        removed_turn_count=sum(1 for m in old if m.get("role") == "user"),
+        old_messages=list(old),
+        summary=summary,
+    )
+    result = _build_compact_result(summary, recent)
+    return result, metrics

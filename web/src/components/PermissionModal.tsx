@@ -8,25 +8,32 @@ interface Props {
 
 export default function PermissionModal({ request, onReply }: Props) {
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-md w-full shadow-2xl">
-        <div className="flex items-center gap-3 p-4 border-b border-gray-800">
-          <ShieldAlert size={20} className="text-yellow-400" />
-          <h3 className="font-medium text-gray-100">Permission Required</h3>
+    <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+      <div className="bg-surface-0 border border-line rounded-xl max-w-md w-full shadow-overlay animate-slide-up">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-line">
+          <div className="w-8 h-8 rounded-lg bg-status-warning-light flex items-center justify-center">
+            <ShieldAlert size={16} className="text-status-warning" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-ink-strong">需要授权</h3>
+            <p className="text-xs text-ink-muted mt-0.5">以下操作需要你的确认</p>
+          </div>
         </div>
 
-        <div className="p-4 space-y-3">
+        {/* Body */}
+        <div className="p-5 space-y-3.5">
           <div>
-            <div className="text-xs text-gray-500 uppercase mb-1">Action</div>
-            <div className="text-sm text-gray-200">{request.permission}</div>
+            <div className="text-xxs uppercase font-semibold text-ink-muted tracking-wider mb-1.5">操作</div>
+            <div className="text-sm text-ink font-mono bg-surface-2 px-3 py-2 rounded-lg">{request.permission}</div>
           </div>
 
           {request.patterns.length > 0 && (
             <div>
-              <div className="text-xs text-gray-500 uppercase mb-1">Patterns</div>
-              <div className="space-y-1">
+              <div className="text-xxs uppercase font-semibold text-ink-muted tracking-wider mb-1.5">匹配规则</div>
+              <div className="space-y-1.5">
                 {request.patterns.map((p, i) => (
-                  <code key={i} className="block text-xs bg-gray-800 px-2 py-1 rounded text-gray-300">
+                  <code key={i} className="block text-xs bg-surface-2 px-3 py-2 rounded-lg text-ink-secondary font-mono">
                     {p}
                   </code>
                 ))}
@@ -36,32 +43,33 @@ export default function PermissionModal({ request, onReply }: Props) {
 
           {request.metadata && Object.keys(request.metadata).length > 0 && (
             <div>
-              <div className="text-xs text-gray-500 uppercase mb-1">Details</div>
-              <pre className="text-xs bg-gray-800 p-2 rounded max-h-32 overflow-auto text-gray-300">
+              <div className="text-xxs uppercase font-semibold text-ink-muted tracking-wider mb-1.5">详情</div>
+              <pre className="text-xs bg-surface-2 p-3 rounded-lg max-h-32 overflow-auto text-ink-secondary font-mono">
                 {JSON.stringify(request.metadata, null, 2)}
               </pre>
             </div>
           )}
         </div>
 
-        <div className="flex gap-2 p-4 border-t border-gray-800">
+        {/* Actions */}
+        <div className="flex gap-2.5 px-5 py-4 border-t border-line">
           <button
             onClick={() => onReply(request.id, 'reject')}
-            className="flex-1 px-3 py-2 text-sm rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+            className="flex-1 px-3 py-2.5 text-sm font-medium rounded-lg bg-surface-2 hover:bg-surface-3 text-ink-secondary transition-colors"
           >
-            Deny
+            拒绝
           </button>
           <button
             onClick={() => onReply(request.id, 'allow')}
-            className="flex-1 px-3 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+            className="flex-1 px-3 py-2.5 text-sm font-medium rounded-lg bg-status-info-light hover:bg-status-info/10 text-status-info transition-colors"
           >
-            Allow Once
+            允许一次
           </button>
           <button
             onClick={() => onReply(request.id, 'always')}
-            className="flex-1 px-3 py-2 text-sm rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors"
+            className="flex-1 px-3 py-2.5 text-sm font-medium rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors"
           >
-            Always
+            始终允许
           </button>
         </div>
       </div>

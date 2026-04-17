@@ -35,11 +35,16 @@ async def test_get_nonexistent():
 @pytest.mark.asyncio
 async def test_list_agents():
     agents = await list_agents()
-    assert len(agents) >= 5  # build, plan, general, explore, compaction, title, summary
+    assert len(agents) >= 2  # build, plan (hidden and subagent agents are filtered)
     names = {a.name for a in agents}
     assert "build" in names
     assert "plan" in names
-    assert "explore" in names
+    # Hidden and subagent agents should not appear
+    assert "compaction" not in names
+    assert "title" not in names
+    assert "summary" not in names
+    assert "explore" not in names
+    assert "general" not in names
 
 
 @pytest.mark.asyncio

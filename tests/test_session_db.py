@@ -56,8 +56,35 @@ def test_set_title():
 
 
 def test_remove():
-    from opencode.session.session import create, remove, list_sessions
+    from opencode.session.session import create, remove, list_sessions, list_deleted, get
     s = create(title="rm")
     remove(s.id)
+    # Should not appear in active sessions
     sessions = list_sessions()
     assert all(x.id != s.id for x in sessions)
+    # Should appear in deleted sessions
+    deleted = list_deleted()
+    assert any(x.id == s.id for x in deleted)
+    # Should still be gettable (soft-deleted, not destroyed)
+    info = get(s.id)
+    assert info.visible is False
+
+
+def test_restore():
+    from opencode.session.session import create, remove, restore, list_sessions, list_deleted
+    s = create(title="restore-me")
+    remove(s.id)
+    # Verify it's in deleted
+    assert any(x.id == s.id for x in list_deleted())
+    assert all(x.id != s.id for x in list_sessions())
+    # Restore
+    restore(s.id)
+    # Now back in active list
+    assert any(x.id == s.id for x in list_sessions())
+    assert all(x.id != s.id for x in list_deleted())
+
+
+def test_restore_nonexistent():
+    from opencode.session.session import restore
+    with pytest.raises(KeyError):
+        restore("nonexistent-id")

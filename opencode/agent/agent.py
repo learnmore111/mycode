@@ -210,13 +210,18 @@ async def get(name: str) -> AgentInfo | None:
 
 
 async def list_agents() -> list[AgentInfo]:
-    """List all agents, sorted with default first."""
+    """List user-selectable agents, sorted with default first.
+
+    Excludes hidden agents (compaction/title/summary) and subagent-only
+    agents (general/explore) which are not meant to be directly selected by users.
+    """
     agents = _load_agents()
     cfg = configmod.get()
     default = cfg.default_agent or "build"
 
+    visible = [a for a in agents.values() if not a.hidden and a.mode != "subagent"]
     return sorted(
-        agents.values(),
+        visible,
         key=lambda a: (a.name != default, a.name),
     )
 
