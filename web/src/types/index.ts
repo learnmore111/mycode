@@ -217,6 +217,66 @@ export interface SessionCodeChange {
   preview?: string
 }
 
+export type GitFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted'
+
+export interface GitChangedFile {
+  path: string
+  oldPath?: string | null
+  indexStatus: string
+  worktreeStatus: string
+  status: GitFileStatus
+  staged: boolean
+  unstaged: boolean
+}
+
+export interface GitStatusSummary {
+  changed: number
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
+  modified: number
+  added: number
+  deleted: number
+  renamed: number
+}
+
+export interface GitStatus {
+  available: boolean
+  reason?: string | null
+  worktree?: string
+  branch?: string | null
+  upstream?: string | null
+  head?: string | null
+  ahead: number
+  behind: number
+  clean: boolean
+  summary: GitStatusSummary
+  files: GitChangedFile[]
+  lastUpdated: number
+}
+
+export interface GitDiffStats {
+  additions: number
+  deletions: number
+  isBinary?: boolean
+}
+
+export interface GitDiffDetail {
+  available: boolean
+  path: string
+  oldPath?: string | null
+  status: GitFileStatus
+  staged: boolean
+  unstaged: boolean
+  branch?: string | null
+  head?: string | null
+  diff: string
+  tooLarge: boolean
+  stats: GitDiffStats
+  lastUpdated: number
+}
+
 // ---- Compaction Events ----
 export interface CompactionEvent {
   id: string
