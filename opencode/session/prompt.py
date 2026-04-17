@@ -156,6 +156,10 @@ async def prompt(
         if prompt_input.system:
             system.append(prompt_input.system)
 
+        # Persist the exact system prompt used for this turn so history views
+        # can reconstruct the context window without depending on frontend guesses.
+        assistant_system = list(system)
+
         # Memory and skills are now injected as system-reminder messages (not in system prompt)
         # This keeps the system prompt static for prefix cache reuse across sessions
 
@@ -182,6 +186,7 @@ async def prompt(
         assistant_msg = create_assistant_message(
             session_id, user_msg.id, provider_id, model_id, agent_name,
         )
+        assistant_msg.system = assistant_system
 
         yield PromptEvent(type="started", data={
             "session_id": session_id,

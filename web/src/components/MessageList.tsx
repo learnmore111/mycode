@@ -22,26 +22,35 @@ export default function MessageList({ messages, streaming, streamText, streamPar
   if (loadingHistory) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-text-muted" />
+        <div className="flex flex-col items-center gap-2">
+          <Loader2 size={18} className="animate-spin text-accent" />
+          <span className="text-sm text-ink-muted">加载历史消息...</span>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-6">
-      <div className="max-w-3xl mx-auto space-y-6">
+      <div className="max-w-3xl mx-auto">
         {messages.length === 0 && !streaming && (
-          <div className="text-center py-16 text-text-muted text-sm">
+          <div className="text-center py-20 text-ink-muted text-sm">
             发送消息开始对话
           </div>
         )}
 
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+        {messages.map((msg, i) => (
+          <div key={msg.id}>
+            {i > 0 && <div className="my-6" />}
+            <MessageBubble message={msg} />
+          </div>
         ))}
 
         {streaming && (
-          <StreamingIndicator text={streamText} parts={streamParts} />
+          <>
+            {messages.length > 0 && <div className="my-6" />}
+            <StreamingIndicator text={streamText} parts={streamParts} />
+          </>
         )}
 
         <div ref={bottomRef} />

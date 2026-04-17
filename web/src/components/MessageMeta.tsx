@@ -13,12 +13,12 @@ export default function MessageMeta({ message }: Props) {
   if (agent) parts.push(agent)
   if (tokens?.input) parts.push(`${tokens.input.toLocaleString()} in`)
   if (tokens?.output) parts.push(`${tokens.output.toLocaleString()} out`)
-  if (tokens?.reasoning) parts.push(`${tokens.reasoning.toLocaleString()} reason`)
-  if (tokens?.cacheRead) parts.push(`${tokens.cacheRead.toLocaleString()} cache`)
+  if (tokens?.reasoning) parts.push(`${tokens.reasoning.toLocaleString()} reasoning`)
+  if (tokens?.cacheRead) parts.push(`${tokens.cacheRead.toLocaleString()} cached`)
   if (cost != null) parts.push(`$${cost.toFixed(4)}`)
 
   return (
-    <div className="mt-2 pt-2 border-t border-border text-xs text-text-muted">
+    <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-2 text-xxs font-mono text-ink-muted">
       {parts.join(' · ')}
     </div>
   )
