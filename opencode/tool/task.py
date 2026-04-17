@@ -3,8 +3,9 @@
 Features:
 - Multi-turn agentic loop (up to MAX_TURNS)
 - Abort signal support (checks ctx.abort between turns)
+- Permission enforcement via agent's ruleset
+- Loop guard integration (pattern detection + cache)
 - Capability declarations
-- Clean type annotations (no bottom-of-file import hack)
 """
 from __future__ import annotations
 
@@ -15,11 +16,17 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from opencode.agent import agent as agentmod
+from opencode.permission.evaluate import evaluate as eval_permission
+from opencode.permission.schema import Rule
 from opencode.provider import provider as providermod
 from opencode.session import llm as llmmod
+from opencode.session.loop_guard import LoopGuard, LoopGuardConfig
 from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
 from opencode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
+from opencode.util import log as logmod
+
+logger = logmod.create(service="tool.task")
 
 MAX_TURNS = 8
 
@@ -33,10 +40,37 @@ def _is_aborted(ctx: ToolContext) -> bool:
         return False
     if isinstance(abort, asyncio.Event):
         return abort.is_set()
-    # Support callable abort check
     if callable(abort):
         return bool(abort())
     return False
+
+
+def _build_agent_ruleset(agent: Any) -> list[Rule]:
+    """Convert agent permission config dicts to Rule objects."""
+    return [
+        Rule(
+            permission=r.get("permission", "*"),
+            pattern=r.get("pattern", "*"),
+            action=r.get("action", "ask"),
+        )
+        for r in (agent.permission or [])
+    ]
+
+
+def _check_tool_permission(tool_name: str, ruleset: list[Rule]) -> str | None:
+    """Check if a tool is allowed by the agent's permission ruleset.
+
+    Returns None if allowed, or an error message string if denied.
+    Permission rules that resolve to "ask" are treated as denied for sub-agents
+    since there is no interactive user to ask.
+    """
+    result = eval_permission(tool_name, "*", ruleset)
+    if result.action == "allow":
+        return None
+    if result.action == "deny":
+        return f"Tool '{tool_name}' is denied by agent permission rules"
+    # "ask" — sub-agents cannot interactively ask the user, treat as denied
+    return f"Tool '{tool_name}' requires permission (action=ask) which is not available in sub-agent context"
 
 
 class TaskParams(BaseModel):
@@ -73,6 +107,20 @@ class TaskTool(CallableTool[TaskParams]):
         except Exception as e:
             return ToolError(f"Model error: {e}", title=f"Task ({agent_name})")
 
+        # Build agent permission ruleset for tool authorization
+        agent_ruleset = _build_agent_ruleset(agent)
+
+        # Initialize sub-agent loop guard for pattern detection and caching
+        guard_config = LoopGuardConfig(
+            max_iterations=MAX_TURNS,
+            repeat_threshold=3,
+            stall_threshold=3,
+            cache_enabled=True,
+            cache_max_size=50,
+            max_retries=1,
+        )
+        guard = LoopGuard(config=guard_config)
+
         system = build_system(agent_prompt=agent.prompt)
         messages: list[dict[str, Any]] = [{"role": "user", "content": description}]
         tools = [t for t in tool_registry.to_llm_tools() if t["function"]["name"] not in _EXCLUDED_TOOLS]
@@ -85,6 +133,13 @@ class TaskTool(CallableTool[TaskParams]):
             # Check abort signal before each turn
             if _is_aborted(ctx):
                 builder.add("\n\n(Sub-agent aborted by user)")
+                break
+
+            # Loop guard check before each turn
+            verdict = guard.check(turn)
+            if verdict.action.value in ("stop", "force_stop"):
+                logger.warn("sub-agent loop guard stop", reason=verdict.reason, agent=agent_name)
+                builder.add(f"\n\n(Sub-agent stopped by loop guard: {verdict.reason})")
                 break
 
             stream_input = llmmod.StreamInput(
@@ -117,7 +172,7 @@ class TaskTool(CallableTool[TaskParams]):
                     finish_reason = event.reason
                 elif isinstance(event, llmmod.ErrorEvent):
                     builder.add(f"\nError: {event.error}")
-                    return ToolOk(
+                    return ToolError(
                         builder.build() or f"Sub-agent error: {event.error}",
                         title=f"Task: {description[:60]}",
                         metadata={"agent": agent_name, "tool_calls": total_tool_calls, "turns": turn + 1},
@@ -126,6 +181,11 @@ class TaskTool(CallableTool[TaskParams]):
             assistant_text = "".join(text_parts)
             if assistant_text:
                 builder.add(assistant_text)
+
+            # Record step text production for loop guard
+            guard.begin_step(turn)
+            step = guard._steps[-1]
+            guard.complete_step(step, text_length=len(assistant_text))
 
             if not pending_tool_calls or finish_reason != "tool-calls":
                 break
@@ -153,17 +213,62 @@ class TaskTool(CallableTool[TaskParams]):
                     })
                     continue
 
+                # Permission check — enforce agent's permission rules
+                perm_error = _check_tool_permission(tc.tool_name, agent_ruleset)
+                if perm_error:
+                    logger.warn("sub-agent tool denied", tool=tc.tool_name, agent=agent_name, reason=perm_error)
+                    guard.record_tool_call(tc.tool_name, {}, output=perm_error, is_error=True)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "content": perm_error,
+                    })
+                    continue
+
                 tool_impl = tool_registry.get(tc.tool_name)
                 tool_output = ""
+                is_error = False
+
                 if tool_impl:
                     try:
                         tool_args = json.loads(tc.args) if tc.args and tc.args.strip() else {}
+                    except json.JSONDecodeError as e:
+                        tool_output = f"Invalid JSON arguments: {e}"
+                        is_error = True
+                        guard.record_tool_call(tc.tool_name, {}, output=tool_output, is_error=True)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.tool_call_id,
+                            "content": tool_output,
+                        })
+                        continue
+
+                    # Cache check — skip if we have a cached result for read-only tools
+                    cached = guard.cache.get(tc.tool_name, tool_args)
+                    if cached is not None:
+                        logger.debug("sub-agent cache hit", tool=tc.tool_name)
+                        tool_output = cached
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.tool_call_id,
+                            "content": tool_output,
+                        })
+                        continue
+
+                    try:
                         result = await tool_impl.execute(tool_args, ctx)
                         tool_output = result.output
+                        is_error = result.is_error
                     except Exception as e:
                         tool_output = f"Error: {e}"
+                        is_error = True
+
+                    # Record to loop guard (triggers cache put or invalidation)
+                    guard.record_tool_call(tc.tool_name, tool_args, output=tool_output, is_error=is_error)
                 else:
                     tool_output = f"Unknown tool: {tc.tool_name}"
+                    is_error = True
+                    guard.record_tool_call(tc.tool_name, {}, output=tool_output, is_error=True)
 
                 messages.append({
                     "role": "tool",

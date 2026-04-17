@@ -80,6 +80,12 @@ class CounterTool(ToolInfo):
     def parameters_schema(self) -> dict[str, Any]:
         return {"type": "object", "properties": {}, "required": []}
 
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self.concurrent += 1
         if self.concurrent > self.max_concurrent:

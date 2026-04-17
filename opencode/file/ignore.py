@@ -88,7 +88,4 @@ def should_ignore_path(path: str) -> bool:
 
 def should_ignore_entry(name: str) -> bool:
     """Check if a directory entry name should be ignored (for list_dir)."""
-    for pattern in IGNORED_DIRS:
-        if fnmatch.fnmatch(name, pattern):
-            return True
-    return False
+    return any(fnmatch.fnmatch(name, pattern) for pattern in IGNORED_DIRS)

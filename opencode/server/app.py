@@ -34,6 +34,13 @@ def create_app() -> FastAPI:
     bus = Bus()
     event.set_bus(bus)
 
+    # Shared permission manager — wired to both API routes and prompt engine
+    from opencode.permission.permission import PermissionManager
+    perm_manager = PermissionManager(bus, project_id="global")
+    permission.set_manager(perm_manager)
+    # Store on app.state so session route can access it
+    app.state.permission_manager = perm_manager
+
     # --- Health ---
     @app.get("/health")
     async def health():

@@ -31,7 +31,6 @@ from opencode.tool.base import (
 
 _CONTEXT_LINES = 4
 _MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for edit operations
-_MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for edit operations
 
 
 def _snippet_around(lines: list[str], start: int, end: int, context: int = _CONTEXT_LINES) -> str:

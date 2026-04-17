@@ -604,6 +604,7 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
     return _stream_session_prompt(session_id, directory, parts=parts, model=model, agent=agent)
 
 
+
 @router.post("/{session_id}/resume")
 async def session_resume(session_id: str, directory: str = Query(default=".")):
     """Resume a previously paused session by replaying the stored continuation prompt."""
