@@ -14,6 +14,7 @@ export default defineConfig({
       '/health': 'http://localhost:4096',
       '/file': 'http://localhost:4096',
       '/config': 'http://localhost:4096',
+      '/git': 'http://localhost:4096',
     },
   },
   build: {
