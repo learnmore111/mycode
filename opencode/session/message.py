@@ -437,6 +437,31 @@ def persist_turn(session_id: str, msg: MessageInfo, parts: list[Part]) -> None:
         db.close()
 
 
+def get_last_assistant_time(session_id: str) -> int | None:
+    """Return the time_completed (epoch ms) of the last assistant message in a session.
+
+    Returns None if no completed assistant message exists.
+    """
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import MessageTable
+
+    db = get_db_session()
+    try:
+        row = (
+            db.query(MessageTable.time_completed)
+            .filter(
+                MessageTable.session_id == session_id,
+                MessageTable.role == "assistant",
+                MessageTable.time_completed.isnot(None),
+            )
+            .order_by(MessageTable.time_completed.desc())
+            .first()
+        )
+        return row[0] if row else None
+    finally:
+        db.close()
+
+
 def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
     """Reconstruct OpenAI-format conversation history from the database.
 

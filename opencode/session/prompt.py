@@ -29,6 +29,7 @@ from opencode.session.message import (
     create_assistant_message,
     create_text_part,
     create_user_message,
+    get_last_assistant_time,
     persist_turn,
     save_message,
     save_part,
@@ -181,6 +182,15 @@ async def prompt(
         messages: list[dict[str, Any]] = list(history or [])
         messages.append({"role": "user", "content": user_text})
 
+        # Proactive pruning: if cache likely expired since last interaction,
+        # prune old tool outputs now to reduce re-fill cost on the next LLM call.
+        if history:
+            last_time = get_last_assistant_time(session_id)
+            if compaction.is_cache_likely_expired(model, last_time):
+                messages, freed = compaction.prune_tool_outputs(messages)
+                if freed > 0:
+                    logger.info("proactive cache-expiry prune", tokens_freed=freed)
+
         # Create assistant message
         user_msg = create_user_message(session_id, prompt_input.message_id)
         assistant_msg = create_assistant_message(
@@ -221,6 +231,7 @@ async def prompt(
         iterations_done = 0
         stop_reason = ""
         prev_skills: list[dict[str, str]] | None = None
+        prev_date: str | None = None
         prev_iter_usage: dict[str, int | float] | None = None  # Per-iteration usage from previous iteration
 
         for iteration in range(max_iterations):
@@ -291,7 +302,7 @@ async def prompt(
                 await _aio_compact.to_thread(_save_compact_event)
 
             # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
-            reminder_text, prev_skills = _build_system_reminders(prompt_input, prev_skills)
+            reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
             if reminder_text:
                 iter_messages = list(messages)
                 iter_messages.append({"role": "user", "content": reminder_text})
@@ -531,15 +542,21 @@ def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str
 def _build_system_reminders(
     prompt_input: PromptInput,
     prev_skills: list[dict[str, str]] | None,
-) -> tuple[str, list[dict[str, str]]]:
-    """Build <system-reminder> content for skills and memory.
+    prev_date: str | None,
+) -> tuple[str, list[dict[str, str]], str]:
+    """Build <system-reminder> content for skills, memory, and date.
 
-    Returns (reminder_text, current_skills_snapshot).
+    Returns (reminder_text, current_skills_snapshot, current_date).
 
     Skills use an incremental strategy:
     - First call (prev_skills is None) or modifications/deletions → full list
     - Only additions → only the new skills
     - No change → reuse previous text (empty skills section)
+
+    Date uses an incremental strategy:
+    - First call (prev_date is None) → full date
+    - Date changed → date update reminder
+    - No change → omit
 
     Memory is always included if found.
     """
@@ -557,16 +574,22 @@ def _build_system_reminders(
     if skills_text:
         sections.append(skills_text)
 
+    # --- Date section ---
+    current_date = time.strftime("%A, %b %d, %Y")
+    date_text = _build_date_reminder(current_date, prev_date)
+    if date_text:
+        sections.append(date_text)
+
     # --- Memory section ---
     memory_text = _build_memory_reminder(prompt_input)
     if memory_text:
         sections.append(memory_text)
 
     if not sections:
-        return "", current_skills
+        return "", current_skills, current_date
 
     reminder = "\n".join(sections)
-    return reminder, current_skills
+    return reminder, current_skills, current_date
 
 
 def _build_skills_reminder(
@@ -619,6 +642,21 @@ def _build_skills_reminder(
         lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
     lines.append("</system-reminder>")
     return "\n".join(lines)
+
+
+def _build_date_reminder(current: str, prev: str | None) -> str:
+    """Build the date system-reminder section.
+
+    Incremental strategy:
+    - First call (prev is None) → full date
+    - Date changed → date update reminder
+    - No change → empty string (omit)
+    """
+    if prev is None:
+        return f"<system-reminder>\nToday's date: {current}\n</system-reminder>"
+    if current != prev:
+        return f"<system-reminder>\nDate has changed. Today's date is now: {current}\n</system-reminder>"
+    return ""
 
 
 def _build_memory_reminder(prompt_input: PromptInput) -> str:

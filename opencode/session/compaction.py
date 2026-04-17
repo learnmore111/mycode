@@ -41,6 +41,18 @@ OVERFLOW_RATIO = 0.85  # trigger at 85% of context window
 COMPACT_KEEP_TURNS = 3  # number of recent user turns to preserve verbatim
 SUMMARY_TOOL_OUTPUT_LIMIT = 1000  # chars — truncate tool outputs before summary call
 
+# Provider-specific cache TTL (seconds).
+# Used to detect whether the API prefix cache has likely expired between turns.
+# Conservative values — err on the side of assuming expiry.
+_CACHE_TTL: dict[str, int] = {
+    "@ai-sdk/anthropic": 300,       # 5 min (default; extended TTL = 1h but not auto)
+    "@ai-sdk/openai": 300,          # 5-10 min inactive; use lower bound
+    "@ai-sdk/google": 3600,         # 1h default explicit cache
+    "@ai-sdk/amazon-bedrock": 300,  # Bedrock Anthropic models — same as Anthropic
+    "@ai-sdk/deepinfra": 300,       # conservative default
+}
+_CACHE_TTL_DEFAULT = 300  # fallback for unknown providers
+
 # Template for wrapping the summary as a user message in the compacted result.
 COMPACT_USER_MSG_TEMPLATE = """This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
 
@@ -146,6 +158,39 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
         logger.info("pruned tool outputs", count=len(prunable), tokens_freed=pruned)
 
     return messages, pruned
+
+
+def get_cache_ttl(model: Model) -> int:
+    """Return the cache TTL in seconds for a model's provider."""
+    return _CACHE_TTL.get(model.api.npm, _CACHE_TTL_DEFAULT)
+
+
+def is_cache_likely_expired(model: Model, last_llm_time_ms: int | None) -> bool:
+    """Check whether the API prefix cache has likely expired.
+
+    Args:
+        model: The model being used.
+        last_llm_time_ms: Epoch milliseconds of the last LLM completion.
+            None means no prior interaction (first turn) — cache is empty.
+
+    Returns:
+        True if the cache has likely expired and proactive pruning is advisable.
+    """
+    if last_llm_time_ms is None:
+        return False  # first turn — nothing cached yet, no benefit from pruning
+
+    import time
+    elapsed_s = (time.time() * 1000 - last_llm_time_ms) / 1000
+    ttl = get_cache_ttl(model)
+    expired = elapsed_s > ttl
+    if expired:
+        logger.info(
+            "cache likely expired",
+            elapsed_s=int(elapsed_s),
+            ttl=ttl,
+            provider=model.api.npm,
+        )
+    return expired
 
 
 def _split_by_turns(

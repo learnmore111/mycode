@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import platform
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -75,7 +74,6 @@ def environment(model: Model) -> list[str]:
             f"  Workspace root folder: {worktree}",
             f"  Is directory a git repo: {'yes' if is_git else 'no'}",
             f"  Platform: {platform.system()}",
-            f"  Today's date: {time.strftime('%A, %b %d, %Y')}",
             "</env>",
         ]),
     ]
@@ -102,7 +100,7 @@ def build(
         parts.append(
             f"You are an AI coding assistant.\n"
             f"Working directory: {cwd}\nProject root: {worktree}\n"
-            f"Platform: {platform.system()}\nDate: {time.strftime('%Y-%m-%d')}"
+            f"Platform: {platform.system()}"
         )
 
     if agent_prompt:
