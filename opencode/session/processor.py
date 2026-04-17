@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from opencode.bus.bus import Bus
+    from opencode.permission.permission import PermissionManager
+    from opencode.permission.schema import Rule
     from opencode.provider.schema import Model
 
 logger = logmod.create(service="session.processor")
@@ -73,8 +75,8 @@ class ProcessorContext:
     parts: list[Part] = field(default_factory=list)
     should_break: bool = False
     doom_count: int = 0
-    permission_manager: Any = None
-    agent_permission: list[dict[str, Any]] = field(default_factory=list)
+    permission_manager: PermissionManager | None = None
+    agent_permission: list[Rule] = field(default_factory=list)
     loop_guard: LoopGuard | None = None  # Injected by prompt.py
 
 

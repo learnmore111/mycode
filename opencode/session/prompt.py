@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 from opencode.agent import agent as agentmod
 from opencode.bus.events import SESSION_ERROR
+from opencode.permission.permission import PermissionManager
+from opencode.permission.schema import Rule
 from opencode.provider import provider as providermod
 from opencode.session import compaction
 from opencode.session import llm as llmmod
@@ -122,11 +124,18 @@ async def prompt(
     *,
     history: list[dict[str, Any]] | None = None,
     debug: bool = False,
+    permission_manager: PermissionManager | None = None,
 ) -> AsyncGenerator[PromptEvent, None]:
     """Send a message and stream the AI response.
 
     This is the main entry point for the agentic loop.
     Yields PromptEvent in real-time as the model generates text and executes tools.
+
+    Args:
+        permission_manager: External PermissionManager instance. When provided
+            (e.g. by the HTTP server), permission "ask" requests are published
+            through this manager so the frontend can reply. When None, a local
+            instance is created (suitable for CLI or headless mode).
     """
     session_id = prompt_input.session_id
 
@@ -211,6 +220,17 @@ async def prompt(
         guard_config = LoopGuardConfig(max_iterations=max_iterations)
         guard = LoopGuard(config=guard_config)
 
+        # Build permission manager and agent permission ruleset
+        perm_manager = permission_manager or PermissionManager(bus, project_id=session_id)
+        agent_ruleset: list[Rule] = [
+            Rule(
+                permission=r.get("permission", "*"),
+                pattern=r.get("pattern", "*"),
+                action=r.get("action", "ask"),
+            )
+            for r in (agent.permission or [])
+        ]
+
         # Agentic loop with loop guard
         ctx = proc.ProcessorContext(
             session_id=session_id,
@@ -218,6 +238,8 @@ async def prompt(
             assistant_message=assistant_msg,
             bus=bus,
             loop_guard=guard,
+            permission_manager=perm_manager,
+            agent_permission=agent_ruleset,
         )
 
         # Pre-build compaction kwargs so both call sites share the same args

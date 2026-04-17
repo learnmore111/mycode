@@ -316,6 +316,10 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
     agent = body.get("agent")
     bus = Bus()
 
+    # Retrieve the shared permission manager from app state so the frontend
+    # can reply to "ask" permission requests via POST /permission/:id.
+    perm_manager = getattr(request.app.state, "permission_manager", None)
+
     async def event_generator():
         import asyncio as _aio
         project = ProjectInfo(id="global", worktree=directory)
@@ -329,7 +333,7 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
             history = rebuild_history_from_db(session_id)
 
             inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
-            async for event in prompt(inp, bus, history=history):
+            async for event in prompt(inp, bus, history=history, permission_manager=perm_manager):
                 yield {"event": event.type, "data": json.dumps(event.data)}
         except _aio.CancelledError:
             logger.debug("SSE stream cancelled by client", session_id=session_id)

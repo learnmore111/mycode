@@ -43,7 +43,6 @@ class PermissionManager:
         self._pending: dict[str, tuple[PermissionRequest, asyncio.Future[None]]] = {}
         self._approved: Ruleset = []
         self._lock = asyncio.Lock()  # Protect _pending dict from concurrent access
-        self._lock = asyncio.Lock()  # Protect _pending dict from concurrent access
 
     async def ask(
         self,
