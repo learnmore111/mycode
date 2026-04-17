@@ -173,6 +173,7 @@ async def process_stream(
                 tp.state["is_error"] = True
                 tp.time_completed = int(time.time() * 1000)
                 has_failure = True  # Count tool-not-found as a failure for doom detection
+                ctx.parts.append(tp)
                 yield ProcessorEvent(type="tool_done", data={
                     "tool": tp.tool, "call_id": tp.tool_call_id,
                     "status": "error", "output": str(e), "input": {},
@@ -204,6 +205,7 @@ async def process_stream(
                     tp.state["is_error"] = True
                     tp.time_completed = int(time.time() * 1000)
                     blocked = True
+                    ctx.parts.append(tp)
                     yield ProcessorEvent(type="tool_done", data={
                         "tool": tp.tool, "call_id": tp.tool_call_id,
                         "status": "error", "output": str(e), "input": tp.state.get("input", {}),
@@ -222,6 +224,7 @@ async def process_stream(
                     tp.state["is_error"] = True
                     tp.time_completed = int(time.time() * 1000)
                     blocked = True
+                    ctx.parts.append(tp)
                     yield ProcessorEvent(type="tool_done", data={
                         "tool": tp.tool, "call_id": tp.tool_call_id,
                         "status": "error", "output": f"Permission check failed: {e}",
@@ -241,6 +244,7 @@ async def process_stream(
                     tp.state["is_error"] = True
                     tp.time_completed = int(time.time() * 1000)
                     doom_detected = True
+                    ctx.parts.append(tp)
                     yield ProcessorEvent(type="tool_done", data={
                         "tool": tp.tool, "call_id": tp.tool_call_id,
                         "status": "error", "output": tp.state["output"],
@@ -308,9 +312,29 @@ async def process_stream(
             if readonly_tasks:
                 ro_results = await asyncio.gather(
                     *[_run_tool_with_retry(tp, impl, tctx, ctx) for tp, impl, tctx in readonly_tasks],
-                    return_exceptions=False,
+                    return_exceptions=True,
                 )
-                all_results.extend(ro_results)
+                for i, result in enumerate(ro_results):
+                    if isinstance(result, BaseException):
+                        tp_err, _, _ = readonly_tasks[i]
+                        logger.error(
+                            "read-only tool raised unexpected exception",
+                            tool=tp_err.tool,
+                            error=str(result),
+                            error_type=type(result).__name__,
+                        )
+                        tp_err.state["status"] = "error"
+                        tp_err.state["output"] = f"Tool execution failed: {result}"
+                        tp_err.state["is_error"] = True
+                        tp_err.time_completed = int(time.time() * 1000)
+                        ctx.parts.append(tp_err)
+                        all_results.append((False, ProcessorEvent(type="tool_done", data={
+                            "tool": tp_err.tool, "call_id": tp_err.tool_call_id,
+                            "status": "error", "output": f"Tool execution failed: {result}",
+                            "input": tp_err.state.get("input", {}),
+                        })))
+                    else:
+                        all_results.append(result)
 
             # Run mutating tools sequentially (order matters)
             for tp, impl, tctx in mutating_tasks:
@@ -328,6 +352,8 @@ async def process_stream(
                 has_failure = True
 
         if blocked:
+            # Reset doom_count to avoid stale state polluting next iteration
+            ctx.doom_count = 0
             yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
             return
 
@@ -393,7 +419,8 @@ async def _run_tool_with_retry(
             )
         return success, event
 
-    # Should not reach here, but just in case
+    # Defensive fallback: should be unreachable since every loop iteration returns,
+    # but guards against future refactors that might break the invariant.
     if guard:
         guard.record_tool_call(tp.tool, tp.state.get("input", {}), output=last_error, is_error=True)
     return False, ProcessorEvent(type="tool_done", data={

@@ -63,17 +63,19 @@ async def _acquire_session(session_id: str) -> bool:
 
     Returns True if acquired, False if already busy.
     Uses asyncio.Lock to prevent TOCTOU race conditions.
+    The locked() check and acquire() are both inside _locks_mutex
+    to prevent two coroutines from passing the check simultaneously.
     """
     async with _locks_mutex:
         if session_id not in _session_locks:
             _session_locks[session_id] = _aio.Lock()
         lock = _session_locks[session_id]
 
-    if lock.locked():
-        return False
-    await lock.acquire()
-    logger.debug("session acquired", session_id=session_id)
-    return True
+        if lock.locked():
+            return False
+        await lock.acquire()
+        logger.debug("session acquired", session_id=session_id)
+        return True
 
 
 def _release_session(session_id: str) -> None:
@@ -284,7 +286,6 @@ async def prompt(
                     "removed_turn_count": compact_metrics.removed_turn_count,
                 })
                 # Save compaction event for audit trail (background)
-                import asyncio as _aio_compact
                 from opencode.session.message import save_compaction_event
                 def _save_compact_event() -> None:
                     save_compaction_event(
@@ -299,7 +300,7 @@ async def prompt(
                         old_messages=compact_metrics.old_messages,
                         summary=compact_metrics.summary,
                     )
-                await _aio_compact.to_thread(_save_compact_event)
+                await _aio.to_thread(_save_compact_event)
 
             # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
             reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
@@ -479,7 +480,6 @@ async def prompt(
         })
 
         # Persist after yielding done (user sees result immediately)
-        import asyncio as _aio
 
         # Save user message + text part, then assistant turn
         user_text_part = create_text_part(session_id, user_msg.id)

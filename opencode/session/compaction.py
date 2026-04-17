@@ -67,14 +67,23 @@ what needs to be done next, and key user requests or constraints."""
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate.
+    """Rough token estimate — intentionally conservative (over-estimates).
 
-    Uses byte length for accuracy across languages:
-    - English: ~1 token per 4 bytes (ASCII, 1 byte/char)
-    - Chinese/Japanese/Korean: ~1 token per 3 bytes (UTF-8, 3 bytes/char ≈ 1-2 tokens/char)
-    - Mixed text: byte-based estimate handles both naturally
+    Uses byte length divided by a conservative factor to trigger compaction
+    earlier rather than later, reducing context overflow risk.
+
+    - English text: ~1 token per 4 bytes (ASCII)
+    - Code/JSON: ~1 token per 3-4 bytes (varies heavily)
+    - Chinese/Japanese/Korean: ~1 token per 3 bytes (UTF-8, 3 bytes/char)
+    - Mixed: byte-based estimate handles all naturally
+
+    We use //3 for the base estimate, then add a 15% safety margin
+    to account for code/JSON under-estimation.
     """
-    return len(text.encode("utf-8")) // 3
+    byte_len = len(text.encode("utf-8"))
+    base_estimate = byte_len // 3
+    # Add 15% safety margin for code-heavy content
+    return base_estimate + base_estimate // 7
 
 
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
