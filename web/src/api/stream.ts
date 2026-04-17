@@ -6,28 +6,12 @@ export interface StreamCallbacks {
   onDone?: () => void
 }
 
-/**
- * Send a message via POST and stream SSE events back.
- * Returns an AbortController to cancel the stream.
- */
-export function streamMessage(
-  sessionId: string,
-  parts: Array<{ type: string; content: string }>,
-  callbacks: StreamCallbacks,
-  options?: { model?: string; agent?: string },
-): AbortController {
+function streamRequest(path: string, callbacks: StreamCallbacks, init?: RequestInit): AbortController {
   const controller = new AbortController()
 
-  const body = JSON.stringify({
-    parts,
-    model: options?.model,
-    agent: options?.agent,
-  })
-
-  fetch(`/session/${sessionId}/message`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
+  fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
     signal: controller.signal,
   })
     .then(async (res) => {
@@ -77,4 +61,30 @@ export function streamMessage(
     })
 
   return controller
+}
+
+/**
+ * Send a message via POST and stream SSE events back.
+ * Returns an AbortController to cancel the stream.
+ */
+export function streamMessage(
+  sessionId: string,
+  parts: Array<{ type: string; content: string }>,
+  callbacks: StreamCallbacks,
+  options?: { model?: string; agent?: string },
+): AbortController {
+  return streamRequest(`/session/${sessionId}/message`, callbacks, {
+    method: 'POST',
+    body: JSON.stringify({
+      parts,
+      model: options?.model,
+      agent: options?.agent,
+    }),
+  })
+}
+
+export function streamResume(sessionId: string, callbacks: StreamCallbacks): AbortController {
+  return streamRequest(`/session/${sessionId}/resume`, callbacks, {
+    method: 'POST',
+  })
 }

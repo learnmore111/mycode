@@ -88,3 +88,53 @@ def test_restore_nonexistent():
     from opencode.session.session import restore
     with pytest.raises(KeyError):
         restore("nonexistent-id")
+
+
+def test_set_summary_persists_diffs():
+    from opencode.session.session import create, get, set_summary
+
+    s = create(title="summary-diffs")
+    summary = {
+        "additions": 3,
+        "deletions": 1,
+        "files": 2,
+        "diffs": ["src/app.py", {"file": "src/api.py"}],
+    }
+
+    set_summary(s.id, summary)
+
+    loaded = get(s.id)
+    assert loaded.summary is not None
+    assert loaded.summary["additions"] == 3
+    assert loaded.summary["deletions"] == 1
+    assert loaded.summary["files"] == 2
+    assert loaded.summary["diffs"] == summary["diffs"]
+
+
+def test_paused_run_roundtrip():
+    from opencode.session.session import clear_paused_run, create, get_paused_run, set_paused_run
+
+    s = create(title="paused")
+    saved = set_paused_run(
+        s.id,
+        last_user_text="继续修复接口",
+        partial_text="已完成一半",
+        model="openai/test-model",
+        agent="build",
+        paused_at=1234567890,
+    )
+
+    assert saved.session_id == s.id
+    assert saved.last_user_text == "继续修复接口"
+
+    loaded = get_paused_run(s.id)
+    assert loaded is not None
+    assert loaded.session_id == s.id
+    assert loaded.last_user_text == "继续修复接口"
+    assert loaded.partial_text == "已完成一半"
+    assert loaded.model == "openai/test-model"
+    assert loaded.agent == "build"
+    assert loaded.paused_at == 1234567890
+
+    clear_paused_run(s.id)
+    assert get_paused_run(s.id) is None

@@ -85,6 +85,18 @@ class SessionTable(Base):
     visible = Column(Integer, nullable=False, server_default="1", default=1)
 
 
+class SessionPauseTable(Base):
+    __tablename__ = "session_pause"
+
+    session_id = Column(String, primary_key=True)
+    last_user_text = Column(Text, nullable=False)
+    partial_text = Column(Text, nullable=True)
+    model = Column(String, nullable=True)
+    agent = Column(String, nullable=True)
+    time_paused = Column(Integer, nullable=False)
+    time_updated = Column(Integer, nullable=False, index=True)
+
+
 class MessageTable(Base):
     __tablename__ = "message"
 

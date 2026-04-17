@@ -42,6 +42,7 @@ export default function App() {
         onResume={chat.resume}
         onDismissPausedRun={chat.dismissPausedRun}
         pausedRun={chat.pausedRun}
+        codeChanges={chat.codeChanges}
         chatStatus={chat.status}
         onCreate={session.create}
         models={providerState.models}

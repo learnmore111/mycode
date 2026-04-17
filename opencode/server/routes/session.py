@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -9,11 +10,15 @@ from sse_starlette.sse import EventSourceResponse
 
 from opencode.session.prompt import PromptInput, prompt
 from opencode.session.session import (
+    PausedRunInfo,
     SessionInfo,
+    clear_paused_run,
+    get_paused_run,
     list_deleted,
     list_sessions,
     remove,
     restore,
+    set_paused_run,
     set_title,
 )
 from opencode.session.session import create as create_session
@@ -27,6 +32,15 @@ from opencode.util import log as logmod
 logger = logmod.create(service="routes.session")
 
 router = APIRouter(prefix="/session", tags=["session"])
+
+_MUTATING_TOOLS = frozenset({"edit", "write"})
+_TOOL_TARGET_PATTERNS = [
+    re.compile(r"^Edited\s+(.+?)(?:\s+\(|$)", re.MULTILINE),
+    re.compile(r"^Overwrote\s+(.+?)(?:\s+\(|$)", re.MULTILINE),
+    re.compile(r"^Created\s+(.+?)(?:\s+\(|$)", re.MULTILINE),
+    re.compile(r"^Appended to\s+(.+?)(?:\s+\(|$)", re.MULTILINE),
+    re.compile(r"^Inserted\s+\d+\s+line\(s\)\s+after\s+line\s+\d+\s+in\s+(.+?)(?:\s+\(|$)", re.MULTILINE),
+]
 
 # Abort signals: session_id -> asyncio.Event
 _abort_signals: dict[str, asyncio.Event] = {}
@@ -52,13 +66,133 @@ def clear_abort_signal(session_id: str) -> None:
 
 def _session_json(s: SessionInfo) -> dict[str, Any]:
     return {
-        "id": s.id, "slug": s.slug, "projectID": s.project_id,
-        "directory": s.directory, "title": s.title, "version": s.version,
-        "parentID": s.parent_id, "summary": s.summary, "share": s.share,
+        "id": s.id,
+        "slug": s.slug,
+        "projectID": s.project_id,
+        "directory": s.directory,
+        "title": s.title,
+        "version": s.version,
+        "parentID": s.parent_id,
+        "summary": s.summary,
+        "share": s.share,
         "visible": s.visible,
-        "time": {"created": s.time_created, "updated": s.time_updated,
-                 "compacting": s.time_compacting, "archived": s.time_archived},
+        "time": {
+            "created": s.time_created,
+            "updated": s.time_updated,
+            "compacting": s.time_compacting,
+            "archived": s.time_archived,
+        },
     }
+
+
+def _paused_run_json(info: PausedRunInfo | None) -> dict[str, Any] | None:
+    if info is None:
+        return None
+    return {
+        "sessionId": info.session_id,
+        "lastUserText": info.last_user_text,
+        "partialText": info.partial_text,
+        "pausedAt": info.paused_at,
+        "model": info.model,
+        "agent": info.agent,
+    }
+
+
+def _build_resume_prompt(last_user_text: str, partial_text: str | None = None) -> str:
+    sections = [
+        "继续处理我上一个被暂停的请求。",
+        f"上一个请求：{last_user_text}",
+    ]
+
+    if partial_text and partial_text.strip():
+        sections.append(f"暂停前你已经输出了部分内容：{partial_text.strip()[:400]}")
+
+    sections.append("请先检查当前会话历史和工作区里已经完成的代码修改，再从中断处继续，不要重复已经做完的步骤。")
+    return "\n\n".join(sections)
+
+
+def _extract_tool_target_file(text: str) -> str | None:
+    for pattern in _TOOL_TARGET_PATTERNS:
+        match = pattern.search(text)
+        value = match.group(1).strip() if match else ""
+        if value:
+            return value
+    return None
+
+
+def _normalize_summary_file(diff: Any) -> str | None:
+    if isinstance(diff, str):
+        return diff or None
+    if isinstance(diff, dict):
+        for key in ("file", "path", "label"):
+            value = diff.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _collect_session_code_changes(session_id: str, limit: int = 6) -> list[dict[str, Any]]:
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import PartTable
+
+    changes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    db = get_db_session()
+    try:
+        parts = (
+            db.query(PartTable)
+            .filter(PartTable.session_id == session_id, PartTable.type == "tool")
+            .order_by(PartTable.time_completed.desc().nullslast(), PartTable.time_created.desc())
+            .all()
+        )
+    finally:
+        db.close()
+
+    for part in parts:
+        if not part.tool or part.tool not in _MUTATING_TOOLS:
+            continue
+
+        state = part.state or {}
+        output = str(state.get("output") or part.content or "")
+        file_path = _extract_tool_target_file(output)
+        key = f"{part.tool}:{file_path or part.id}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        changes.append({
+            "id": key,
+            "tool": part.tool,
+            "filePath": file_path,
+            "time": part.time_completed or part.time_created,
+            "preview": " ".join(output.splitlines()[:2]).strip() or None,
+        })
+        if len(changes) >= limit:
+            return changes
+
+    if changes:
+        return changes
+
+    session_info = get_session(session_id)
+    diffs = session_info.summary.get("diffs") if session_info.summary else None
+    if not isinstance(diffs, list):
+        return changes
+
+    for diff in diffs:
+        file_path = _normalize_summary_file(diff)
+        if not file_path:
+            continue
+        changes.append({
+            "id": f"summary:{file_path}",
+            "tool": "summary",
+            "filePath": file_path,
+            "time": 0,
+            "preview": "来自会话改动摘要",
+        })
+        if len(changes) >= limit:
+            break
+
+    return changes
 
 
 async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
@@ -152,11 +286,54 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
     )
 
 
+def _stream_session_prompt(
+    session_id: str,
+    directory: str,
+    *,
+    parts: list[dict[str, Any]],
+    model: str | None = None,
+    agent: str | None = None,
+    clear_pause_before_start: bool = False,
+) -> EventSourceResponse:
+    from opencode.bus.bus import Bus
+    from opencode.project.instance import InstanceContext, ProjectInfo, set_context
+
+    bus = Bus()
+
+    async def event_generator():
+        import asyncio as _aio
+        from opencode.session.message import rebuild_history_from_db
+
+        project = ProjectInfo(id="global", worktree=directory)
+        ctx = InstanceContext(directory=directory, worktree=directory, project=project)
+        token = set_context(ctx)
+        abort_event = _aio.Event()
+        set_abort_signal(session_id, abort_event)
+        try:
+            if clear_pause_before_start:
+                clear_paused_run(session_id)
+
+            history = rebuild_history_from_db(session_id)
+            inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
+            async for event in prompt(inp, bus, history=history):
+                yield {"event": event.type, "data": json.dumps(event.data)}
+        except _aio.CancelledError:
+            logger.debug("SSE stream cancelled by client", session_id=session_id)
+        finally:
+            token.reset()
+            await bus.close()
+            clear_abort_signal(session_id)
+
+    return EventSourceResponse(event_generator())
+
+
 @router.get("")
 async def session_list(directory: str = Query(default="."), limit: int = Query(default=100)):
     from opencode.project.instance import provide
+
     async def _fn():
         return [_session_json(s) for s in list_sessions(limit=limit)]
+
     return await provide(directory, _fn)
 
 
@@ -164,38 +341,47 @@ async def session_list(directory: str = Query(default="."), limit: int = Query(d
 async def session_list_deleted(directory: str = Query(default="."), limit: int = Query(default=100)):
     """List soft-deleted sessions."""
     from opencode.project.instance import provide
+
     async def _fn():
         return [_session_json(s) for s in list_deleted(limit=limit)]
+
     return await provide(directory, _fn)
 
 
 @router.post("")
 async def session_create(request: Request, directory: str = Query(default=".")):
     from opencode.project.instance import provide
+
     body = await request.json() if request.headers.get("content-type") else {}
+
     async def _fn():
         s = create_session(title=body.get("title"))
         return _session_json(s)
+
     return await provide(directory, _fn)
 
 
 @router.get("/{session_id}")
 async def session_get(session_id: str, directory: str = Query(default=".")):
     from opencode.project.instance import provide
+
     async def _fn():
         try:
             return _session_json(get_session(session_id))
         except KeyError as exc:
             raise HTTPException(404, f"Session not found: {session_id}") from exc
+
     return await provide(directory, _fn)
 
 
 @router.delete("/{session_id}")
 async def session_delete(session_id: str, directory: str = Query(default=".")):
     from opencode.project.instance import provide
+
     async def _fn():
         remove(session_id)
         return {"ok": True}
+
     return await provide(directory, _fn)
 
 
@@ -203,22 +389,27 @@ async def session_delete(session_id: str, directory: str = Query(default=".")):
 async def session_restore(session_id: str, directory: str = Query(default=".")):
     """Restore a soft-deleted session."""
     from opencode.project.instance import provide
+
     async def _fn():
         try:
             restore(session_id)
             return {"ok": True}
         except KeyError as exc:
             raise HTTPException(404, f"Session not found: {session_id}") from exc
+
     return await provide(directory, _fn)
 
 
 @router.put("/{session_id}/title")
 async def session_set_title(session_id: str, request: Request, directory: str = Query(default=".")):
     from opencode.project.instance import provide
+
     body = await request.json()
+
     async def _fn():
         set_title(session_id, body.get("title", ""))
         return {"ok": True}
+
     return await provide(directory, _fn)
 
 
@@ -305,40 +496,140 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
     return await provide(directory, _fn)
 
 
+@router.get("/{session_id}/changes")
+async def session_changes(
+    session_id: str,
+    directory: str = Query(default="."),
+    limit: int = Query(default=6, ge=1, le=50),
+):
+    """Return the most recent code changes for a session."""
+    from opencode.project.instance import provide
+
+    async def _fn():
+        try:
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        return _collect_session_code_changes(session_id, limit=limit)
+
+    return await provide(directory, _fn)
+
+
+@router.get("/{session_id}/pause")
+async def session_pause_get(session_id: str, directory: str = Query(default=".")):
+    """Get the persisted paused state for a session, if any."""
+    from opencode.project.instance import provide
+
+    async def _fn():
+        try:
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+
+        state = get_paused_run(session_id)
+        return {"paused": state is not None, "state": _paused_run_json(state)}
+
+    return await provide(directory, _fn)
+
+
+@router.post("/{session_id}/pause")
+async def session_pause_set(session_id: str, request: Request, directory: str = Query(default=".")):
+    """Persist pause metadata for a session and abort the current run if needed."""
+    from opencode.project.instance import provide
+
+    body = await request.json() if request.headers.get("content-type") else {}
+
+    async def _fn():
+        try:
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+
+        last_user_text = str(body.get("lastUserText") or "").strip()
+        partial_text = str(body.get("partialText") or "").strip() or None
+        model = body.get("model")
+        agent = body.get("agent")
+        paused_at_raw = body.get("pausedAt")
+        paused_at = paused_at_raw if isinstance(paused_at_raw, int) else None
+
+        state = None
+        if last_user_text:
+            state = set_paused_run(
+                session_id,
+                last_user_text=last_user_text,
+                partial_text=partial_text,
+                model=model if isinstance(model, str) else None,
+                agent=agent if isinstance(agent, str) else None,
+                paused_at=paused_at,
+            )
+
+        signal = get_abort_signal(session_id)
+        aborted = False
+        if signal:
+            signal.set()
+            aborted = True
+
+        return {
+            "ok": True,
+            "aborted": aborted,
+            "paused": state is not None,
+            "state": _paused_run_json(state),
+        }
+
+    return await provide(directory, _fn)
+
+
+@router.delete("/{session_id}/pause")
+async def session_pause_clear(session_id: str, directory: str = Query(default=".")):
+    """Clear the persisted paused state for a session."""
+    from opencode.project.instance import provide
+
+    async def _fn():
+        try:
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        clear_paused_run(session_id)
+        return {"ok": True}
+
+    return await provide(directory, _fn)
+
+
 @router.post("/{session_id}/message")
 async def session_message(session_id: str, request: Request, directory: str = Query(default=".")):
-    from opencode.bus.bus import Bus
-    from opencode.project.instance import InstanceContext, ProjectInfo, set_context
-
     body = await request.json()
     parts = body.get("parts", [])
     model = body.get("model")
     agent = body.get("agent")
-    bus = Bus()
+    return _stream_session_prompt(session_id, directory, parts=parts, model=model, agent=agent)
 
-    async def event_generator():
-        import asyncio as _aio
-        project = ProjectInfo(id="global", worktree=directory)
-        ctx = InstanceContext(directory=directory, worktree=directory, project=project)
-        token = set_context(ctx)
-        abort_event = _aio.Event()
-        set_abort_signal(session_id, abort_event)
+
+@router.post("/{session_id}/resume")
+async def session_resume(session_id: str, directory: str = Query(default=".")):
+    """Resume a previously paused session by replaying the stored continuation prompt."""
+    from opencode.project.instance import provide
+
+    async def _fn():
         try:
-            # Rebuild conversation history from DB so the model sees prior turns
-            from opencode.session.message import rebuild_history_from_db
-            history = rebuild_history_from_db(session_id)
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
 
-            inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
-            async for event in prompt(inp, bus, history=history):
-                yield {"event": event.type, "data": json.dumps(event.data)}
-        except _aio.CancelledError:
-            logger.debug("SSE stream cancelled by client", session_id=session_id)
-        finally:
-            token.reset()
-            await bus.close()
-            clear_abort_signal(session_id)
+        state = get_paused_run(session_id)
+        if state is None:
+            raise HTTPException(409, f"Session {session_id} has no paused state")
+        return state
 
-    return EventSourceResponse(event_generator())
+    paused = await provide(directory, _fn)
+    parts = [{"type": "text", "content": _build_resume_prompt(paused.last_user_text, paused.partial_text)}]
+    return _stream_session_prompt(
+        session_id,
+        directory,
+        parts=parts,
+        model=paused.model,
+        agent=paused.agent,
+        clear_pause_before_start=True,
+    )
 
 
 @router.post("/{session_id}/abort")
@@ -358,8 +649,10 @@ async def session_compaction_events(session_id: str, directory: str = Query(defa
     Returns a list of compaction events with metrics and summaries of old messages.
     This allows users to see what was compressed during the session.
     """
+
     async def _fn():
         from opencode.session.message import get_compaction_events
+
         return get_compaction_events(session_id)
 
     return await _fn()
