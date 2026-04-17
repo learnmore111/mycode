@@ -200,6 +200,15 @@ export interface StreamingState {
   sessionId?: string
 }
 
+export interface PausedRun {
+  sessionId: string
+  lastUserText: string
+  partialText?: string
+  pausedAt: number
+  model?: string
+  agent?: string
+}
+
 export interface SessionCodeChange {
   id: string
   tool: string

@@ -8,7 +8,7 @@ from typing import Any
 
 from opencode.project.instance import current, current_or_none
 from opencode.storage.database import get_session as get_db_session
-from opencode.storage.models import SessionTable
+from opencode.storage.models import SessionPauseTable, SessionTable
 from opencode.util import ids
 from opencode.util import slug as slugmod
 
@@ -34,6 +34,17 @@ class SessionInfo:
     visible: bool = True
 
 
+@dataclass
+class PausedRunInfo:
+    session_id: str
+    last_user_text: str
+    partial_text: str | None = None
+    paused_at: int = 0
+    model: str | None = None
+    agent: str | None = None
+    time_updated: int = 0
+
+
 class BusyError(Exception):
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -52,24 +63,36 @@ def _from_row(row: SessionTable) -> SessionInfo:
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 summary["diffs"] = json.loads(row.summary_diffs)
     return SessionInfo(
-        id=row.id, slug=row.slug, project_id=row.project_id, directory=row.directory,
-        title=row.title, version=row.version, parent_id=row.parent_id,
+        id=row.id,
+        slug=row.slug,
+        project_id=row.project_id,
+        directory=row.directory,
+        title=row.title,
+        version=row.version,
+        parent_id=row.parent_id,
         workspace_id=row.workspace_id,
         summary=summary,
         share={"url": row.share_url} if row.share_url else None,
         revert=json.loads(row.revert) if row.revert else None,
         permission=json.loads(row.permission) if row.permission else None,
-        time_created=row.time_created, time_updated=row.time_updated,
-        time_compacting=row.time_compacting, time_archived=row.time_archived,
+        time_created=row.time_created,
+        time_updated=row.time_updated,
+        time_compacting=row.time_compacting,
+        time_archived=row.time_archived,
         visible=bool(row.visible),
     )
 
 
 def _to_row_dict(info: SessionInfo) -> dict[str, Any]:
     return {
-        "id": info.id, "slug": info.slug, "project_id": info.project_id,
-        "directory": info.directory, "title": info.title, "version": info.version,
-        "parent_id": info.parent_id, "workspace_id": info.workspace_id,
+        "id": info.id,
+        "slug": info.slug,
+        "project_id": info.project_id,
+        "directory": info.directory,
+        "title": info.title,
+        "version": info.version,
+        "parent_id": info.parent_id,
+        "workspace_id": info.workspace_id,
         "share_url": info.share["url"] if info.share else None,
         "revert": json.dumps(info.revert) if info.revert else None,
         "permission": json.dumps(info.permission) if info.permission else None,
@@ -77,19 +100,37 @@ def _to_row_dict(info: SessionInfo) -> dict[str, Any]:
         "summary_deletions": info.summary["deletions"] if info.summary else None,
         "summary_files": info.summary.get("files") if info.summary else None,
         "summary_diffs": json.dumps(info.summary.get("diffs")) if info.summary and info.summary.get("diffs") else None,
-        "time_created": info.time_created, "time_updated": info.time_updated,
-        "time_compacting": info.time_compacting, "time_archived": info.time_archived,
+        "time_created": info.time_created,
+        "time_updated": info.time_updated,
+        "time_compacting": info.time_compacting,
+        "time_archived": info.time_archived,
     }
+
+
+def _paused_run_from_row(row: SessionPauseTable) -> PausedRunInfo:
+    return PausedRunInfo(
+        session_id=row.session_id,
+        last_user_text=row.last_user_text,
+        partial_text=row.partial_text,
+        paused_at=row.time_paused,
+        model=row.model,
+        agent=row.agent,
+        time_updated=row.time_updated,
+    )
 
 
 def create(*, parent_id: str | None = None, title: str | None = None) -> SessionInfo:
     ctx = current()
     now = int(time.time() * 1000)
     info = SessionInfo(
-        id=ids.session_id(), slug=slugmod.create(), project_id=ctx.project.id,
+        id=ids.session_id(),
+        slug=slugmod.create(),
+        project_id=ctx.project.id,
         directory=ctx.directory,
         title=title or f"New session - {time.strftime('%Y-%m-%dT%H:%M:%S')}",
-        parent_id=parent_id, time_created=now, time_updated=now,
+        parent_id=parent_id,
+        time_created=now,
+        time_updated=now,
     )
     db = get_db_session()
     try:
@@ -147,9 +188,13 @@ def remove(session_id: str) -> None:
             db.commit()
     finally:
         db.close()
+
+    clear_paused_run(session_id)
+
     # Clean up per-session in-memory state
     try:
         from opencode.tool.todo import clear_todos
+
         clear_todos(session_id)
     except Exception:
         pass
@@ -204,7 +249,58 @@ def set_summary(session_id: str, summary: dict[str, Any]) -> None:
             row.summary_additions = summary.get("additions")
             row.summary_deletions = summary.get("deletions")
             row.summary_files = summary.get("files")
+            row.summary_diffs = json.dumps(summary.get("diffs")) if summary.get("diffs") else None
             row.time_updated = int(time.time() * 1000)
+            db.commit()
+    finally:
+        db.close()
+
+
+def get_paused_run(session_id: str) -> PausedRunInfo | None:
+    db = get_db_session()
+    try:
+        row = db.query(SessionPauseTable).filter(SessionPauseTable.session_id == session_id).first()
+        return _paused_run_from_row(row) if row else None
+    finally:
+        db.close()
+
+
+def set_paused_run(
+    session_id: str,
+    *,
+    last_user_text: str,
+    partial_text: str | None = None,
+    model: str | None = None,
+    agent: str | None = None,
+    paused_at: int | None = None,
+) -> PausedRunInfo:
+    now = int(time.time() * 1000)
+    paused_at = paused_at or now
+    db = get_db_session()
+    try:
+        row = db.query(SessionPauseTable).filter(SessionPauseTable.session_id == session_id).first()
+        if not row:
+            row = SessionPauseTable(session_id=session_id)
+            db.add(row)
+
+        row.last_user_text = last_user_text
+        row.partial_text = partial_text
+        row.model = model
+        row.agent = agent
+        row.time_paused = paused_at
+        row.time_updated = now
+        db.commit()
+        return _paused_run_from_row(row)
+    finally:
+        db.close()
+
+
+def clear_paused_run(session_id: str) -> None:
+    db = get_db_session()
+    try:
+        row = db.query(SessionPauseTable).filter(SessionPauseTable.session_id == session_id).first()
+        if row:
+            db.delete(row)
             db.commit()
     finally:
         db.close()

@@ -1,20 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X } from 'lucide-react'
-import type { Session, Message, StreamingPart, AgentInfo, ContextSnapshot, SessionCodeChange } from '../types'
+import type { AgentInfo, ContextSnapshot, Message, PausedRun, Session, SessionCodeChange, StreamingPart } from '../types'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
 import ContextViewer from './ContextViewer'
-import { extractSessionCodeChanges } from '../utils/sessionInsights'
-
-interface PausedRunState {
-  sessionId: string
-  lastUserText: string
-  partialText?: string
-  pausedAt: number
-  model?: string
-  agent?: string
-}
 
 interface Props {
   session: Session | null
@@ -28,7 +18,8 @@ interface Props {
   onAbort: () => void
   onResume: () => void
   onDismissPausedRun: () => void
-  pausedRun: PausedRunState | null
+  pausedRun: PausedRun | null
+  codeChanges: SessionCodeChange[]
   chatStatus: 'idle' | 'streaming' | 'paused'
   onCreate: () => Promise<Session>
   models: { id: string; name: string; provider: string }[]
@@ -55,7 +46,7 @@ function ChangesPanel({
   onResume,
   onDismissPausedRun,
 }: {
-  pausedRun: PausedRunState | null
+  pausedRun: PausedRun | null
   codeChanges: SessionCodeChange[]
   onResume: () => void
   onDismissPausedRun: () => void
@@ -149,6 +140,7 @@ export default function ChatArea({
   onResume,
   onDismissPausedRun,
   pausedRun,
+  codeChanges,
   chatStatus,
   onCreate,
   models,
@@ -162,11 +154,6 @@ export default function ChatArea({
   onReturnToLastSession,
 }: Props) {
   const [showContext, setShowContext] = useState(false)
-
-  const codeChanges = useMemo(
-    () => extractSessionCodeChanges(messages, session?.summary),
-    [messages, session?.summary],
-  )
 
   if (!session) {
     return (
