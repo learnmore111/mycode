@@ -10,8 +10,10 @@ from sse_starlette.sse import EventSourceResponse
 from opencode.session.prompt import PromptInput, prompt
 from opencode.session.session import (
     SessionInfo,
+    list_deleted,
     list_sessions,
     remove,
+    restore,
     set_title,
 )
 from opencode.session.session import create as create_session
@@ -53,9 +55,101 @@ def _session_json(s: SessionInfo) -> dict[str, Any]:
         "id": s.id, "slug": s.slug, "projectID": s.project_id,
         "directory": s.directory, "title": s.title, "version": s.version,
         "parentID": s.parent_id, "summary": s.summary, "share": s.share,
+        "visible": s.visible,
         "time": {"created": s.time_created, "updated": s.time_updated,
                  "compacting": s.time_compacting, "archived": s.time_archived},
     }
+
+
+async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
+    """Rebuild a context snapshot for an existing session from persisted state."""
+    from opencode.agent import agent as agentmod
+    from opencode.provider import provider as providermod
+    from opencode.session.context import build_context_snapshot
+    from opencode.session.message import rebuild_history_from_db
+    from opencode.session.system import build as build_system
+    from opencode.storage.database import get_session as get_db_session
+    from opencode.storage.models import MessageTable
+    from opencode.tool import registry as tool_registry
+
+    db = get_db_session()
+    try:
+        assistant_rows = (
+            db.query(MessageTable)
+            .filter(MessageTable.session_id == session_id, MessageTable.role == "assistant")
+            .order_by(MessageTable.time_created)
+            .all()
+        )
+    finally:
+        db.close()
+
+    last_assistant = assistant_rows[-1] if assistant_rows else None
+    assistant_turns = len(assistant_rows)
+    history = rebuild_history_from_db(session_id)
+
+    if last_assistant and last_assistant.provider_id and last_assistant.model_id:
+        provider_id = last_assistant.provider_id
+        model_id = last_assistant.model_id
+    else:
+        provider_id, model_id = await providermod.default_model()
+
+    try:
+        model = await providermod.get_model(provider_id, model_id)
+    except Exception:
+        provider_id, model_id = await providermod.default_model()
+        model = await providermod.get_model(provider_id, model_id)
+
+    agent_name = last_assistant.agent if last_assistant and last_assistant.agent else await agentmod.default_agent()
+    agent = await agentmod.get(agent_name)
+    if not agent:
+        agent_name = await agentmod.default_agent()
+        agent = await agentmod.get(agent_name)
+    if not agent:
+        raise RuntimeError(f"Agent not found: {agent_name}")
+
+    system = build_system(model=model, agent_prompt=agent.prompt, instructions=None)
+    if last_assistant and last_assistant.system:
+        try:
+            stored_system = json.loads(last_assistant.system)
+            if isinstance(stored_system, list) and stored_system:
+                system = [str(item) for item in stored_system]
+        except Exception:
+            pass
+
+    tool_registry.register_builtins()
+    tools = tool_registry.to_llm_tools()
+
+    actual_usage = None
+    if last_assistant and any(
+        value is not None
+        for value in (
+            last_assistant.tokens_input,
+            last_assistant.tokens_output,
+            last_assistant.tokens_reasoning,
+            last_assistant.tokens_cache_read,
+            last_assistant.tokens_cache_write,
+            last_assistant.cost,
+        )
+    ):
+        actual_usage = {
+            "input_tokens": last_assistant.tokens_input or 0,
+            "output_tokens": last_assistant.tokens_output or 0,
+            "cache_read_tokens": last_assistant.tokens_cache_read or 0,
+            "cache_write_tokens": last_assistant.tokens_cache_write or 0,
+            "reasoning_tokens": last_assistant.tokens_reasoning or 0,
+            "total_cost": last_assistant.cost or 0.0,
+        }
+
+    return build_context_snapshot(
+        system=system,
+        tools=tools if model.capabilities.toolcall else None,
+        messages=history,
+        model_id=f"{provider_id}/{model_id}",
+        context_limit=model.limit.context if model.limit.context > 0 else 0,
+        iteration=max(assistant_turns - 1, 0),
+        has_history=bool(history),
+        actual_usage=actual_usage,
+    )
 
 
 @router.get("")
@@ -63,6 +157,15 @@ async def session_list(directory: str = Query(default="."), limit: int = Query(d
     from opencode.project.instance import provide
     async def _fn():
         return [_session_json(s) for s in list_sessions(limit=limit)]
+    return await provide(directory, _fn)
+
+
+@router.get("/deleted")
+async def session_list_deleted(directory: str = Query(default="."), limit: int = Query(default=100)):
+    """List soft-deleted sessions."""
+    from opencode.project.instance import provide
+    async def _fn():
+        return [_session_json(s) for s in list_deleted(limit=limit)]
     return await provide(directory, _fn)
 
 
@@ -96,6 +199,19 @@ async def session_delete(session_id: str, directory: str = Query(default=".")):
     return await provide(directory, _fn)
 
 
+@router.post("/{session_id}/restore")
+async def session_restore(session_id: str, directory: str = Query(default=".")):
+    """Restore a soft-deleted session."""
+    from opencode.project.instance import provide
+    async def _fn():
+        try:
+            restore(session_id)
+            return {"ok": True}
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+    return await provide(directory, _fn)
+
+
 @router.put("/{session_id}/title")
 async def session_set_title(session_id: str, request: Request, directory: str = Query(default=".")):
     from opencode.project.instance import provide
@@ -103,6 +219,21 @@ async def session_set_title(session_id: str, request: Request, directory: str = 
     async def _fn():
         set_title(session_id, body.get("title", ""))
         return {"ok": True}
+    return await provide(directory, _fn)
+
+
+@router.get("/{session_id}/context")
+async def session_context(session_id: str, directory: str = Query(default=".")):
+    """Rebuild the current context snapshot for an existing session."""
+    from opencode.project.instance import provide
+
+    async def _fn():
+        try:
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        return await _build_session_context_snapshot(session_id)
+
     return await provide(directory, _fn)
 
 
@@ -193,8 +324,12 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
         abort_event = _aio.Event()
         set_abort_signal(session_id, abort_event)
         try:
+            # Rebuild conversation history from DB so the model sees prior turns
+            from opencode.session.message import rebuild_history_from_db
+            history = rebuild_history_from_db(session_id)
+
             inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
-            async for event in prompt(inp, bus):
+            async for event in prompt(inp, bus, history=history):
                 yield {"event": event.type, "data": json.dumps(event.data)}
         except _aio.CancelledError:
             logger.debug("SSE stream cancelled by client", session_id=session_id)
@@ -214,3 +349,17 @@ async def session_abort(session_id: str):
         signal.set()
         return {"ok": True, "aborted": True}
     return {"ok": True, "aborted": False, "message": "No active processing for this session"}
+
+
+@router.get("/{session_id}/compaction-events")
+async def session_compaction_events(session_id: str, directory: str = Query(default=".")):
+    """Get all compaction events for a session.
+
+    Returns a list of compaction events with metrics and summaries of old messages.
+    This allows users to see what was compressed during the session.
+    """
+    async def _fn():
+        from opencode.session.message import get_compaction_events
+        return get_compaction_events(session_id)
+
+    return await _fn()

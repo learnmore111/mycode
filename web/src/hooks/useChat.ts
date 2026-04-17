@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
-import type { Message, StreamingPart, SSEEvent } from '../types'
-import { getMessages, abortSession } from '../api/sessions'
+import type { Message, StreamingPart, SSEEvent, ContextSnapshot } from '../types'
+import { getMessages, getContextSnapshot, abortSession } from '../api/sessions'
 import { streamMessage } from '../api/stream'
 
 export function useChat(sessionId: string | null) {
@@ -10,23 +10,41 @@ export function useChat(sessionId: string | null) {
   const [streamParts, setStreamParts] = useState<StreamingPart[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [contextSnapshot, setContextSnapshot] = useState<ContextSnapshot | null>(null)
   const controllerRef = useRef<AbortController | null>(null)
+
+  const reloadPersistedState = useCallback(async () => {
+    if (!sessionId) return
+
+    const [msgs, snapshot] = await Promise.all([
+      getMessages(sessionId),
+      getContextSnapshot(sessionId).catch((err) => {
+        console.error('Failed to load context snapshot', err)
+        return null
+      }),
+    ])
+
+    setMessages(msgs)
+    if (snapshot) {
+      setContextSnapshot(snapshot)
+    }
+  }, [sessionId])
 
   const loadHistory = useCallback(async () => {
     if (!sessionId) {
       setMessages([])
+      setContextSnapshot(null)
       return
     }
     setLoadingHistory(true)
     try {
-      const msgs = await getMessages(sessionId)
-      setMessages(msgs)
+      await reloadPersistedState()
     } catch (err) {
       console.error('Failed to load messages', err)
     } finally {
       setLoadingHistory(false)
     }
-  }, [sessionId])
+  }, [sessionId, reloadPersistedState])
 
   const send = useCallback(
     (
@@ -102,16 +120,63 @@ export function useChat(sessionId: string | null) {
                 )
                 break
 
+              case 'context_snapshot':
+                setContextSnapshot(event.data as unknown as ContextSnapshot)
+                break
+
+              case 'compact': {
+                // Context compaction occurred - old messages were summarized and removed.
+                const metrics = event.data as {
+                  session_id?: string
+                  old_message_count?: number
+                  old_message_tokens?: number
+                  summary_length?: number
+                  removed_turn_count?: number
+                }
+                console.debug('Compaction metrics:', {
+                  removedMessages: metrics.old_message_count,
+                  freedTokens: metrics.old_message_tokens,
+                  summaryLength: metrics.summary_length,
+                  removedTurns: metrics.removed_turn_count,
+                })
+                // The compaction summary will appear in the next context_snapshot.
+                break
+              }
+
+
               case 'error':
                 setError(event.data.message as string)
                 break
 
               case 'done':
-                // Reload full messages from DB to get persisted versions
-                if (sessionId) {
-                  getMessages(sessionId).then((msgs) => {
-                    setMessages(msgs)
-                  })
+                // Update context snapshot with real API token data
+                {
+                  const tokens = event.data.tokens as { input?: number; output?: number; cache_read?: number; cache_write?: number; reasoning?: number } | undefined
+                  const ctx = event.data.context as { used?: number; limit?: number } | undefined
+                  if (tokens && ctx && ctx.limit) {
+                    const realUsed = ctx.used ?? tokens.input ?? 0
+                    const realLimit = ctx.limit
+                    setContextSnapshot((prev) => {
+                      if (!prev) return prev
+                      return {
+                        ...prev,
+                        summary: {
+                          ...prev.summary,
+                          total_estimated_tokens: realUsed,
+                          context_limit: realLimit,
+                          usage_percent: realLimit > 0 ? Math.round(1000 * realUsed / realLimit) / 10 : 0,
+                        },
+                        actual_usage: {
+                          input_tokens: tokens.input ?? 0,
+                          output_tokens: tokens.output ?? 0,
+                          cache_read_tokens: tokens.cache_read ?? 0,
+                          cache_write_tokens: tokens.cache_write ?? 0,
+                          reasoning_tokens: tokens.reasoning ?? 0,
+                          total_cost: (event.data.cost as number) ?? 0,
+                        },
+                      }
+                    })
+                  }
                 }
                 setStreaming(false)
                 setStreamText('')
@@ -124,12 +189,11 @@ export function useChat(sessionId: string | null) {
             setStreaming(false)
           },
           onDone: () => {
-            // SSE stream closed - if 'done' event wasn't received, reload anyway
-            if (sessionId) {
-              getMessages(sessionId).then((msgs) => {
-                setMessages(msgs)
-              })
-            }
+            // SSE stream closed after backend persistence, so reload the
+            // canonical messages + context snapshot from the database.
+            reloadPersistedState().catch((err) => {
+              console.error('Failed to reload persisted session state', err)
+            })
             setStreaming(false)
             setStreamText('')
             setStreamParts([])
@@ -140,7 +204,7 @@ export function useChat(sessionId: string | null) {
 
       controllerRef.current = controller
     },
-    [sessionId],
+    [sessionId, reloadPersistedState],
   )
 
   const abort = useCallback(async () => {
@@ -161,5 +225,6 @@ export function useChat(sessionId: string | null) {
     loadHistory,
     send,
     abort,
+    contextSnapshot,
   }
 }

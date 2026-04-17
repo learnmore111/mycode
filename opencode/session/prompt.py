@@ -10,6 +10,7 @@ Features:
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -26,8 +27,12 @@ from opencode.session.message import (
     Part,
     ToolPart,
     create_assistant_message,
+    create_text_part,
     create_user_message,
+    get_last_assistant_time,
     persist_turn,
+    save_message,
+    save_part,
 )
 from opencode.session.system import build as build_system
 from opencode.tool import registry as tool_registry
@@ -152,12 +157,20 @@ async def prompt(
         if prompt_input.system:
             system.append(prompt_input.system)
 
+        # Persist the exact system prompt used for this turn so history views
+        # can reconstruct the context window without depending on frontend guesses.
+        assistant_system = list(system)
+
         # Memory and skills are now injected as system-reminder messages (not in system prompt)
         # This keeps the system prompt static for prefix cache reuse across sessions
 
         # Load tools
         tool_registry.register_builtins()
         tools = tool_registry.to_llm_tools()
+
+        # Pre-compute system + tools token estimates for compaction checks and context bar fallback
+        system_tokens_est = compaction.estimate_tokens("\n\n".join(system))
+        tools_tokens_est = compaction.estimate_tokens(json.dumps(tools, ensure_ascii=False)) if tools else 0
 
         # Build user message content
         user_text = ""
@@ -169,11 +182,21 @@ async def prompt(
         messages: list[dict[str, Any]] = list(history or [])
         messages.append({"role": "user", "content": user_text})
 
+        # Proactive pruning: if cache likely expired since last interaction,
+        # prune old tool outputs now to reduce re-fill cost on the next LLM call.
+        if history:
+            last_time = get_last_assistant_time(session_id)
+            if compaction.is_cache_likely_expired(model, last_time):
+                messages, freed = compaction.prune_tool_outputs(messages)
+                if freed > 0:
+                    logger.info("proactive cache-expiry prune", tokens_freed=freed)
+
         # Create assistant message
         user_msg = create_user_message(session_id, prompt_input.message_id)
         assistant_msg = create_assistant_message(
             session_id, user_msg.id, provider_id, model_id, agent_name,
         )
+        assistant_msg.system = assistant_system
 
         yield PromptEvent(type="started", data={
             "session_id": session_id,
@@ -208,6 +231,8 @@ async def prompt(
         iterations_done = 0
         stop_reason = ""
         prev_skills: list[dict[str, str]] | None = None
+        prev_date: str | None = None
+        prev_iter_usage: dict[str, int | float] | None = None  # Per-iteration usage from previous iteration
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
@@ -241,16 +266,43 @@ async def prompt(
             step = guard.begin_step(iteration)
 
             # Context compaction check
-            context_limit = model.limit.context if model.limit.context > 0 else 0
+            # Fallback to 32K if model context limit is not configured (prevents unbounded growth)
+            context_limit = model.limit.context if model.limit.context > 0 else 32_000
             if context_limit > 0 and compaction.should_compact(
-                messages=messages, model_context=context_limit
+                messages=messages,
+                model_context=context_limit,
+                system_tokens=system_tokens_est,
+                tools_tokens=tools_tokens_est,
             ):
                 logger.info("context overflow detected, compacting")
-                messages = await compaction.compact(messages, **compact_kwargs)
-                yield PromptEvent(type="compact", data={"session_id": session_id})
+                messages, compact_metrics = await compaction.compact(messages, **compact_kwargs)
+                yield PromptEvent(type="compact", data={
+                    "session_id": session_id,
+                    "old_message_count": compact_metrics.old_message_count,
+                    "old_message_tokens": compact_metrics.old_message_tokens,
+                    "summary_length": compact_metrics.summary_length,
+                    "removed_turn_count": compact_metrics.removed_turn_count,
+                })
+                # Save compaction event for audit trail (background)
+                import asyncio as _aio_compact
+                from opencode.session.message import save_compaction_event
+                def _save_compact_event() -> None:
+                    save_compaction_event(
+                        session_id=session_id,
+                        iteration=iteration,
+                        metrics={
+                            'old_message_count': compact_metrics.old_message_count,
+                            'old_message_tokens': compact_metrics.old_message_tokens,
+                            'summary_length': compact_metrics.summary_length,
+                            'removed_turn_count': compact_metrics.removed_turn_count,
+                        },
+                        old_messages=compact_metrics.old_messages,
+                        summary=compact_metrics.summary,
+                    )
+                await _aio_compact.to_thread(_save_compact_event)
 
             # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
-            reminder_text, prev_skills = _build_system_reminders(prompt_input, prev_skills)
+            reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
             if reminder_text:
                 iter_messages = list(messages)
                 iter_messages.append({"role": "user", "content": reminder_text})
@@ -268,8 +320,18 @@ async def prompt(
                 api_base=model.api.url or None,
             )
 
+            # === Snapshot cumulative tokens BEFORE this iteration ===
+            # After process_stream, the delta = current - snapshot gives per-iteration usage.
+            tokens_snap_input = assistant_msg.tokens_input
+            tokens_snap_output = assistant_msg.tokens_output
+            tokens_snap_cache_read = assistant_msg.tokens_cache_read
+            tokens_snap_cache_write = assistant_msg.tokens_cache_write
+            tokens_snap_reasoning = assistant_msg.tokens_reasoning
+
             # === Context snapshot for UI context viewer ===
-            yield PromptEvent(type="context_snapshot", data=build_context_snapshot(
+            # actual_usage shows the PREVIOUS iteration's per-iteration values
+            # (on iteration 0 there is no previous data, so None)
+            snapshot_data = build_context_snapshot(
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
                 messages=iter_messages,
@@ -277,15 +339,9 @@ async def prompt(
                 context_limit=model.limit.context if model.limit.context > 0 else 0,
                 iteration=iteration,
                 has_history=bool(history),
-                actual_usage={
-                    "input_tokens": assistant_msg.tokens_input,
-                    "output_tokens": assistant_msg.tokens_output,
-                    "cache_read_tokens": assistant_msg.tokens_cache_read,
-                    "cache_write_tokens": assistant_msg.tokens_cache_write,
-                    "reasoning_tokens": assistant_msg.tokens_reasoning,
-                    "total_cost": assistant_msg.cost,
-                } if iteration > 0 else None,
-            ))
+                actual_usage=prev_iter_usage,
+            )
+            yield PromptEvent(type="context_snapshot", data=snapshot_data)
 
             # === Debug: dump input before LLM call ===
             if debug:
@@ -372,6 +428,17 @@ async def prompt(
 
             all_parts.extend(iteration_parts)
 
+            # === Compute per-iteration token deltas ===
+            iter_input_tokens = assistant_msg.tokens_input - tokens_snap_input
+            prev_iter_usage = {
+                "input_tokens": iter_input_tokens,
+                "output_tokens": assistant_msg.tokens_output - tokens_snap_output,
+                "cache_read_tokens": assistant_msg.tokens_cache_read - tokens_snap_cache_read,
+                "cache_write_tokens": assistant_msg.tokens_cache_write - tokens_snap_cache_write,
+                "reasoning_tokens": assistant_msg.tokens_reasoning - tokens_snap_reasoning,
+                "total_cost": assistant_msg.cost,  # cumulative cost is still useful
+            }
+
             if result == "stop":
                 break
 
@@ -382,6 +449,13 @@ async def prompt(
 
         # Finalize — persist in background (don't block the done event)
         assistant_msg.time_completed = int(time.time() * 1000)
+
+        # context.used = last iteration's input_tokens (= actual context window occupancy)
+        # Fallback to heuristic estimate including system+tools if no API data available.
+        last_iter_input = prev_iter_usage["input_tokens"] if prev_iter_usage else 0
+        fallback_est = (
+            compaction.estimate_messages_tokens(messages) + system_tokens_est + tools_tokens_est
+        )
 
         yield PromptEvent(type="done", data={
             "session_id": session_id,
@@ -394,10 +468,7 @@ async def prompt(
             },
             "cost": assistant_msg.cost,
             "context": {
-                # "used" = estimated tokens of the current message history
-                # This represents how much of the context window is occupied,
-                # NOT the cumulative API token consumption across iterations.
-                "used": compaction.estimate_messages_tokens(messages),
+                "used": last_iter_input if last_iter_input > 0 else fallback_est,
                 "limit": model.limit.context,
             },
             "iterations": iterations_done,
@@ -409,7 +480,17 @@ async def prompt(
 
         # Persist after yielding done (user sees result immediately)
         import asyncio as _aio
-        await _aio.to_thread(persist_turn, session_id, assistant_msg, all_parts)
+
+        # Save user message + text part, then assistant turn
+        user_text_part = create_text_part(session_id, user_msg.id)
+        user_text_part.content = user_text
+
+        def _persist_all() -> None:
+            save_message(user_msg)
+            save_part(user_text_part)
+            persist_turn(session_id, assistant_msg, all_parts)
+
+        await _aio.to_thread(_persist_all)
 
     except Exception as e:
         logger.error("prompt failed", error=str(e))
@@ -461,15 +542,21 @@ def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str
 def _build_system_reminders(
     prompt_input: PromptInput,
     prev_skills: list[dict[str, str]] | None,
-) -> tuple[str, list[dict[str, str]]]:
-    """Build <system-reminder> content for skills and memory.
+    prev_date: str | None,
+) -> tuple[str, list[dict[str, str]], str]:
+    """Build <system-reminder> content for skills, memory, and date.
 
-    Returns (reminder_text, current_skills_snapshot).
+    Returns (reminder_text, current_skills_snapshot, current_date).
 
     Skills use an incremental strategy:
     - First call (prev_skills is None) or modifications/deletions → full list
     - Only additions → only the new skills
     - No change → reuse previous text (empty skills section)
+
+    Date uses an incremental strategy:
+    - First call (prev_date is None) → full date
+    - Date changed → date update reminder
+    - No change → omit
 
     Memory is always included if found.
     """
@@ -487,16 +574,22 @@ def _build_system_reminders(
     if skills_text:
         sections.append(skills_text)
 
+    # --- Date section ---
+    current_date = time.strftime("%A, %b %d, %Y")
+    date_text = _build_date_reminder(current_date, prev_date)
+    if date_text:
+        sections.append(date_text)
+
     # --- Memory section ---
     memory_text = _build_memory_reminder(prompt_input)
     if memory_text:
         sections.append(memory_text)
 
     if not sections:
-        return "", current_skills
+        return "", current_skills, current_date
 
     reminder = "\n".join(sections)
-    return reminder, current_skills
+    return reminder, current_skills, current_date
 
 
 def _build_skills_reminder(
@@ -549,6 +642,21 @@ def _build_skills_reminder(
         lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
     lines.append("</system-reminder>")
     return "\n".join(lines)
+
+
+def _build_date_reminder(current: str, prev: str | None) -> str:
+    """Build the date system-reminder section.
+
+    Incremental strategy:
+    - First call (prev is None) → full date
+    - Date changed → date update reminder
+    - No change → empty string (omit)
+    """
+    if prev is None:
+        return f"<system-reminder>\nToday's date: {current}\n</system-reminder>"
+    if current != prev:
+        return f"<system-reminder>\nDate has changed. Today's date is now: {current}\n</system-reminder>"
+    return ""
 
 
 def _build_memory_reminder(prompt_input: PromptInput) -> str:

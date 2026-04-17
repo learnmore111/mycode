@@ -12,6 +12,8 @@ export default defineConfig({
       '/event': 'http://localhost:4096',
       '/permission': 'http://localhost:4096',
       '/health': 'http://localhost:4096',
+      '/file': 'http://localhost:4096',
+      '/config': 'http://localhost:4096',
     },
   },
   build: {

@@ -88,7 +88,10 @@ async def _init_state() -> dict[str, ProviderInfo]:
 async def _discover_providers() -> dict[str, ProviderInfo]:
     """Internal: do the actual provider discovery (called under lock)."""
     providers: dict[str, ProviderInfo] = {}
-    cfg = configmod.get()
+    # Ensure project-level config is loaded even when no project context is active
+    # (e.g. in serve/dev mode where requests may not have set_context yet).
+    # Falls back to cwd so that opencode.json in the project root is discovered.
+    cfg = configmod.get(directory=os.getcwd())
 
     # Step 0: Load models.dev database and seed providers with models
     from opencode.provider import models_dev
@@ -316,7 +319,7 @@ def litellm_model_name(model: Model) -> str:
 
 async def default_model() -> tuple[ProviderID, str]:
     """Get the default model (provider_id, model_id)."""
-    cfg = configmod.get()
+    cfg = configmod.get(directory=os.getcwd())
 
     if cfg.model:
         return parse_model(cfg.model)

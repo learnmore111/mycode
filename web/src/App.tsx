@@ -19,13 +19,15 @@ export default function App() {
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
+    <div className="flex h-screen bg-surface-1 text-ink font-sans">
       <Sidebar
         sessions={session.sessions}
+        deletedSessions={session.deletedSessions}
         activeId={session.activeId}
         onSelect={session.setActiveId}
         onCreate={session.create}
         onDelete={session.remove}
+        onRestore={session.restore}
         loading={session.loading}
       />
       <ChatArea
@@ -38,12 +40,14 @@ export default function App() {
         loadingHistory={chat.loadingHistory}
         onSend={(text) => chat.send(text, { model: providerState.selectedModel, agent: providerState.selectedAgent })}
         onAbort={chat.abort}
+        onCreate={session.create}
         models={providerState.models}
         agents={providerState.agents}
         selectedModel={providerState.selectedModel}
         selectedAgent={providerState.selectedAgent}
         onModelChange={providerState.setSelectedModel}
         onAgentChange={providerState.setSelectedAgent}
+        contextSnapshot={chat.contextSnapshot}
       />
       {permission.pending.length > 0 && (
         <PermissionModal request={permission.pending[0]} onReply={permission.reply} />

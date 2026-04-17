@@ -10,7 +10,6 @@ from opencode.session.compaction import (
     compact,
     estimate_messages_tokens,
     estimate_tokens,
-    is_overflow,
     prune_tool_outputs,
     should_compact,
     _split_by_turns,
@@ -20,7 +19,8 @@ from opencode.session.compaction import (
 def test_estimate_tokens():
     assert estimate_tokens("") == 0
     assert estimate_tokens("abcd") == 1
-    assert estimate_tokens("a" * 400) == 100
+    # 400 ASCII chars = 400 bytes / 3 ≈ 133
+    assert estimate_tokens("a" * 400) == 133
 
 
 def test_estimate_messages_tokens():
@@ -29,7 +29,8 @@ def test_estimate_messages_tokens():
         {"role": "assistant", "content": "b" * 800},
     ]
     est = estimate_messages_tokens(msgs)
-    assert est == 300  # 100 + 200
+    # 400 bytes / 3 = 133, 800 bytes / 3 = 266 → 399 (integer division)
+    assert est == 399
 
 
 def test_estimate_messages_tokens_with_tools():
@@ -57,12 +58,23 @@ def test_should_compact_zero_context():
     assert should_compact(messages=msgs, model_context=0) is False
 
 
-def test_is_overflow_true():
-    assert is_overflow(tokens={"input": 90000, "output": 10000}, model_context=100000) is True
+def test_should_compact_includes_system_tools_tokens():
+    """should_compact should account for system prompt and tool definition tokens."""
+    # Messages alone are ~33K tokens (under 85K threshold for 100K context)
+    msgs = [{"role": "user", "content": "x" * 100_000}]  # ~33K tokens
+    # Without system/tools overhead: 33K < 85K → False
+    assert should_compact(messages=msgs, model_context=100_000) is False
+    # With system+tools overhead pushing total over threshold
+    assert should_compact(
+        messages=msgs, model_context=100_000,
+        system_tokens=30_000, tools_tokens=25_000,
+    ) is True
 
 
-def test_is_overflow_false():
-    assert is_overflow(tokens={"input": 50000, "output": 10000}, model_context=100000) is False
+def test_should_compact_defaults_backward_compatible():
+    """Calling without system_tokens/tools_tokens should still work."""
+    msgs = [{"role": "user", "content": "x" * 400_000}]
+    assert should_compact(messages=msgs, model_context=100_000) is True
 
 
 def test_prune_tool_outputs_no_tools():
@@ -317,7 +329,7 @@ def test_compact_preserves_recent_turns():
         patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary of old turns")),
         patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
     ):
-        result = asyncio.run(compact(msgs, **kwargs))
+        result, _ = asyncio.run(compact(msgs, **kwargs))
 
     # First msg is summary user message (not system!)
     assert result[0]["role"] == "user"
@@ -334,7 +346,7 @@ def test_compact_no_old_turns():
         {"role": "assistant", "content": "a1"},
     ]
     kwargs = _make_compact_kwargs()
-    result = asyncio.run(compact(list(msgs), **kwargs))
+    result, _ = asyncio.run(compact(list(msgs), **kwargs))
     assert result == msgs
 
 
@@ -358,6 +370,82 @@ def test_compact_llm_failure_returns_original():
         patch("opencode.session.compaction.llmmod.stream", side_effect=Exception("fail")),
         patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
     ):
-        result = asyncio.run(compact(msgs, **kwargs))
+        result, _ = asyncio.run(compact(msgs, **kwargs))
 
     assert len(result) == original_len
+
+
+# ── Compaction Metrics tests ──
+
+def test_compact_returns_metrics():
+    """compact() should return (messages, metrics) tuple with token counts."""
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "user", "content": "q4"},
+        {"role": "assistant", "content": "a4"},
+    ]
+
+    kwargs = _make_compact_kwargs()
+
+    with (
+        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary text")),
+        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+    ):
+        result, metrics = asyncio.run(compact(msgs, **kwargs))
+
+    # Check that metrics is a named tuple with expected fields
+    assert metrics.old_message_count == 2  # First 2 messages (1 turn)
+    assert metrics.old_message_tokens >= 0  # short test strings may estimate to 0
+    assert metrics.summary_length > 0
+    assert metrics.removed_turn_count == 1  # One user message removed
+    # Result should be [summary_msg] + recent_turns
+    assert len(result) == 7  # 1 summary + 6 recent
+
+
+def test_compact_metrics_zero_when_no_compaction():
+    """When not enough turns to split, metrics should reflect no removal."""
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    kwargs = _make_compact_kwargs()
+    result, metrics = asyncio.run(compact(list(msgs), **kwargs))
+    # No compaction happened, but metrics tuple is still returned
+    assert metrics.old_message_count == 0
+    assert metrics.removed_turn_count == 0
+    assert result == msgs
+
+
+def test_compact_metrics_include_old_messages():
+    """CompactionMetrics should include old_messages and summary for audit trail."""
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "user", "content": "q4"},
+        {"role": "assistant", "content": "a4"},
+    ]
+
+    kwargs = _make_compact_kwargs()
+
+    with (
+        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Test summary")),
+        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+    ):
+        result, metrics = asyncio.run(compact(msgs, **kwargs))
+
+    # Verify old_messages is included
+    assert len(metrics.old_messages) == 2  # First 2 messages
+    assert metrics.old_messages[0]["content"] == "q1"
+    
+    # Verify summary is included
+    assert metrics.summary == "Test summary"
+    assert metrics.summary_length == len("Test summary")
