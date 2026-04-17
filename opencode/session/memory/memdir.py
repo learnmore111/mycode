@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from opencode.util import log as logmod
 
@@ -255,7 +254,7 @@ def scan_memory_files(project_path: str) -> list[MemoryEntry]:
                 size_bytes=stat.st_size,
             ))
             count += 1
-        except (IOError, UnicodeDecodeError) as e:
+        except (OSError, UnicodeDecodeError) as e:
             logger.warn("failed to read memory file", path=fp, error=str(e))
             continue
 

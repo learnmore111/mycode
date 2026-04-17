@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 from opencode.agent import agent as agentmod
 from opencode.bus.events import SESSION_ERROR
+from opencode.permission.permission import PermissionManager
+from opencode.permission.schema import Rule
 from opencode.provider import provider as providermod
 from opencode.session import compaction
 from opencode.session import llm as llmmod
@@ -63,17 +65,19 @@ async def _acquire_session(session_id: str) -> bool:
 
     Returns True if acquired, False if already busy.
     Uses asyncio.Lock to prevent TOCTOU race conditions.
+    The locked() check and acquire() are both inside _locks_mutex
+    to prevent two coroutines from passing the check simultaneously.
     """
     async with _locks_mutex:
         if session_id not in _session_locks:
             _session_locks[session_id] = _aio.Lock()
         lock = _session_locks[session_id]
 
-    if lock.locked():
-        return False
-    await lock.acquire()
-    logger.debug("session acquired", session_id=session_id)
-    return True
+        if lock.locked():
+            return False
+        await lock.acquire()
+        logger.debug("session acquired", session_id=session_id)
+        return True
 
 
 def _release_session(session_id: str) -> None:
@@ -120,11 +124,18 @@ async def prompt(
     *,
     history: list[dict[str, Any]] | None = None,
     debug: bool = False,
+    permission_manager: PermissionManager | None = None,
 ) -> AsyncGenerator[PromptEvent, None]:
     """Send a message and stream the AI response.
 
     This is the main entry point for the agentic loop.
     Yields PromptEvent in real-time as the model generates text and executes tools.
+
+    Args:
+        permission_manager: External PermissionManager instance. When provided
+            (e.g. by the HTTP server), permission "ask" requests are published
+            through this manager so the frontend can reply. When None, a local
+            instance is created (suitable for CLI or headless mode).
     """
     session_id = prompt_input.session_id
 
@@ -209,6 +220,17 @@ async def prompt(
         guard_config = LoopGuardConfig(max_iterations=max_iterations)
         guard = LoopGuard(config=guard_config)
 
+        # Build permission manager and agent permission ruleset
+        perm_manager = permission_manager or PermissionManager(bus, project_id=session_id)
+        agent_ruleset: list[Rule] = [
+            Rule(
+                permission=r.get("permission", "*"),
+                pattern=r.get("pattern", "*"),
+                action=r.get("action", "ask"),
+            )
+            for r in (agent.permission or [])
+        ]
+
         # Agentic loop with loop guard
         ctx = proc.ProcessorContext(
             session_id=session_id,
@@ -216,6 +238,8 @@ async def prompt(
             assistant_message=assistant_msg,
             bus=bus,
             loop_guard=guard,
+            permission_manager=perm_manager,
+            agent_permission=agent_ruleset,
         )
 
         # Pre-build compaction kwargs so both call sites share the same args
@@ -284,22 +308,25 @@ async def prompt(
                     "removed_turn_count": compact_metrics.removed_turn_count,
                 })
                 # Save compaction event for audit trail (background)
-                import asyncio as _aio_compact
                 from opencode.session.message import save_compaction_event
-                def _save_compact_event() -> None:
+                def _save_compact_event(
+                    _sid: str = session_id,
+                    _iter: int = iteration,
+                    _metrics: object = compact_metrics,
+                ) -> None:
                     save_compaction_event(
-                        session_id=session_id,
-                        iteration=iteration,
+                        session_id=_sid,
+                        iteration=_iter,
                         metrics={
-                            'old_message_count': compact_metrics.old_message_count,
-                            'old_message_tokens': compact_metrics.old_message_tokens,
-                            'summary_length': compact_metrics.summary_length,
-                            'removed_turn_count': compact_metrics.removed_turn_count,
+                            'old_message_count': _metrics.old_message_count,  # type: ignore[attr-defined]
+                            'old_message_tokens': _metrics.old_message_tokens,  # type: ignore[attr-defined]
+                            'summary_length': _metrics.summary_length,  # type: ignore[attr-defined]
+                            'removed_turn_count': _metrics.removed_turn_count,  # type: ignore[attr-defined]
                         },
-                        old_messages=compact_metrics.old_messages,
-                        summary=compact_metrics.summary,
+                        old_messages=_metrics.old_messages,  # type: ignore[attr-defined]
+                        summary=_metrics.summary,  # type: ignore[attr-defined]
                     )
-                await _aio_compact.to_thread(_save_compact_event)
+                await _aio.to_thread(_save_compact_event)
 
             # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
             reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
@@ -439,6 +466,15 @@ async def prompt(
                 "total_cost": assistant_msg.cost,  # cumulative cost is still useful
             }
 
+            # Token estimation telemetry — compare heuristic vs actual API usage
+            if iter_input_tokens > 0:
+                est = (
+                    compaction.estimate_messages_tokens(iter_messages)
+                    + system_tokens_est
+                    + tools_tokens_est
+                )
+                compaction.log_token_accuracy(est, iter_input_tokens, f"{provider_id}/{model_id}")
+
             if result == "stop":
                 break
 
@@ -479,7 +515,6 @@ async def prompt(
         })
 
         # Persist after yielding done (user sees result immediately)
-        import asyncio as _aio
 
         # Save user message + text part, then assistant turn
         user_text_part = create_text_part(session_id, user_msg.id)

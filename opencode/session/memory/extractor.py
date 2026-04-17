@@ -7,15 +7,11 @@
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from opencode.session.memory.memdir import (
-    MEMORY_EXCLUSIONS,
-    MemoryEntry,
-    MemoryType,
     save_memory,
     scan_memory_files,
 )
@@ -213,8 +209,15 @@ def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 8000) 
     for msg in reversed(messages):
         role = msg.get("role", "?")
         content = msg.get("content", "")
-        if not isinstance(content, str):
-            content = str(content)[:200]
+        if isinstance(content, list):
+            # Content blocks (e.g., tool_use, text blocks from multimodal APIs)
+            text_parts = [
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            content = " ".join(text_parts)[:500]
+        elif not isinstance(content, str):
+            content = ""
         text = f"[{role}] {content[:500]}"
         if total + len(text) > max_chars:
             break

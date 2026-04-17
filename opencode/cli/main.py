@@ -4,11 +4,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+from typing import TYPE_CHECKING
 
 import click
 
 from opencode import __version__
+
+if TYPE_CHECKING:
+    from prompt_toolkit.document import Document
 
 
 @click.group(invoke_without_command=True)
@@ -88,10 +93,8 @@ def dev(port: int, host: str, frontend_port: int) -> None:
 
     def cleanup(signum: int | None = None, frame: object = None) -> None:
         for p in procs:
-            try:
+            with contextlib.suppress(OSError):
                 p.terminate()
-            except OSError:
-                pass
         for p in procs:
             try:
                 p.wait(timeout=5)
@@ -176,7 +179,6 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         Completion,
         merge_completers,
     )
-    from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.patch_stdout import patch_stdout
@@ -273,10 +275,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             else:
                 # After the command, offer path completion
                 parts = shell_text.split(None, 1)
-                if len(parts) >= 2:
-                    fragment = parts[1]
-                else:
-                    fragment = ""
+                fragment = parts[1] if len(parts) >= 2 else ""
                 base_dir = shell_cwd[0]
                 try:
                     p = Path(base_dir)
@@ -295,10 +294,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                                 continue
                             display_name = f"{name}/" if entry.is_dir() else name
                             # Build the full replacement text
-                            if "/" in fragment:
-                                rel = str(Path(fragment).parent / name)
-                            else:
-                                rel = name
+                            rel = str(Path(fragment).parent / name) if "/" in fragment else name
                             if entry.is_dir():
                                 rel += "/"
                             full_text = f"!{parts[0]} {rel}"
@@ -336,10 +332,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                         continue
                     if prefix and prefix.lower() not in name.lower():
                         continue
-                    if "/" in fragment:
-                        rel_path = str(Path(fragment).parent / name)
-                    else:
-                        rel_path = name
+                    rel_path = str(Path(fragment).parent / name) if "/" in fragment else name
                     if entry.is_dir():
                         rel_path += "/"
                     yield Completion(
@@ -851,16 +844,21 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # --- Per-turn memory updates (non-blocking) ---
             if session_memory.is_enabled:
                 import asyncio as _mem_aio
-                async def _bg_record():
-                    try:
+                _text = text
+                _full_text = full_text
+                _history = list(conversation_history)
+                async def _bg_record(
+                    _q: str = _text,
+                    _a: str = _full_text,
+                    _msgs: list = _history,
+                ) -> None:
+                    with contextlib.suppress(Exception):
                         await session_memory.record_turn(
-                            user_query=text,
-                            assistant_response=full_text,
-                            messages=conversation_history,
+                            user_query=_q,
+                            assistant_response=_a,
+                            messages=_msgs,
                             start_time=session_start_time,
                         )
-                    except Exception:
-                        pass
                 _mem_aio.ensure_future(_bg_record())
 
         # --- Session end: save memory note if enabled (with timeout) ---
@@ -886,6 +884,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         if conversation_history and len(conversation_history) >= 4:
             try:
                 import asyncio as _ext_aio
+
                 from opencode.session.memory.extractor import extract_memories, save_extracted_memories
 
                 result = await _ext_aio.wait_for(
@@ -1076,7 +1075,7 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
             color = "green" if debug_ref[0] else "dim"
             console.print(f"  [{color}]🔍 Debug mode: {state}[/{color}]")
             if debug_ref[0]:
-                console.print(f"  [dim]Each LLM iteration will dump full messages to .opencode/debug/[/dim]")
+                console.print("  [dim]Each LLM iteration will dump full messages to .opencode/debug/[/dim]")
         else:
             console.print("  [red]Debug mode not available[/red]")
         return ""

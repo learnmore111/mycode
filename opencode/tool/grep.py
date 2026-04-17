@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from typing import Any
 
@@ -58,20 +59,9 @@ class GrepTool(CallableTool[GrepParams]):
             )
 
         # Validate regex pattern before executing
-        import re as _re
         try:
-            _re.compile(pattern)
-        except _re.error as e:
-            return ToolError(
-                f"Invalid regex pattern: {e}",
-                title=f"Grep {pattern}",
-            )
-
-        # Validate regex pattern before executing
-        import re as _re
-        try:
-            _re.compile(pattern)
-        except _re.error as e:
+            re.compile(pattern)
+        except re.error as e:
             return ToolError(
                 f"Invalid regex pattern: {e}",
                 title=f"Grep {pattern}",
