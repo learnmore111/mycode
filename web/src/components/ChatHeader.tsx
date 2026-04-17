@@ -8,6 +8,8 @@ import {
   Zap,
   Clock,
   Search,
+  PauseCircle,
+  History,
 } from 'lucide-react'
 import type { Session, AgentInfo, ContextSnapshot } from '../types'
 
@@ -21,9 +23,11 @@ interface Props {
   onAgentChange: (a: string | undefined) => void
   contextSnapshot?: ContextSnapshot | null
   onViewContext?: () => void
+  isPaused?: boolean
+  canReturnToLastSession?: boolean
+  onReturnToLastSession?: () => void
 }
 
-/* ── Custom Dropdown ── */
 function Dropdown<T extends { id: string; label: string; sub?: string }>({
   items,
   value,
@@ -64,7 +68,7 @@ function Dropdown<T extends { id: string; label: string; sub?: string }>({
     ? items.filter(
         (i) =>
           i.label.toLowerCase().includes(query.toLowerCase()) ||
-          i.sub?.toLowerCase().includes(query.toLowerCase())
+          i.sub?.toLowerCase().includes(query.toLowerCase()),
       )
     : items
 
@@ -90,7 +94,6 @@ function Dropdown<T extends { id: string; label: string; sub?: string }>({
 
       {open && (
         <div className="absolute top-full left-0 mt-1.5 min-w-[220px] max-w-[320px] bg-surface-0 border border-line rounded-xl shadow-lg z-50 overflow-hidden animate-slide-up">
-          {/* Search */}
           {searchable && (
             <div className="flex items-center gap-2 px-3 py-2.5 border-b border-line-subtle">
               <Search size={12} className="text-ink-muted flex-shrink-0" />
@@ -106,7 +109,6 @@ function Dropdown<T extends { id: string; label: string; sub?: string }>({
           )}
 
           <div className="max-h-64 overflow-y-auto py-1">
-            {/* Default / unset option */}
             <button
               onClick={() => {
                 onChange(undefined)
@@ -155,7 +157,6 @@ function Dropdown<T extends { id: string; label: string; sub?: string }>({
   )
 }
 
-/* ── Context Usage Mini Bar ── */
 function ContextUsagePill({
   snapshot,
   onClick,
@@ -210,7 +211,6 @@ function ContextUsagePill({
   )
 }
 
-/* ── Main Header ── */
 export default function ChatHeader({
   session,
   models,
@@ -221,31 +221,30 @@ export default function ChatHeader({
   onAgentChange,
   contextSnapshot,
   onViewContext,
+  isPaused = false,
+  canReturnToLastSession = false,
+  onReturnToLastSession,
 }: Props) {
-  // Format model items for dropdown
   const modelItems = models.map((m) => ({
     id: m.id,
     label: m.name.split(' / ').pop() || m.name,
     sub: m.provider,
   }))
 
-  // Format agent items for dropdown
   const agentItems = agents.map((a) => ({
     id: a.name,
     label: a.name,
     sub: a.description,
   }))
 
-  // Session age
   const age = session.time.created
     ? formatTimeAgo(session.time.created)
     : null
 
   return (
     <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line bg-surface-0/80 backdrop-blur-sm">
-      {/* Session title */}
       <div className="flex items-center gap-2.5 min-w-0 flex-shrink">
-        <h2 className="text-sm font-semibold text-ink-strong truncate max-w-[200px]">
+        <h2 className="text-sm font-semibold text-ink-strong truncate max-w-[220px]">
           {session.title || '新会话'}
         </h2>
         {age && (
@@ -254,12 +253,16 @@ export default function ChatHeader({
             <span>{age}</span>
           </div>
         )}
+        {isPaused && (
+          <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-status-warning-light text-status-warning text-xxs font-medium">
+            <PauseCircle size={10} />
+            <span>已暂停</span>
+          </div>
+        )}
       </div>
 
-      {/* Separator */}
       <div className="w-px h-4 bg-line mx-1" />
 
-      {/* Model selector */}
       {models.length > 0 && (
         <Dropdown
           items={modelItems}
@@ -271,7 +274,6 @@ export default function ChatHeader({
         />
       )}
 
-      {/* Agent selector */}
       {agents.length > 0 && (
         <Dropdown
           items={agentItems}
@@ -282,10 +284,19 @@ export default function ChatHeader({
         />
       )}
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Iteration badge */}
+      {canReturnToLastSession && onReturnToLastSession && (
+        <button
+          onClick={onReturnToLastSession}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-2 text-ink-secondary hover:bg-surface-3 hover:text-ink transition-colors"
+          title="返回刚才查看的会话"
+        >
+          <History size={11} />
+          <span>返回上一会话</span>
+        </button>
+      )}
+
       {contextSnapshot && (
         <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface-2 text-xxs text-ink-muted font-mono">
           <Zap size={10} />
@@ -293,7 +304,6 @@ export default function ChatHeader({
         </div>
       )}
 
-      {/* Context usage */}
       {contextSnapshot && (
         <ContextUsagePill snapshot={contextSnapshot} onClick={onViewContext} />
       )}
@@ -301,7 +311,6 @@ export default function ChatHeader({
   )
 }
 
-/* ── Helper ── */
 function formatTimeAgo(timestamp: number): string {
   const now = Date.now()
   const ts = timestamp < 1e12 ? timestamp * 1000 : timestamp

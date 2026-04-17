@@ -15,6 +15,7 @@ import {
   CalendarDays,
 } from 'lucide-react'
 import type { Session } from '../types'
+import { getSessionSearchText, getSessionSummaryBadges } from '../utils/sessionInsights'
 
 interface Props {
   sessions: Session[]
@@ -27,7 +28,6 @@ interface Props {
   loading: boolean
 }
 
-/* ── Time grouping logic ── */
 function getTimeGroup(timestamp: number): string {
   const now = new Date()
   const ts = timestamp < 1e12 ? timestamp * 1000 : timestamp
@@ -68,7 +68,6 @@ function formatSessionTime(timestamp: number): string {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
-/* ── Session Item ── */
 function SessionItem({
   session,
   isActive,
@@ -80,6 +79,8 @@ function SessionItem({
   onSelect: () => void
   onDelete: () => void
 }) {
+  const summaryBadges = getSessionSummaryBadges(session.summary)
+
   return (
     <div
       onClick={onSelect}
@@ -89,7 +90,6 @@ function SessionItem({
           : 'text-ink-secondary hover:bg-surface-hover hover:text-ink'
       }`}
     >
-      {/* Active indicator */}
       {isActive && (
         <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-accent" />
       )}
@@ -102,9 +102,23 @@ function SessionItem({
         <div className={`text-sm truncate ${isActive ? 'font-semibold' : ''}`}>
           {session.title || '未命名会话'}
         </div>
-        <div className="text-xxs text-ink-muted mt-0.5 flex items-center gap-1">
-          <Clock size={9} />
-          <span>{formatSessionTime(session.time.created)}</span>
+        <div className="text-xxs text-ink-muted mt-0.5 flex items-center gap-1 flex-wrap">
+          <span className="flex items-center gap-1">
+            <Clock size={9} />
+            <span>{formatSessionTime(session.time.created)}</span>
+          </span>
+          {summaryBadges.map((badge) => (
+            <span
+              key={badge}
+              className={`px-1.5 py-0.5 rounded-md border text-[10px] font-medium ${
+                isActive
+                  ? 'border-accent/20 bg-white/70 text-accent'
+                  : 'border-line-subtle bg-surface-1 text-ink-muted'
+              }`}
+            >
+              {badge}
+            </span>
+          ))}
         </div>
       </div>
       <button
@@ -121,7 +135,6 @@ function SessionItem({
   )
 }
 
-/* ── Main Sidebar ── */
 export default function Sidebar({
   sessions,
   deletedSessions,
@@ -137,18 +150,16 @@ export default function Sidebar({
   const [searchQuery, setSearchQuery] = useState('')
   const [isSearching, setIsSearching] = useState(false)
 
-  // Filter sessions by search
   const filteredSessions = useMemo(() => {
     if (!searchQuery.trim()) return sessions
     const q = searchQuery.toLowerCase()
-    return sessions.filter(
-      (s) =>
-        (s.title || '').toLowerCase().includes(q) ||
-        (s.summary || '').toLowerCase().includes(q)
-    )
+    return sessions.filter((s) => {
+      const titleText = (s.title || '').toLowerCase()
+      const summaryText = getSessionSearchText(s.summary).toLowerCase()
+      return titleText.includes(q) || summaryText.includes(q)
+    })
   }, [sessions, searchQuery])
 
-  // Group sessions by time
   const grouped = useMemo(() => groupSessions(filteredSessions), [filteredSessions])
 
   if (collapsed) {
@@ -168,7 +179,6 @@ export default function Sidebar({
         >
           <Plus size={16} />
         </button>
-        {/* Session count */}
         {sessions.length > 0 && (
           <div className="mt-1 w-6 h-6 rounded-full bg-surface-2 flex items-center justify-center">
             <span className="text-xxs text-ink-muted font-mono font-semibold">{sessions.length}</span>
@@ -180,7 +190,6 @@ export default function Sidebar({
 
   return (
     <aside className="w-64 flex-shrink-0 flex flex-col border-r border-line bg-surface-0">
-      {/* Header */}
       <div className="px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shadow-xs">
@@ -215,7 +224,6 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* Search bar */}
       {isSearching && (
         <div className="px-3 pb-3 animate-slide-up">
           <div className="flex items-center gap-2 bg-surface-2 rounded-lg px-3 py-2 border border-line-subtle focus-within:border-accent/30 focus-within:bg-surface-0 transition-all">
@@ -224,7 +232,7 @@ export default function Sidebar({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索会话标题..."
+              placeholder="搜索标题或改动文件..."
               className="flex-1 bg-transparent text-xs text-ink placeholder:text-ink-muted outline-none"
               autoFocus
             />
@@ -245,7 +253,6 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* New session button */}
       <div className="px-3 pb-3">
         <button
           onClick={onCreate}
@@ -256,7 +263,6 @@ export default function Sidebar({
         </button>
       </div>
 
-      {/* Session list */}
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {loading ? (
           <div className="flex flex-col items-center justify-center py-12 gap-3">
@@ -282,7 +288,6 @@ export default function Sidebar({
           <div className="space-y-4">
             {grouped.map((group) => (
               <div key={group.label}>
-                {/* Group header */}
                 <div className="flex items-center gap-2 px-3 py-1.5 mb-1">
                   <CalendarDays size={10} className="text-ink-faint" />
                   <span className="text-xxs font-semibold text-ink-muted uppercase tracking-wider">
@@ -292,7 +297,6 @@ export default function Sidebar({
                   <span className="text-xxs text-ink-faint font-mono">{group.sessions.length}</span>
                 </div>
 
-                {/* Sessions in group */}
                 <div className="space-y-0.5">
                   {group.sessions.map((s) => (
                     <SessionItem
@@ -309,7 +313,6 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* Deleted sessions */}
         {deletedSessions.length > 0 && (
           <div className="mt-4 pt-3 border-t border-line-subtle">
             <button
@@ -361,7 +364,6 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Footer */}
       <div className="px-4 py-3 border-t border-line-subtle">
         <div className="flex items-center justify-between text-xxs text-ink-faint">
           <span>共 {sessions.length} 个会话</span>
