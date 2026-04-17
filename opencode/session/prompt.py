@@ -309,18 +309,22 @@ async def prompt(
                 })
                 # Save compaction event for audit trail (background)
                 from opencode.session.message import save_compaction_event
-                def _save_compact_event() -> None:
+                def _save_compact_event(
+                    _sid: str = session_id,
+                    _iter: int = iteration,
+                    _metrics: object = compact_metrics,
+                ) -> None:
                     save_compaction_event(
-                        session_id=session_id,
-                        iteration=iteration,
+                        session_id=_sid,
+                        iteration=_iter,
                         metrics={
-                            'old_message_count': compact_metrics.old_message_count,
-                            'old_message_tokens': compact_metrics.old_message_tokens,
-                            'summary_length': compact_metrics.summary_length,
-                            'removed_turn_count': compact_metrics.removed_turn_count,
+                            'old_message_count': _metrics.old_message_count,  # type: ignore[attr-defined]
+                            'old_message_tokens': _metrics.old_message_tokens,  # type: ignore[attr-defined]
+                            'summary_length': _metrics.summary_length,  # type: ignore[attr-defined]
+                            'removed_turn_count': _metrics.removed_turn_count,  # type: ignore[attr-defined]
                         },
-                        old_messages=compact_metrics.old_messages,
-                        summary=compact_metrics.summary,
+                        old_messages=_metrics.old_messages,  # type: ignore[attr-defined]
+                        summary=_metrics.summary,  # type: ignore[attr-defined]
                     )
                 await _aio.to_thread(_save_compact_event)
 

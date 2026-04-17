@@ -14,7 +14,6 @@ from typing import Any, Literal
 
 from opencode.util import ids
 
-
 # ---------------------------------------------------------------------------
 # Message origin tracking
 # ---------------------------------------------------------------------------
@@ -313,7 +312,6 @@ def save_part(part: Part) -> None:
 def save_parts(parts: list[Part]) -> None:
     """Persist multiple parts in a single transaction."""
     from opencode.storage.database import get_session as get_db_session
-    from opencode.storage.models import PartTable
 
     if not parts:
         return
@@ -550,15 +548,16 @@ def save_compaction_event(
     summary: str,
 ) -> None:
     """Persist a compaction event with pre-compaction context for audit trail.
-    
+
     Stores the metrics and old messages so they can be viewed later.
     This enables users to understand what was lost during compaction.
     """
     import time
     import uuid
+
     from opencode.storage.database import get_session as get_db_session
     from opencode.storage.models import CompactionEventTable
-    
+
     event_id = f"comp-{uuid.uuid4().hex[:12]}"
     row = CompactionEventTable(
         id=event_id,
@@ -572,7 +571,7 @@ def save_compaction_event(
         summary=summary,
         time_created=int(time.time() * 1000),
     )
-    
+
     db = get_db_session()
     try:
         db.add(row)
@@ -583,12 +582,12 @@ def save_compaction_event(
 
 def get_compaction_events(session_id: str) -> list[dict[str, Any]]:
     """Retrieve all compaction events for a session.
-    
+
     Returns a list of compaction events with their metrics and summaries.
     """
     from opencode.storage.database import get_session as get_db_session
     from opencode.storage.models import CompactionEventTable
-    
+
     db = get_db_session()
     try:
         rows = db.query(CompactionEventTable).filter_by(session_id=session_id).order_by(CompactionEventTable.iteration).all()

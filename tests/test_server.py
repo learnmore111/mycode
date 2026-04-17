@@ -17,7 +17,7 @@ def client(tmp_path, monkeypatch):
 
 
 def test_root(client):
-    resp = client.get("/")
+    resp = client.get("/api/info")
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "mycode"

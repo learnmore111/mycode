@@ -12,6 +12,7 @@ The FileLock class provides a context manager for safe, atomic file operations.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import platform
 from pathlib import Path
@@ -39,12 +40,12 @@ async def _get_fallback_lock(path: Path) -> asyncio.Lock:
 
 class FileLock:
     """Cross-platform file locking for atomic JSONL operations.
-    
+
     Usage:
         async with FileLock(path) as lock:
             with open(path, "a") as f:
                 f.write(json_record + "\n")
-    
+
     On Unix: Uses fcntl advisory locking (POSIX)
     On Windows: Uses msvcrt file locking
     Fallback: In-memory asyncio.Lock for unsupported platforms
@@ -134,7 +135,7 @@ class FileLock:
                 if elapsed > self.timeout_seconds:
                     raise TimeoutError(
                         f"Could not acquire lock on {self.path} within {self.timeout_seconds}s"
-                    )
+                    ) from None
                 await asyncio.sleep(0.01)  # Retry after short delay
 
         self._is_locked = True
@@ -157,20 +158,16 @@ class FileLock:
                 if self._platform == "Windows":
                     import msvcrt
                     # Unlock the file
-                    try:
+                    with contextlib.suppress(OSError):
                         await loop.run_in_executor(
                             None, msvcrt.locking, self._file_handle.fileno(), msvcrt.LK_UNLCK, 1
                         )
-                    except OSError:
-                        pass  # File may already be unlocked
                 else:
                     # fcntl unlock
-                    try:
+                    with contextlib.suppress(OSError):
                         await loop.run_in_executor(
                             None, fcntl.lockf, self._file_handle, fcntl.LOCK_UN, 0, 0, 0
                         )
-                    except OSError:
-                        pass  # Already unlocked
 
                 # Close file handle
                 await loop.run_in_executor(None, self._file_handle.close)
@@ -208,7 +205,7 @@ class FileLock:
 
 class FileLockManager:
     """Manager for file locks across multiple files.
-    
+
     Maintains a cache of FileLock instances per file path to ensure
     consistent locking behavior across concurrent operations.
     """
@@ -220,11 +217,11 @@ class FileLockManager:
 
     async def acquire_lock(self, path: Path, timeout_seconds: float = 10.0) -> FileLock:
         """Get or create a FileLock for the given path.
-        
+
         Args:
             path: Path to file to lock
             timeout_seconds: Timeout for acquiring lock
-            
+
         Returns:
             FileLock instance (acquired and ready to use)
         """
@@ -254,11 +251,11 @@ _lock_manager = FileLockManager()
 
 async def get_file_lock(path: Path, timeout_seconds: float = 10.0) -> FileLock:
     """Convenience function to get a file lock.
-    
+
     Args:
         path: Path to file to lock
         timeout_seconds: Timeout for acquiring lock
-        
+
     Returns:
         FileLock instance (already acquired)
     """

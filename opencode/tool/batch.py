@@ -53,6 +53,18 @@ class BatchTool(CallableTool[BatchParams]):
         "Maximum 25 calls per batch. Only built-in tools are supported (no nested batch or task)."
     )
 
+    def is_read_only(self, args: dict | None = None) -> bool:
+        """Batch may contain mutating tools, so it's not read-only."""
+        return False
+
+    def is_destructive(self, args: dict | None = None) -> bool:
+        """Batch may contain destructive tools."""
+        return False
+
+    def is_concurrency_safe(self, args: dict | None = None) -> bool:
+        """Batch is not safe to run concurrently with other tools."""
+        return False
+
     async def call(self, params: BatchParams, ctx: ToolContext) -> ToolResult:
         calls = params.calls
         description = params.description

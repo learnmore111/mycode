@@ -291,7 +291,7 @@ async def process_stream(
                 # Use capability declaration if available, fallback to hardcoded set
                 if hasattr(tool_impl, "is_concurrency_safe") and hasattr(tool_impl, "is_read_only"):
                     tool_input = tp.state.get("input", {})
-                    if tool_impl.is_read_only(tool_input) or tool_impl.is_concurrency_safe(tool_input):
+                    if tool_impl.is_read_only(tool_input) and tool_impl.is_concurrency_safe(tool_input):
                         readonly_tasks.append((tp, tool_impl, tool_ctx))
                     else:
                         mutating_tasks.append((tp, tool_impl, tool_ctx))

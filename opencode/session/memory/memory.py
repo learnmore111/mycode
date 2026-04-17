@@ -151,7 +151,7 @@ class SessionMemory:
 
     async def _append_record(self, record: dict[str, Any]) -> None:
         """Append a record to JSONL file with file-level locking.
-        
+
         Ensures thread-safe, atomic writes to prevent JSONL corruption.
         Acquires exclusive lock for duration of write operation.
         """
@@ -190,7 +190,7 @@ class SessionMemory:
 
     async def _rewrite_file(self, refined_turns: dict[int, str]) -> None:
         """Rewrite JSONL file with append-only merge strategy.
-        
+
         Prevents data loss from concurrent appends during rewrite:
         1. Load records snapshot (start of operation)
         2. Acquire lock
@@ -198,7 +198,7 @@ class SessionMemory:
         4. Merge: old records (with refinements) + new records
         5. Write merged result atomically
         6. Release lock
-        
+
         This ensures zero data loss even with concurrent appends.
         """
         # First snapshot - used to detect new records later
@@ -583,7 +583,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
             if not dd.is_dir():
                 continue
             for f in sorted(dd.iterdir(), reverse=True):
-                if not f.suffix == ".jsonl":
+                if f.suffix != ".jsonl":
                     continue
                 try:
                     for line in reversed(f.read_text(encoding="utf-8").strip().split("\n")):
