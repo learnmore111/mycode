@@ -440,6 +440,15 @@ async def prompt(
                 "total_cost": assistant_msg.cost,  # cumulative cost is still useful
             }
 
+            # Token estimation telemetry — compare heuristic vs actual API usage
+            if iter_input_tokens > 0:
+                est = (
+                    compaction.estimate_messages_tokens(iter_messages)
+                    + system_tokens_est
+                    + tools_tokens_est
+                )
+                compaction.log_token_accuracy(est, iter_input_tokens, f"{provider_id}/{model_id}")
+
             if result == "stop":
                 break
 

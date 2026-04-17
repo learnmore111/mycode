@@ -238,26 +238,50 @@ def _truncate_tool_outputs_for_summary(
     messages: list[dict[str, Any]],
     limit: int = SUMMARY_TOOL_OUTPUT_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Create a deep copy of *messages* with large tool outputs truncated.
+    """Create a copy of *messages* with large tool outputs truncated.
+
+    Uses copy-on-write: only messages that actually need truncation are
+    deep-copied.  Messages that fit within *limit* are shared with the
+    original list (no allocation).
 
     This is used **only** for the compaction LLM call so that it sees less
     token volume.  The original messages are never modified.
     """
-    truncated = copy.deepcopy(messages)
-    for msg in truncated:
-        # Truncate tool result content
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        needs_copy = False
+
+        # Check tool result content
         if msg.get("role") == "tool":
             content = msg.get("content", "")
             if isinstance(content, str) and len(content) > limit:
-                msg["content"] = content[:limit] + f"\n... [truncated, {len(content)} chars total]"
+                needs_copy = True
 
-        # Truncate tool_call arguments in assistant messages
+        # Check tool_call arguments in assistant messages
         for tc in msg.get("tool_calls", []):
+            fn = tc.get("function", {})
+            if len(fn.get("arguments", "")) > limit:
+                needs_copy = True
+                break
+
+        if not needs_copy:
+            result.append(msg)
+            continue
+
+        # Only deep-copy messages that need truncation
+        msg_copy = copy.deepcopy(msg)
+        if msg_copy.get("role") == "tool":
+            content = msg_copy.get("content", "")
+            if isinstance(content, str) and len(content) > limit:
+                msg_copy["content"] = content[:limit] + f"\n... [truncated, {len(content)} chars total]"
+        for tc in msg_copy.get("tool_calls", []):
             fn = tc.get("function", {})
             args = fn.get("arguments", "")
             if len(args) > limit:
                 fn["arguments"] = args[:limit] + "..."
-    return truncated
+        result.append(msg_copy)
+
+    return result
 
 
 def _extract_summary(text: str, max_length: int = 8000) -> str:
@@ -286,12 +310,37 @@ def _extract_summary(text: str, max_length: int = 8000) -> str:
             stripped = stripped[:max_length] + "\n... [summary truncated]"
         return stripped
 
-    # Last resort: truncate
-    result = text.strip()
+    # Last resort: strip common reasoning/scratchpad patterns and truncate
+    result = _strip_reasoning_patterns(text)
+    if not result:
+        return "[Empty summary generated]"
+
+    logger.warn("summary extraction fell back to stripped full text", length=len(text), stripped_length=len(result))
     if len(result) > max_length:
         result = result[:max_length] + "\n... [summary truncated]"
-        logger.warn("summary extraction fell back to truncated full text", length=len(text))
-    return result if result else "[Empty summary generated]"
+    return result
+
+
+# Patterns that indicate LLM reasoning/scratchpad (not useful as summary content)
+_REASONING_TAG_RE = re.compile(r"<(?:thinking|reasoning|scratchpad)>.*?</(?:thinking|reasoning|scratchpad)>", re.DOTALL)
+_REASONING_LINE_RE = re.compile(
+    r"^(?:Let me (?:think|analyze|consider|review)|I (?:need to|should|will)|"
+    r"First,? |Next,? |Then,? |Finally,? |Step \d|OK,? so ).*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _strip_reasoning_patterns(text: str) -> str:
+    """Strip common LLM reasoning/scratchpad patterns from raw text.
+
+    Used as a last-resort cleanup when the model fails to output proper
+    ``<summary>``/``<analysis>`` tags.
+    """
+    result = _REASONING_TAG_RE.sub("", text)
+    result = _REASONING_LINE_RE.sub("", result)
+    # Collapse multiple blank lines
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
 
 
 def _build_compact_result(
@@ -427,4 +476,45 @@ async def compact(
         summary=summary,
     )
     result = _build_compact_result(summary, recent)
+
+    # Step 8: post-compaction validation — warn if result still overflows
+    system_tokens_est = estimate_tokens("\n\n".join(system)) if system else 0
+    tools_tokens_est = estimate_tokens(str(tools)) if tools else 0
+    result_tokens = estimate_messages_tokens(result)
+    total_est = result_tokens + system_tokens_est + tools_tokens_est
+    context_limit = model.limit.context if model.limit.context > 0 else 32_000
+    threshold = int(context_limit * OVERFLOW_RATIO)
+    if total_est > threshold:
+        logger.warn(
+            "compacted result still exceeds threshold — next iteration will re-compact",
+            result_tokens=result_tokens,
+            total_est=total_est,
+            threshold=threshold,
+        )
+
     return result, metrics
+
+
+def log_token_accuracy(estimated: int, actual: int, model_id: str) -> None:
+    """Log token estimation accuracy for tuning.
+
+    Compares the heuristic estimate against the actual input token count
+    reported by the API.  Only logs when divergence is significant (>2× or <0.5×)
+    so that normal operation produces no noise.
+
+    Args:
+        estimated: Heuristic estimate (from ``estimate_messages_tokens``).
+        actual: Real input_tokens from API usage metadata.
+        model_id: Model identifier (e.g. ``"anthropic/claude-sonnet"``).
+    """
+    if actual <= 0 or estimated <= 0:
+        return
+    ratio = estimated / actual
+    if ratio > 2.0 or ratio < 0.5:
+        logger.info(
+            "token estimate divergence",
+            estimated=estimated,
+            actual=actual,
+            ratio=f"{ratio:.2f}",
+            model=model_id,
+        )

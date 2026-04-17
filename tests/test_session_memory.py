@@ -172,28 +172,31 @@ class TestInputSummarization:
 class TestFileIO:
     """Tests for JSONL file I/O."""
 
-    def test_append_and_load_records(self, memory):
+    @pytest.mark.asyncio
+    async def test_append_and_load_records(self, memory):
         """Test appending and loading records."""
-        memory._append_record({"type": "turn", "turn": 1, "q": "hello"})
-        memory._append_record({"type": "turn", "turn": 2, "q": "world"})
+        await memory._append_record({"type": "turn", "turn": 1, "q": "hello"})
+        await memory._append_record({"type": "turn", "turn": 2, "q": "world"})
         records = memory._load_all_records()
         assert len(records) == 2
         assert records[0]["q"] == "hello"
         assert records[1]["q"] == "world"
 
-    def test_load_all_turns_filters(self, memory):
+    @pytest.mark.asyncio
+    async def test_load_all_turns_filters(self, memory):
         """Test that _load_all_turns only returns turn records."""
-        memory._append_record({"type": "summary", "text": "summary"})
-        memory._append_record({"type": "turn", "turn": 1, "q": "hello"})
-        memory._append_record({"type": "turn", "turn": 2, "q": "world"})
+        await memory._append_record({"type": "summary", "text": "summary"})
+        await memory._append_record({"type": "turn", "turn": 1, "q": "hello"})
+        await memory._append_record({"type": "turn", "turn": 2, "q": "world"})
         turns = memory._load_all_turns()
         assert len(turns) == 2
 
-    def test_load_latest_summary(self, memory):
+    @pytest.mark.asyncio
+    async def test_load_latest_summary(self, memory):
         """Test that latest summary is found."""
-        memory._append_record({"type": "summary", "text": "old summary"})
-        memory._append_record({"type": "turn", "turn": 1})
-        memory._append_record({"type": "summary", "text": "new summary"})
+        await memory._append_record({"type": "summary", "text": "old summary"})
+        await memory._append_record({"type": "turn", "turn": 1})
+        await memory._append_record({"type": "summary", "text": "new summary"})
         s = memory._load_latest_summary()
         assert s is not None
         assert s["text"] == "new summary"
@@ -203,17 +206,18 @@ class TestFileIO:
         s = memory._load_latest_summary()
         assert s is None
 
-    def test_rewrite_file_updates_turns(self, memory):
+    @pytest.mark.asyncio
+    async def test_rewrite_file_updates_turns(self, memory):
         """Test that _rewrite_file updates turn summaries and replaces summary."""
-        memory._append_record({"type": "turn", "turn": 1, "a": "old summary 1"})
-        memory._append_record({"type": "turn", "turn": 2, "a": "old summary 2"})
-        memory._append_record({"type": "summary", "text": "old session summary"})
+        await memory._append_record({"type": "turn", "turn": 1, "a": "old summary 1"})
+        await memory._append_record({"type": "turn", "turn": 2, "a": "old summary 2"})
+        await memory._append_record({"type": "summary", "text": "old session summary"})
 
         memory._summary = SessionSummary(
             session_id="test", project_path="/test", start_time="", end_time="",
             duration_minutes=1, summary_text="new session summary",
         )
-        memory._rewrite_file({1: "refined summary 1"})
+        await memory._rewrite_file({1: "refined summary 1"})
 
         records = memory._load_all_records()
         turns = [r for r in records if r["type"] == "turn"]
@@ -326,10 +330,11 @@ class TestContextFormatting:
         result = memory.format_for_context()
         assert result == ""
 
-    def test_format_for_context_with_data(self, memory):
+    @pytest.mark.asyncio
+    async def test_format_for_context_with_data(self, memory):
         """Test formatting with turns and summary."""
-        memory._append_record({"type": "summary", "text": "## what_was_done\n- Added login"})
-        memory._append_record({
+        await memory._append_record({"type": "summary", "text": "## what_was_done\n- Added login"})
+        await memory._append_record({
             "type": "turn", "turn": 1, "ts": "2024-01-01",
             "q": "Add login", "tools": [{"tool": "edit", "file": "/login.py", "input": "", "output": ""}],
             "a": "Added login functionality",
@@ -344,10 +349,11 @@ class TestContextFormatting:
         assert "<turn n=" in result
         assert "Add login" in result
 
-    def test_format_for_context_limits_turns(self, memory):
+    @pytest.mark.asyncio
+    async def test_format_for_context_limits_turns(self, memory):
         """Test that format_for_context respects the limit parameter."""
         for i in range(10):
-            memory._append_record({
+            await memory._append_record({
                 "type": "turn", "turn": i + 1, "ts": "2024-01-01",
                 "q": f"query {i}", "tools": [], "a": f"answer {i}",
             })
