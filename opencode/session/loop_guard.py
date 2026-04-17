@@ -398,7 +398,7 @@ class LoopGuard:
         return None
 
     def _detect_ping_pong(self, history: list[ToolCallRecord]) -> GuardVerdict | None:
-        """Detect A→B→A→B alternation pattern."""
+        """Detect A→B→A→B alternation pattern with same inputs."""
         threshold = self.config.ping_pong_threshold
         needed = threshold * 2  # Need 2N entries for N ping-pong pairs
         if len(history) < needed:
@@ -413,11 +413,19 @@ class LoopGuard:
 
         # Check strict alternation
         is_alternating = all(tools[i] != tools[i + 1] for i in range(len(tools) - 1))
-        if is_alternating:
+        if not is_alternating:
+            return None
+
+        # Also verify inputs repeat — legitimate work with different inputs is not ping-pong
+        # Group by tool and check that each tool's input_hash is the same across all its calls
+        tool_inputs: dict[str, set[str]] = {}
+        for r in recent:
+            tool_inputs.setdefault(r.tool_name, set()).add(r.input_hash)
+        if all(len(hashes) == 1 for hashes in tool_inputs.values()):
             t1, t2 = unique_tools
             return GuardVerdict(
                 action=GuardAction.STOP,
-                reason=f"Ping-pong detected: {t1} ↔ {t2} alternating {threshold} times",
+                reason=f"Ping-pong detected: {t1} ↔ {t2} alternating {threshold} times with same inputs",
                 layer="pattern.ping_pong",
             )
         return None
@@ -430,20 +438,34 @@ class LoopGuard:
 
         recent = history[-threshold:]
         first = recent[0]
-        if not first.output_hash:
-            return None
 
-        if all(
-            r.tool_name == first.tool_name
-            and r.input_hash == first.input_hash
-            and r.output_hash == first.output_hash
-            for r in recent
-        ):
-            return GuardVerdict(
-                action=GuardAction.STOP,
-                reason=f"Stall detected: {first.tool_name} returning identical results {threshold} times",
-                layer="pattern.stall",
-            )
+        # For tools with output: check tool+input+output all match (true stall)
+        # For tools without output (e.g. silent bash): check tool+input match (repeated no-op)
+        if first.output_hash:
+            if all(
+                r.tool_name == first.tool_name
+                and r.input_hash == first.input_hash
+                and r.output_hash == first.output_hash
+                for r in recent
+            ):
+                return GuardVerdict(
+                    action=GuardAction.STOP,
+                    reason=f"Stall detected: {first.tool_name} returning identical results {threshold} times",
+                    layer="pattern.stall",
+                )
+        else:
+            # No output — still detect if same tool+input is called repeatedly
+            if all(
+                r.tool_name == first.tool_name
+                and r.input_hash == first.input_hash
+                and not r.output_hash
+                for r in recent
+            ):
+                return GuardVerdict(
+                    action=GuardAction.STOP,
+                    reason=f"Stall detected: {first.tool_name} called {threshold} times with same input and no output",
+                    layer="pattern.stall",
+                )
         return None
 
     # --- Layer 3: Near-Limit Intelligence ---

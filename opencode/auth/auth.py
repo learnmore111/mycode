@@ -167,7 +167,5 @@ async def is_authenticated(provider_id: str) -> bool:
     """Check if a provider has valid (non-expired) authentication."""
     info = await get(provider_id)
     if info:
-        if isinstance(info, OAuthAuth) and info.is_expired:
-            return False
-        return True
+        return not (isinstance(info, OAuthAuth) and info.is_expired)
     return get_env_key(provider_id) is not None

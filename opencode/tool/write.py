@@ -28,7 +28,6 @@ from opencode.tool.base import (
 
 _PREVIEW_LINES = 10
 _MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for write operations
-_MAX_CONTENT_SIZE = 10 * 1024 * 1024  # 10 MB limit for write operations
 
 
 class WriteParams(BaseModel):

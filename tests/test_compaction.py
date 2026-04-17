@@ -19,8 +19,8 @@ from opencode.session.compaction import (
 def test_estimate_tokens():
     assert estimate_tokens("") == 0
     assert estimate_tokens("abcd") == 1
-    # 400 ASCII chars = 400 bytes / 3 ≈ 133
-    assert estimate_tokens("a" * 400) == 133
+    # 400 ASCII chars = 400 bytes / 3 = 133 base + 133 // 7 = 19 margin → 152
+    assert estimate_tokens("a" * 400) == 152
 
 
 def test_estimate_messages_tokens():
@@ -29,8 +29,8 @@ def test_estimate_messages_tokens():
         {"role": "assistant", "content": "b" * 800},
     ]
     est = estimate_messages_tokens(msgs)
-    # 400 bytes / 3 = 133, 800 bytes / 3 = 266 → 399 (integer division)
-    assert est == 399
+    # 400 bytes → 152 tokens, 800 bytes → 304 tokens → total 456
+    assert est == 456
 
 
 def test_estimate_messages_tokens_with_tools():

@@ -18,15 +18,17 @@ Every SUMMARY_INTERVAL turns (default 3), the system calls LLM to:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from opencode.config import config as configmod
+from opencode.session.memory.filelock import FileLock
 from opencode.util import log as logmod
 from opencode.util.paths import GlobalPaths
 
@@ -82,6 +84,7 @@ class SessionMemory:
         self._pending_turns: list[dict[str, Any]] = []
         self._summary: SessionSummary | None = None
         self._log_file_path: Path | None = None
+        self._write_lock = asyncio.Lock()
 
     def _load_config(self) -> dict[str, Any]:
         cfg = configmod.get()
@@ -146,11 +149,21 @@ class SessionMemory:
         self._log_file_path = self.memory_dir / "sessions" / date_str / f"{prefix}.jsonl"
         return self._log_file_path
 
-    def _append_record(self, record: dict[str, Any]) -> None:
+    async def _append_record(self, record: dict[str, Any]) -> None:
+        """Append a record to JSONL file with file-level locking.
+
+        Ensures thread-safe, atomic writes to prevent JSONL corruption.
+        Acquires exclusive lock for duration of write operation.
+        """
         self._ensure_dirs()
         path = self._get_log_path()
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        async with self._write_lock:
+            lock = FileLock(path, timeout_seconds=10.0)
+            async with lock:
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        logger.debug("appended record", record_type=record.get("type"))
 
     def _load_all_records(self) -> list[dict[str, Any]]:
         path = self._get_log_path()
@@ -161,7 +174,7 @@ class SessionMemory:
             for line in path.read_text(encoding="utf-8").strip().split("\n"):
                 if line:
                     records.append(json.loads(line))
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return []
         return records
 
@@ -175,40 +188,79 @@ class SessionMemory:
                 return r
         return None
 
-    def _rewrite_file(self, refined_turns: dict[int, str]) -> None:
-        """Rewrite JSONL file: update turns with refined summaries, append new summary."""
-        records = self._load_all_records()
-        new_records = []
-        for r in records:
-            if r.get("type") == "turn" and r.get("turn") in refined_turns:
-                r["a"] = refined_turns[r["turn"]]
-            # Keep all records except old summaries (we'll append fresh one)
-            if r.get("type") != "summary":
-                new_records.append(r)
-        # Append latest summary
-        if self._summary:
-            new_records.append({
-                "type": "summary",
-                "session_id": self._summary.session_id,
-                "project": self._summary.project_path,
-                "start": self._summary.start_time,
-                "end": self._summary.end_time,
-                "duration_min": self._summary.duration_minutes,
-                "text": self._summary.summary_text,
-                "files_modified": self._summary.files_modified,
-                "files_read": self._summary.files_read,
-                "tool_uses": self._summary.tool_uses,
-                "topics": self._summary.key_topics,
-                "turns": self._summary.turn_count,
-            })
-        # Write atomically
-        path = self._get_log_path()
-        self._ensure_dirs()
-        tmp = path.with_suffix(".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            for r in new_records:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        tmp.replace(path)
+    async def _rewrite_file(self, refined_turns: dict[int, str]) -> None:
+        """Rewrite JSONL file with append-only merge strategy.
+
+        Prevents data loss from concurrent appends during rewrite:
+        1. Load records snapshot (start of operation)
+        2. Acquire lock
+        3. Load records again (any new ones are kept)
+        4. Merge: old records (with refinements) + new records
+        5. Write merged result atomically
+        6. Release lock
+
+        This ensures zero data loss even with concurrent appends.
+        """
+        # First snapshot - used to detect new records later
+        records_snapshot = self._load_all_records()
+        snapshot_ids = {json.dumps(r, sort_keys=True) for r in records_snapshot}
+
+        async with self._write_lock:
+            lock = FileLock(self._get_log_path(), timeout_seconds=10.0)
+            async with lock:
+                # Second read - gets any records appended since first read
+                records_now = self._load_all_records()
+
+                # Identify new records (those in records_now but not in snapshot)
+                new_records = []
+                for r in records_now:
+                    r_json = json.dumps(r, sort_keys=True)
+                    if r_json not in snapshot_ids:
+                        new_records.append(r)
+
+                # Process old records with refinements
+                processed_records = []
+                for r in records_snapshot:
+                    if r.get("type") == "turn" and r.get("turn") in refined_turns:
+                        r = dict(r)  # Copy to avoid mutation
+                        r["a"] = refined_turns[r["turn"]]
+                    # Keep all records except old summaries
+                    if r.get("type") != "summary":
+                        processed_records.append(r)
+
+                # Append new records (preserves any concurrent appends)
+                processed_records.extend(new_records)
+
+                # Append latest summary
+                if self._summary:
+                    processed_records.append({
+                        "type": "summary",
+                        "session_id": self._summary.session_id,
+                        "project": self._summary.project_path,
+                        "start": self._summary.start_time,
+                        "end": self._summary.end_time,
+                        "duration_min": self._summary.duration_minutes,
+                        "text": self._summary.summary_text,
+                        "files_modified": self._summary.files_modified,
+                        "files_read": self._summary.files_read,
+                        "tool_uses": self._summary.tool_uses,
+                        "topics": self._summary.key_topics,
+                        "turns": self._summary.turn_count,
+                    })
+
+                # Write atomically
+                path = self._get_log_path()
+                self._ensure_dirs()
+                tmp = path.with_suffix(".tmp")
+                with tmp.open("w", encoding="utf-8") as f:
+                    for r in processed_records:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                tmp.replace(path)
+
+                logger.debug("rewrote file",
+                            old_records=len(records_snapshot),
+                            new_records_preserved=len(new_records),
+                            refined_turns=len(refined_turns))
 
     # ------------------------------------------------------------------
     # Tool call buffering
@@ -238,7 +290,7 @@ class SessionMemory:
         self._current_tool_calls = []
         turn_record = {"type": "turn", "turn": entry.turn, "ts": entry.timestamp,
                        "q": entry.user_query, "tools": entry.tool_calls, "a": entry.assistant_summary}
-        self._append_record(turn_record)
+        await self._append_record(turn_record)
         self._pending_turns.append(turn_record)
 
         if self._turn_counter % SUMMARY_INTERVAL == 0 and self.is_enabled:
@@ -279,7 +331,7 @@ class SessionMemory:
                         tool_uses=self._count_tools(all_turns),
                         key_topics=self._infer_topics(set(self._extract_files(all_turns, "write"))),
                         turn_count=self._turn_counter)
-                self._rewrite_file(refined_turns)
+                await self._rewrite_file(refined_turns)
             self._pending_turns = []
         except Exception as e:
             logger.error("LLM update failed", error=str(e))
@@ -314,9 +366,7 @@ class SessionMemory:
                 model_str = f"openai/{model_name}"
                 if not base_url:
                     base_url = "https://api.deepseek.com/v1"
-            elif base_url:
-                model_str = f"openai/{model_name}"
-            elif provider == "openai":
+            elif base_url or provider == "openai":
                 model_str = f"openai/{model_name}"
             else:
                 model_str = f"{provider}/{model_name}"
@@ -327,12 +377,28 @@ class SessionMemory:
             if base_url:
                 kwargs["base_url"] = base_url
             logger.debug("calling LLM for memory update", provider=provider, model=model_name)
-            resp = await litellm.acompletion(**kwargs)
-            raw = resp.choices[0].message.content or ""
-            return self._parse_llm_response(raw, recent_turns)
+
+            # Retry with exponential backoff for transient errors
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    resp = await litellm.acompletion(**kwargs)
+                    raw = resp.choices[0].message.content or ""
+                    return self._parse_llm_response(raw, recent_turns)
+                except Exception as e:
+                    if attempt < max_retries and _is_transient_error(e):
+                        delay = 1.0 * (2 ** attempt)  # 1s, 2s
+                        logger.info("retrying LLM call for memory update",
+                                    attempt=attempt + 1, delay=delay, error=str(e))
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.error("LLM call failed", error=str(e), attempts=attempt + 1)
+                    return self._fallback_combined(all_turns, recent_turns, start_time)
         except Exception as e:
-            logger.error("LLM call failed", error=str(e))
+            logger.error("LLM call setup failed", error=str(e))
             return self._fallback_combined(all_turns, recent_turns, start_time)
+        # Unreachable, but satisfies type checker
+        return self._fallback_combined(all_turns, recent_turns, start_time)
 
     # ------------------------------------------------------------------
     # Prompt building
@@ -517,7 +583,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
             if not dd.is_dir():
                 continue
             for f in sorted(dd.iterdir(), reverse=True):
-                if not f.suffix == ".jsonl":
+                if f.suffix != ".jsonl":
                     continue
                 try:
                     for line in reversed(f.read_text(encoding="utf-8").strip().split("\n")):
@@ -527,7 +593,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
                         if rec.get("type") == "summary" and rec.get("project") == self.project_path:
                             results.append({"path": str(f), "date": dd.name, **rec})
                             break
-                except (json.JSONDecodeError, IOError):
+                except (OSError, json.JSONDecodeError):
                     continue
                 if len(results) >= limit:
                     break
@@ -617,6 +683,17 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
             if ext in ext_map:
                 topics.add(ext_map[ext])
         return list(topics)
+
+
+def _is_transient_error(e: Exception) -> bool:
+    """Check if an error is transient and worth retrying.
+
+    Matches common transient error patterns from LLM API providers:
+    rate limits (429), server errors (503), timeouts, and connection issues.
+    """
+    error_str = str(e).lower()
+    transient_indicators = ["rate limit", "timeout", "429", "503", "connection", "temporary", "overloaded"]
+    return any(ind in error_str for ind in transient_indicators)
 
 
 # ---------------------------------------------------------------------------

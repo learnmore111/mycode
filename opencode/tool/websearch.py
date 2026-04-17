@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import re
+from typing import Any
 from urllib.parse import unquote
 
 import httpx
@@ -24,6 +25,12 @@ class WebSearchParams(BaseModel):
 class WebSearchTool(CallableTool[WebSearchParams]):
     id = "websearch"
     description = "Search the web for information. Returns search results with titles, URLs, and snippets."
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
 
     async def call(self, params: WebSearchParams, ctx: ToolContext) -> ToolResult:
         query = params.query

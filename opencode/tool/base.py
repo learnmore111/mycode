@@ -149,6 +149,7 @@ class ToolResultBuilder:
             remaining = self.max_chars - self._total
             if remaining > 0:
                 self._parts.append(text[:remaining])
+                self._total += remaining
             self._truncated = True
         else:
             self._parts.append(text)
@@ -167,7 +168,7 @@ class ToolResultBuilder:
         """Return the accumulated output string."""
         result = "".join(self._parts)
         if self._truncated:
-            result += f"\n\n... output truncated ({self._total} chars, limit {self.max_chars})"
+            result += f"\n\n... output truncated (wrote {self._total} chars, limit {self.max_chars})"
         return result
 
     def __len__(self) -> int:
