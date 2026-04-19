@@ -24,12 +24,6 @@ export default function StreamingIndicator({ text, parts }: Props) {
 
       {/* Content */}
       <div className="pl-7 text-ink">
-        {text ? (
-          <div className="streaming-cursor">
-            <TextContent content={text} />
-          </div>
-        ) : null}
-
         {parts.map((part) => (
           <ToolExecution
             key={part.id}
@@ -44,6 +38,12 @@ export default function StreamingIndicator({ text, parts }: Props) {
             }}
           />
         ))}
+
+        {text ? (
+          <div className="streaming-cursor">
+            <TextContent content={text} />
+          </div>
+        ) : null}
 
         {!text && parts.length === 0 && (
           <div className="flex items-center gap-2.5 text-ink-muted text-sm py-1">

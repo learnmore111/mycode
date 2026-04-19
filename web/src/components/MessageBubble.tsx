@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import type { Message } from '../types'
 import TextContent from './TextContent'
 import ToolExecution from './ToolExecution'
@@ -9,6 +10,11 @@ interface Props {
 
 export default function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user'
+
+  const sortedParts = useMemo(() => {
+    const order: Record<string, number> = { reasoning: 0, tool: 1, text: 2 }
+    return [...message.parts].sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9))
+  }, [message.parts])
 
   return (
     <div className="animate-fade-in">
@@ -28,7 +34,7 @@ export default function MessageBubble({ message }: Props) {
 
       {/* Content */}
       <div className={`pl-7 ${isUser ? 'text-ink' : 'text-ink'}`}>
-        {message.parts.map((part) => {
+        {sortedParts.map((part) => {
           switch (part.type) {
             case 'text':
               return <TextContent key={part.id} content={part.content ?? ''} />
