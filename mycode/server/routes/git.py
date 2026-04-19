@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from mycode.project.instance import provide
 from mycode.project.project import from_directory
@@ -328,3 +329,70 @@ async def git_diff(path: str = Query(...), directory: str = Query(default=".")):
         }
 
     return await provide(directory, _fn, project=project)
+
+
+class _FileAction(BaseModel):
+    path: str
+    directory: str = "."
+
+
+@router.post("/stage")
+async def git_stage(body: _FileAction):
+    """Stage a file (git add)."""
+    project = await from_directory(body.directory)
+
+    async def _fn():
+        if project.vcs != "git":
+            raise HTTPException(400, "当前目录不是 Git 仓库")
+        if not _is_within_worktree(project.worktree, body.path):
+            raise HTTPException(400, "文件路径超出 Git 工作区")
+
+        code, _, stderr = await _run_git(["add", "--", body.path], cwd=project.worktree)
+        if code != 0:
+            raise HTTPException(500, stderr.strip() or "git add failed")
+        return {"ok": True, "path": body.path}
+
+    return await provide(body.directory, _fn, project=project)
+
+
+@router.post("/revert")
+async def git_revert(body: _FileAction):
+    """Revert a file: discard changes (git checkout for tracked, rm for untracked)."""
+    project = await from_directory(body.directory)
+
+    async def _fn():
+        if project.vcs != "git":
+            raise HTTPException(400, "当前目录不是 Git 仓库")
+        if not _is_within_worktree(project.worktree, body.path):
+            raise HTTPException(400, "文件路径超出 Git 工作区")
+
+        code, stdout, _ = await _run_git(
+            ["status", "--porcelain", "--", body.path], cwd=project.worktree,
+        )
+        if code != 0 or not stdout.strip():
+            raise HTTPException(404, f"未找到改动文件: {body.path}")
+
+        line = stdout.strip().splitlines()[0]
+        is_untracked = line.startswith("??")
+
+        if is_untracked:
+            full_path = Path(project.worktree) / body.path
+            try:
+                if full_path.is_dir():
+                    import shutil
+                    shutil.rmtree(full_path)
+                else:
+                    full_path.unlink()
+            except OSError as exc:
+                raise HTTPException(500, f"删除文件失败: {exc}") from exc
+        else:
+            await _run_git(["reset", "HEAD", "--", body.path], cwd=project.worktree)
+            code, _, stderr = await _run_git(
+                ["checkout", "HEAD", "--", body.path], cwd=project.worktree,
+            )
+            if code != 0:
+                raise HTTPException(500, stderr.strip() or "git checkout failed")
+
+        return {"ok": True, "path": body.path}
+
+    return await provide(body.directory, _fn, project=project)

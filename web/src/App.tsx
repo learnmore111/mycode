@@ -125,6 +125,8 @@ export default function App() {
         contextSnapshot={chat.contextSnapshot}
         canReturnToLastSession={session.canReturnToLastSession}
         onReturnToLastSession={session.returnToLastSession}
+        onSelectGitFile={git.openDiff}
+        onRefreshGit={git.refresh}
       />
       {permission.pending.length > 0 && (
         <PermissionModal request={permission.pending[0]} onReply={permission.reply} />

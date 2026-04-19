@@ -19,3 +19,17 @@ export async function getGitDiff(path: string, directory?: string): Promise<GitD
   const query = buildParams(directory, { path })
   return apiFetch<GitDiffDetail>(`/git/diff?${query}`)
 }
+
+export async function stageGitFile(path: string, directory?: string): Promise<void> {
+  await apiFetch('/git/stage', {
+    method: 'POST',
+    body: JSON.stringify({ path, directory: directory || '.' }),
+  })
+}
+
+export async function revertGitFile(path: string, directory?: string): Promise<void> {
+  await apiFetch('/git/revert', {
+    method: 'POST',
+    body: JSON.stringify({ path, directory: directory || '.' }),
+  })
+}

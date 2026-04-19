@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X, ChevronDown, ChevronUp, Undo2 } from 'lucide-react'
+import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X, ChevronDown, ChevronUp, Check, Undo2, Loader2 } from 'lucide-react'
 import type { AgentInfo, ContextSnapshot, Message, PausedRun, Session, SessionCodeChange, StreamingPart } from '../types'
+import { stageGitFile, revertGitFile } from '../api/git'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
@@ -31,6 +32,8 @@ interface Props {
   contextSnapshot?: ContextSnapshot | null
   canReturnToLastSession?: boolean
   onReturnToLastSession?: () => void
+  onSelectGitFile?: (path: string) => void
+  onRefreshGit?: () => void
 }
 
 const SUGGESTIONS = [
@@ -45,19 +48,57 @@ function ChangesPanel({
   codeChanges,
   onResume,
   onDismissPausedRun,
+  onSelectFile,
+  onRefreshGit,
 }: {
   pausedRun: PausedRun | null
   codeChanges: SessionCodeChange[]
   onResume: () => void
   onDismissPausedRun: () => void
+  onSelectFile?: (path: string) => void
+  onRefreshGit?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [busyFiles, setBusyFiles] = useState<Record<string, 'stage' | 'revert'>>({})
 
   if (!pausedRun && codeChanges.length === 0) return null
 
+  const handleStage = async (path: string) => {
+    setBusyFiles((prev) => ({ ...prev, [path]: 'stage' }))
+    try {
+      await stageGitFile(path)
+      onRefreshGit?.()
+    } catch (err) {
+      console.error('Stage failed', err)
+    } finally {
+      setBusyFiles((prev) => {
+        const next = { ...prev }
+        delete next[path]
+        return next
+      })
+    }
+  }
+
+  const handleRevert = async (path: string) => {
+    if (!confirm(`确定要丢弃 ${path} 的所有更改？此操作不可撤销。`)) return
+    setBusyFiles((prev) => ({ ...prev, [path]: 'revert' }))
+    try {
+      await revertGitFile(path)
+      onRefreshGit?.()
+    } catch (err) {
+      console.error('Revert failed', err)
+    } finally {
+      setBusyFiles((prev) => {
+        const next = { ...prev }
+        delete next[path]
+        return next
+      })
+    }
+  }
+
   return (
     <div className="mx-4 mb-3 rounded-xl border border-line bg-surface-0 overflow-hidden">
-      {/* Compact toggle bar */}
+      {/* Toggle bar */}
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-surface-hover transition-colors"
@@ -73,9 +114,9 @@ function ChangesPanel({
 
       {/* Expanded content */}
       {expanded && (
-        <div className="px-3.5 pb-3 pt-1 border-t border-line-subtle space-y-2.5 animate-slide-up">
+        <div className="border-t border-line-subtle animate-slide-up">
           {pausedRun && (
-            <div className="rounded-lg bg-status-warning-light border border-status-warning/15 px-3 py-2.5">
+            <div className="mx-3.5 mt-2.5 rounded-lg bg-status-warning-light border border-status-warning/15 px-3 py-2.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 text-status-warning text-xs font-semibold">
                   <PauseCircle size={11} />
@@ -102,19 +143,58 @@ function ChangesPanel({
             </div>
           )}
 
+          {/* Vertical file list */}
           {codeChanges.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {codeChanges.map((change) => (
-                <div
-                  key={change.id}
-                  className="max-w-full rounded-lg border border-line bg-surface-1 px-2.5 py-1.5"
-                  title={change.preview || change.filePath || change.tool}
-                >
-                  <div className="text-xxs font-medium text-ink-strong truncate max-w-[240px]">
-                    {change.filePath || `${change.tool} 修改`}
+            <div className="py-1.5">
+              {codeChanges.map((change) => {
+                const busy = change.filePath ? busyFiles[change.filePath] : undefined
+                return (
+                  <div
+                    key={change.id}
+                    className="flex items-center gap-2 px-3.5 py-1.5 hover:bg-surface-hover transition-colors group"
+                  >
+                    <FileCode2 size={12} className="text-ink-faint flex-shrink-0" />
+                    <button
+                      onClick={() => change.filePath && onSelectFile?.(change.filePath)}
+                      className={`flex-1 min-w-0 text-left ${
+                        change.filePath ? 'hover:text-accent cursor-pointer' : 'cursor-default'
+                      }`}
+                      title={change.filePath ? `查看 diff` : undefined}
+                    >
+                      <span className="text-xs font-medium text-ink-strong truncate block">
+                        {change.filePath || `${change.tool} 修改`}
+                      </span>
+                    </button>
+
+                    <span className="text-xxs text-ink-faint font-mono flex-shrink-0">{change.tool}</span>
+
+                    {change.filePath && (
+                      <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {busy ? (
+                          <Loader2 size={12} className="animate-spin text-ink-muted" />
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleStage(change.filePath!)}
+                              className="p-1 rounded-md text-ink-muted hover:bg-status-success-light hover:text-status-success transition-colors"
+                              title="确认 (git add)"
+                            >
+                              <Check size={12} />
+                            </button>
+                            <button
+                              onClick={() => handleRevert(change.filePath!)}
+                              className="p-1 rounded-md text-ink-muted hover:bg-status-error-light hover:text-status-error transition-colors"
+                              title="回退 (丢弃更改)"
+                            >
+                              <Undo2 size={12} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
@@ -148,6 +228,8 @@ export default function ChatArea({
   contextSnapshot,
   canReturnToLastSession = false,
   onReturnToLastSession,
+  onSelectGitFile,
+  onRefreshGit,
 }: Props) {
   const [showContext, setShowContext] = useState(false)
 
@@ -246,23 +328,13 @@ export default function ChatArea({
           onAgentChange={onAgentChange}
         />
       </div>
-      {canReturnToLastSession && onReturnToLastSession && (
-        <div className="px-4 pb-2">
-          <button
-            onClick={onReturnToLastSession}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-ink-muted hover:text-ink-secondary hover:bg-surface-hover transition-colors"
-            title="返回上一会话"
-          >
-            <Undo2 size={12} />
-            <span>返回上一会话</span>
-          </button>
-        </div>
-      )}
       <ChangesPanel
         pausedRun={pausedRun}
         codeChanges={codeChanges}
         onResume={onResume}
         onDismissPausedRun={onDismissPausedRun}
+        onSelectFile={onSelectGitFile}
+        onRefreshGit={onRefreshGit}
       />
       {showContext && contextSnapshot && (
         <ContextViewer snapshot={contextSnapshot} sessionId={session.id} onClose={() => setShowContext(false)} />
