@@ -224,10 +224,10 @@ export default function Sidebar({
       <div className="px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shadow-xs">
-            <span className="text-white text-xs font-bold font-mono">O</span>
+            <span className="text-white text-xs font-bold font-mono">M</span>
           </div>
           <div>
-            <span className="text-sm font-bold text-ink-strong tracking-tight block leading-tight">OpenCode</span>
+            <span className="text-sm font-bold text-ink-strong tracking-tight block leading-tight">MyCode</span>
             <span className="text-xxs text-ink-muted">AI 编程助手</span>
           </div>
         </div>

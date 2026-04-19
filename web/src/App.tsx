@@ -61,6 +61,17 @@ export default function App() {
     }
   }, [])
 
+  // Auto-refresh git status when streaming ends
+  const wasStreaming = useRef(false)
+  useEffect(() => {
+    if (chat.streaming) {
+      wasStreaming.current = true
+    } else if (wasStreaming.current) {
+      wasStreaming.current = false
+      git.refresh()
+    }
+  }, [chat.streaming]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     chat.loadHistory()
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
