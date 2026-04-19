@@ -9,7 +9,6 @@ import {
   Clock,
   Search,
   PauseCircle,
-  History,
 } from 'lucide-react'
 import type { Session, AgentInfo, ContextSnapshot } from '../types'
 
@@ -24,8 +23,6 @@ interface Props {
   contextSnapshot?: ContextSnapshot | null
   onViewContext?: () => void
   isPaused?: boolean
-  canReturnToLastSession?: boolean
-  onReturnToLastSession?: () => void
 }
 
 function Dropdown<T extends { id: string; label: string; sub?: string }>({
@@ -222,8 +219,6 @@ export default function ChatHeader({
   contextSnapshot,
   onViewContext,
   isPaused = false,
-  canReturnToLastSession = false,
-  onReturnToLastSession,
 }: Props) {
   const modelItems = models.map((m) => ({
     id: m.id,
@@ -285,17 +280,6 @@ export default function ChatHeader({
       )}
 
       <div className="flex-1" />
-
-      {canReturnToLastSession && onReturnToLastSession && (
-        <button
-          onClick={onReturnToLastSession}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-2 text-ink-secondary hover:bg-surface-3 hover:text-ink transition-colors"
-          title="返回刚才查看的会话"
-        >
-          <History size={11} />
-          <span>返回上一会话</span>
-        </button>
-      )}
 
       {contextSnapshot && (
         <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface-2 text-xxs text-ink-muted font-mono">

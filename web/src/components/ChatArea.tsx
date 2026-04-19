@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X } from 'lucide-react'
+import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X, ChevronDown, ChevronUp, Undo2 } from 'lucide-react'
 import type { AgentInfo, ContextSnapshot, Message, PausedRun, Session, SessionCodeChange, StreamingPart } from '../types'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
@@ -51,78 +51,74 @@ function ChangesPanel({
   onResume: () => void
   onDismissPausedRun: () => void
 }) {
+  const [expanded, setExpanded] = useState(false)
+
   if (!pausedRun && codeChanges.length === 0) return null
 
   return (
-    <div className="mx-4 mt-4 rounded-2xl border border-line bg-surface-0 shadow-sm overflow-hidden">
-      <div className="px-4 py-3 border-b border-line-subtle flex items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold text-ink-strong">恢复与改动回顾</div>
-          <div className="text-xs text-ink-muted mt-0.5">
-            {pausedRun ? '当前会话已暂停，可继续从中断处恢复。' : '这里汇总了本会话最近涉及的代码修改。'}
-          </div>
+    <div className="mx-4 mb-3 rounded-xl border border-line bg-surface-0 overflow-hidden">
+      {/* Compact toggle bar */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-surface-hover transition-colors"
+      >
+        <div className="flex items-center gap-2 text-xs text-ink-secondary">
+          <FileCode2 size={12} className="text-accent" />
+          <span className="font-medium">
+            {pausedRun ? '会话已暂停' : `${codeChanges.length} 处近期改动`}
+          </span>
         </div>
-        {pausedRun && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onDismissPausedRun}
-              className="p-2 rounded-xl text-ink-muted hover:bg-surface-hover hover:text-ink transition-colors"
-              title="忽略暂停状态"
-            >
-              <X size={14} />
-            </button>
-            <button
-              onClick={onResume}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors"
-            >
-              <Play size={12} />
-              <span>恢复继续</span>
-            </button>
-          </div>
-        )}
-      </div>
+        {expanded ? <ChevronDown size={12} className="text-ink-muted" /> : <ChevronUp size={12} className="text-ink-muted" />}
+      </button>
 
-      <div className="px-4 py-3 space-y-3">
-        {pausedRun && (
-          <div className="rounded-xl bg-status-warning-light border border-status-warning/15 px-3.5 py-3">
-            <div className="flex items-center gap-2 text-status-warning text-xs font-semibold mb-1.5">
-              <PauseCircle size={12} />
-              <span>暂停前的最后请求</span>
-            </div>
-            <div className="text-sm text-ink-secondary leading-relaxed">{pausedRun.lastUserText}</div>
-            {pausedRun.partialText && (
-              <div className="mt-2 text-xs text-ink-muted line-clamp-2">
-                已生成部分响应：{pausedRun.partialText}
+      {/* Expanded content */}
+      {expanded && (
+        <div className="px-3.5 pb-3 pt-1 border-t border-line-subtle space-y-2.5 animate-slide-up">
+          {pausedRun && (
+            <div className="rounded-lg bg-status-warning-light border border-status-warning/15 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-status-warning text-xs font-semibold">
+                  <PauseCircle size={11} />
+                  <span>暂停前的最后请求</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={onDismissPausedRun}
+                    className="p-1 rounded-lg text-ink-muted hover:bg-surface-hover hover:text-ink transition-colors"
+                    title="忽略"
+                  >
+                    <X size={12} />
+                  </button>
+                  <button
+                    onClick={onResume}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-accent text-white text-xxs font-medium hover:bg-accent-hover transition-colors"
+                  >
+                    <Play size={10} />
+                    <span>恢复</span>
+                  </button>
+                </div>
               </div>
-            )}
-          </div>
-        )}
-
-        {codeChanges.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold text-ink-secondary mb-2">
-              <FileCode2 size={12} className="text-accent" />
-              <span>最近代码修改</span>
+              <div className="text-xs text-ink-secondary mt-1.5 line-clamp-2">{pausedRun.lastUserText}</div>
             </div>
-            <div className="flex flex-wrap gap-2">
+          )}
+
+          {codeChanges.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
               {codeChanges.map((change) => (
                 <div
                   key={change.id}
-                  className="max-w-full rounded-xl border border-line bg-surface-1 px-3 py-2"
+                  className="max-w-full rounded-lg border border-line bg-surface-1 px-2.5 py-1.5"
                   title={change.preview || change.filePath || change.tool}
                 >
-                  <div className="text-xs font-medium text-ink-strong truncate max-w-[280px]">
+                  <div className="text-xxs font-medium text-ink-strong truncate max-w-[240px]">
                     {change.filePath || `${change.tool} 修改`}
-                  </div>
-                  <div className="text-xxs text-ink-muted mt-0.5">
-                    {change.tool === 'summary' ? '会话摘要' : `工具：${change.tool}`}
                   </div>
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -224,14 +220,6 @@ export default function ChatArea({
         contextSnapshot={contextSnapshot}
         onViewContext={() => setShowContext(true)}
         isPaused={chatStatus === 'paused'}
-        canReturnToLastSession={canReturnToLastSession}
-        onReturnToLastSession={onReturnToLastSession}
-      />
-      <ChangesPanel
-        pausedRun={pausedRun}
-        codeChanges={codeChanges}
-        onResume={onResume}
-        onDismissPausedRun={onDismissPausedRun}
       />
       <MessageList
         messages={messages}
@@ -245,7 +233,7 @@ export default function ChatArea({
           {error}
         </div>
       )}
-      <div className="px-4 pb-5">
+      <div className="px-4 pb-3">
         <MessageInput
           onSend={onSend}
           onAbort={onAbort}
@@ -258,6 +246,24 @@ export default function ChatArea({
           onAgentChange={onAgentChange}
         />
       </div>
+      {canReturnToLastSession && onReturnToLastSession && (
+        <div className="px-4 pb-2">
+          <button
+            onClick={onReturnToLastSession}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-ink-muted hover:text-ink-secondary hover:bg-surface-hover transition-colors"
+            title="返回上一会话"
+          >
+            <Undo2 size={12} />
+            <span>返回上一会话</span>
+          </button>
+        </div>
+      )}
+      <ChangesPanel
+        pausedRun={pausedRun}
+        codeChanges={codeChanges}
+        onResume={onResume}
+        onDismissPausedRun={onDismissPausedRun}
+      />
       {showContext && contextSnapshot && (
         <ContextViewer snapshot={contextSnapshot} sessionId={session.id} onClose={() => setShowContext(false)} />
       )}
