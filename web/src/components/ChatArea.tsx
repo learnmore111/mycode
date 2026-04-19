@@ -60,8 +60,11 @@ function ChangesPanel({
 }) {
   const [expanded, setExpanded] = useState(false)
   const [busyFiles, setBusyFiles] = useState<Record<string, 'stage' | 'revert'>>({})
+  const [batchBusy, setBatchBusy] = useState<'stage' | 'revert' | null>(null)
 
   if (!pausedRun && codeChanges.length === 0) return null
+
+  const filePaths = codeChanges.map((c) => c.filePath).filter((p): p is string => !!p)
 
   const handleStage = async (path: string) => {
     setBusyFiles((prev) => ({ ...prev, [path]: 'stage' }))
@@ -96,21 +99,75 @@ function ChangesPanel({
     }
   }
 
+  const handleStageAll = async () => {
+    if (filePaths.length === 0) return
+    setBatchBusy('stage')
+    try {
+      await Promise.all(filePaths.map((p) => stageGitFile(p)))
+      onRefreshGit?.()
+    } catch (err) {
+      console.error('Stage all failed', err)
+    } finally {
+      setBatchBusy(null)
+    }
+  }
+
+  const handleRevertAll = async () => {
+    if (filePaths.length === 0) return
+    if (!confirm(`确定要丢弃全部 ${filePaths.length} 个文件的更改？此操作不可撤销。`)) return
+    setBatchBusy('revert')
+    try {
+      await Promise.all(filePaths.map((p) => revertGitFile(p)))
+      onRefreshGit?.()
+    } catch (err) {
+      console.error('Revert all failed', err)
+    } finally {
+      setBatchBusy(null)
+    }
+  }
+
   return (
     <div className="mx-4 mb-3 rounded-xl border border-line bg-surface-0 overflow-hidden">
       {/* Toggle bar */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-surface-hover transition-colors"
-      >
-        <div className="flex items-center gap-2 text-xs text-ink-secondary">
+      <div className="flex items-center justify-between px-3.5 py-2">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 text-xs text-ink-secondary hover:text-ink transition-colors"
+        >
           <FileCode2 size={12} className="text-accent" />
           <span className="font-medium">
             {pausedRun ? '会话已暂停' : `${codeChanges.length} 处近期改动`}
           </span>
-        </div>
-        {expanded ? <ChevronDown size={12} className="text-ink-muted" /> : <ChevronUp size={12} className="text-ink-muted" />}
-      </button>
+          {expanded ? <ChevronDown size={12} className="text-ink-muted" /> : <ChevronUp size={12} className="text-ink-muted" />}
+        </button>
+
+        {filePaths.length > 0 && (
+          <div className="flex items-center gap-1">
+            {batchBusy ? (
+              <Loader2 size={12} className="animate-spin text-ink-muted" />
+            ) : (
+              <>
+                <button
+                  onClick={handleStageAll}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xxs font-medium text-status-success hover:bg-status-success-light transition-colors"
+                  title="全部确认 (git add)"
+                >
+                  <Check size={11} />
+                  <span>全部确认</span>
+                </button>
+                <button
+                  onClick={handleRevertAll}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xxs font-medium text-status-error hover:bg-status-error-light transition-colors"
+                  title="全部回退 (丢弃更改)"
+                >
+                  <Undo2 size={11} />
+                  <span>全部回退</span>
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Expanded content */}
       {expanded && (
