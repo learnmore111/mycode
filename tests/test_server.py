@@ -6,12 +6,12 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCODE_DB", ":memory:")
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.config", staticmethod(lambda: tmp_path / "config"))
-    import opencode.storage.database as dbmod
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.config", staticmethod(lambda: tmp_path / "config"))
+    import mycode.storage.database as dbmod
     dbmod.reset()
 
-    from opencode.server.app import create_app
+    from mycode.server.app import create_app
     app = create_app()
     return TestClient(app)
 

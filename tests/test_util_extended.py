@@ -1,10 +1,10 @@
 """Extended tests for util modules: context, filesystem, log, paths."""
 import os
 import pytest
-from opencode.util import filesystem as fs
-from opencode.util.context import get_instance, set_instance, has_instance
-from opencode.util.log import Logger, create, init
-from opencode.util.paths import GlobalPaths
+from mycode.util import filesystem as fs
+from mycode.util.context import get_instance, set_instance, has_instance
+from mycode.util.log import Logger, create, init
+from mycode.util.paths import GlobalPaths
 
 
 # --- context tests ---

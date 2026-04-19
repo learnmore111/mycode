@@ -1,11 +1,11 @@
-# opencode Code Agent 功能测试报告
+# mycode Code Agent 功能测试报告
 
 ## 测试概述
 
 | 项目 | 内容 |
 |------|------|
 | **测试时间** | 2026-03-30 15:49 |
-| **被测系统** | opencode (Python 重构版) |
+| **被测系统** | mycode (Python 重构版) |
 | **测试目标** | Kimi CLI 源代码仓库 |
 | **测试方式** | MCP Server HTTP API (SSE 流式响应) |
 | **测试环境** | macOS, Python 3.14, uv |
@@ -105,7 +105,7 @@ Agent 读取了 `read_file.py` 并分析出：
 
 **多轮对话测试详情**：
 
-这是对 opencode 上下文保持能力的关键测试：
+这是对 mycode 上下文保持能力的关键测试：
 
 **Turn 1**：Agent 找到 Grep 工具位于 `src/kimi_cli/tools/file/grep.py`，分析了：
 - 使用 `ripgrep` 作为后端
@@ -178,15 +178,15 @@ Agent 读取了 `read_file.py` 并分析出：
 │                      测试执行流程                             │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│   test_opencode_agent.py                                     │
+│   test_mycode_agent.py                                     │
 │       │                                                      │
 │       │ HTTP POST /session                                   │
 │       ▼                                                      │
-│   opencode serve (HTTP API)                                  │
+│   mycode serve (HTTP API)                                  │
 │       │                                                      │
 │       │ SSE 流式响应                                          │
 │       ▼                                                      │
-│   opencode Agent (LLM + Tools)                               │
+│   mycode Agent (LLM + Tools)                               │
 │       │                                                      │
 │       │ 读取/搜索/分析                                        │
 │       ▼                                                      │
@@ -213,7 +213,7 @@ Agent 读取了 `read_file.py` 并分析出：
 
 ### 与 Kimi CLI 功能对比
 
-| 功能 | opencode | Kimi CLI |
+| 功能 | mycode | Kimi CLI |
 |------|----------|----------|
 | 文件读取 | ✅ read | ✅ ReadFile |
 | 文件写入 | ✅ write | ✅ WriteFile |
@@ -228,26 +228,26 @@ Agent 读取了 `read_file.py` 并分析出：
 
 ## 结论
 
-opencode 作为 Code Agent 的核心能力已经验证通过：
+mycode 作为 Code Agent 的核心能力已经验证通过：
 
 1. **代码理解能力强** - 能够准确分析复杂代码库的架构
 2. **搜索能力完善** - 工具组合使用灵活，定位准确
 3. **上下文保持良好** - 多轮对话能正确维护会话状态
 4. **工具调用稳定** - 各种工具都能正常执行和返回结果
 
-测试通过率 100%，opencode 已具备作为独立 Code Agent 的基本能力，可以进行实际的代码分析和开发任务。
+测试通过率 100%，mycode 已具备作为独立 Code Agent 的基本能力，可以进行实际的代码分析和开发任务。
 
 ## 附录：测试脚本
 
-测试脚本位置：`/Users/lihuijin/Desktop/code-agent/opencode_py/test_opencode_agent.py`
+测试脚本位置：`/Users/lihuijin/Desktop/code-agent/mycode_py/test_mycode_agent.py`
 
 运行方式：
 ```bash
-# 1. 启动 opencode serve
+# 1. 启动 mycode serve
 cd /path/to/target/repo
-uv run --project /path/to/opencode_py opencode serve --port 4096
+uv run --project /path/to/mycode_py mycode serve --port 4096
 
 # 2. 运行测试
-cd /path/to/opencode_py
-uv run python test_opencode_agent.py
+cd /path/to/mycode_py
+uv run python test_mycode_agent.py
 ```

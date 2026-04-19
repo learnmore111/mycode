@@ -38,7 +38,7 @@
 1. **编辑后返回上下文**：展示修改区域前后 4 行的代码片段，带行号和修改标记（`|`）
 
    ```
-   Edited opencode/tool/edit.py (+2 lines)
+   Edited mycode/tool/edit.py (+2 lines)
 
        22| description = (
        23|     "Edit a file by replacing an exact string match..."
@@ -53,7 +53,7 @@
 
 4. **行数变化提示**：返回 `(+3 lines)` 或 `(-2 lines)` 的增减信息
 
-**修改文件**：`opencode/tool/edit.py`
+**修改文件**：`mycode/tool/edit.py`
 
 ### 2.2 [P0] Task 工具 — 支持多轮 Agentic Loop
 
@@ -81,31 +81,31 @@ async for event in llmmod.stream(stream_input):
 
 3. **防止递归**：排除 `task`、`todo`、`question`、`batch` 工具
 
-**修改文件**：`opencode/tool/task.py`
+**修改文件**：`mycode/tool/task.py`
 
 ### 2.3 [P1] 新增 ListDir 工具
 
 **问题**：
 
-`opencode/file/file.py` 中有 `list_dir` 函数，但**没有注册为 LLM 可调用的工具**。Agent 要查看目录结构只能通过 `bash ls` 命令，但很多场景下 agent 不会想到这么做。
+`mycode/file/file.py` 中有 `list_dir` 函数，但**没有注册为 LLM 可调用的工具**。Agent 要查看目录结构只能通过 `bash ls` 命令，但很多场景下 agent 不会想到这么做。
 
 **修复**：
 
-新增 `opencode/tool/listdir.py`：
+新增 `mycode/tool/listdir.py`：
 
 - **flat 模式**（默认）：列出单层目录内容，显示类型标记 `[dir]`/`[file]` 和文件大小
 - **recursive 模式**：tree 视图，限制深度 3 层，防止输出过多
 - 自动过滤 `.venv`、`__pycache__`、`node_modules` 等忽略目录
 - 结果超过 500 条时截断
 
-**新增文件**：`opencode/tool/listdir.py`、`opencode/tool/descriptions/listdir.md`
-**修改文件**：`opencode/tool/registry.py`（注册新工具）
+**新增文件**：`mycode/tool/listdir.py`、`mycode/tool/descriptions/listdir.md`
+**修改文件**：`mycode/tool/registry.py`（注册新工具）
 
 ### 2.4 [P1] descriptions/*.md 从死代码变为实际使用
 
 **问题**：
 
-`opencode/tool/base.py` 中已实现 `load_description(tool_id)` 函数，`descriptions/` 目录下有 13 个 .md 描述文件，但所有工具类的 `description` 都是硬编码字符串，**这些 .md 文件从未被实际加载**，是死代码。
+`mycode/tool/base.py` 中已实现 `load_description(tool_id)` 函数，`descriptions/` 目录下有 13 个 .md 描述文件，但所有工具类的 `description` 都是硬编码字符串，**这些 .md 文件从未被实际加载**，是死代码。
 
 .md 文件的描述比硬编码的字符串更详细（包含 Guidelines、使用注意事项等），对 LLM 更友好。
 
@@ -119,7 +119,7 @@ def to_llm_tool(self) -> dict[str, Any]:
     return {"type": "function", "function": {"name": self.id, "description": desc, ...}}
 ```
 
-**修改文件**：`opencode/tool/base.py`
+**修改文件**：`mycode/tool/base.py`
 
 ### 2.5 [P2] WebFetch — HTML 解析从正则剥标签升级为保留结构
 
@@ -148,7 +148,7 @@ text = re.sub(r"<[^>]+>", "\n", text)  # 所有标签替换为换行
 | `<i>`/`<em>` | `*italic*` |
 | `<script>`/`<style>`/`<nav>` | 直接删除 |
 
-**修改文件**：`opencode/tool/webfetch.py`
+**修改文件**：`mycode/tool/webfetch.py`
 
 ### 2.6 [P2] WebSearch — 增强解析稳定性
 
@@ -166,7 +166,7 @@ DuckDuckGo HTML 页面结构随时可能变化，单一正则解析容易失效�
 
 新增 `_extract_url()` 处理 DDG 的重定向 URL 解码。
 
-**修改文件**：`opencode/tool/websearch.py`
+**修改文件**：`mycode/tool/websearch.py`
 
 ### 2.7 [P2] Bash — 超时后 Kill 进程 + 支持 cwd 参数
 
@@ -180,7 +180,7 @@ DuckDuckGo HTML 页面结构随时可能变化，单一正则解析容易失效�
 1. **超时 kill**：使用 `start_new_session=True` 创建进程组，超时后 `os.killpg(SIGTERM)` → 等待 0.2s → `os.killpg(SIGKILL)` 双保险
 2. **新增 `cwd` 参数**：支持相对路径（基于项目根目录）和绝对路径，并验证目录存在
 
-**修改文件**：`opencode/tool/bash.py`
+**修改文件**：`mycode/tool/bash.py`
 
 ### 2.8 [P2] Write — 覆盖信息提示
 
@@ -193,7 +193,7 @@ DuckDuckGo HTML 页面结构随时可能变化，单一正则解析容易失效�
 - 新建：`"Created xxx (42 lines)"`
 - 覆盖：`"Overwrote xxx (38 → 42 lines)"`，明确显示行数变化
 
-**修改文件**：`opencode/tool/write.py`
+**修改文件**：`mycode/tool/write.py`
 
 ### 2.9 [P3] Glob — 修复截断后 count 值 bug
 
@@ -208,7 +208,7 @@ output = "..." + f"500 of {len(matches)} matches"  # len(matches) 已经是 500 
 
 **修复**：截断前保存 `total_count = len(matches)`。
 
-**修改文件**：`opencode/tool/glob_tool.py`
+**修改文件**：`mycode/tool/glob_tool.py`
 
 ### 2.10 [P3] Batch — 修复成功判断的误判
 
@@ -224,7 +224,7 @@ succeeded = sum(1 for r in results if "Error:" not in r)
 
 `_execute_one()` 返回 `tuple[bool, str]`，用 `result.is_error` 结构化判断。
 
-**修改文件**：`opencode/tool/batch.py`
+**修改文件**：`mycode/tool/batch.py`
 
 ---
 
@@ -232,18 +232,18 @@ succeeded = sum(1 for r in results if "Error:" not in r)
 
 | 文件 | 修改类型 | 说明 |
 |---|---|---|
-| `opencode/tool/edit.py` | 重写 | 返回上下文 + insert_after_line + 追加模式 |
-| `opencode/tool/task.py` | 重写 | 多轮 agentic loop (MAX_TURNS=8) |
-| `opencode/tool/listdir.py` | 新增 | 目录浏览工具（flat + tree 模式） |
-| `opencode/tool/descriptions/listdir.md` | 新增 | listdir 描述文件 |
-| `opencode/tool/base.py` | 修改 | to_llm_tool() 使用 .md 描述 |
-| `opencode/tool/registry.py` | 修改 | 注册 listdir 工具 |
-| `opencode/tool/webfetch.py` | 重写 | HTML→Markdown 保留结构 |
-| `opencode/tool/websearch.py` | 重写 | 三层 fallback 解析 |
-| `opencode/tool/bash.py` | 重写 | 超时 kill + cwd 参数 |
-| `opencode/tool/write.py` | 修改 | 覆盖/新建区分提示 |
-| `opencode/tool/glob_tool.py` | 修复 | 截断后 count 值 |
-| `opencode/tool/batch.py` | 修复 | 结构化成功判断 |
+| `mycode/tool/edit.py` | 重写 | 返回上下文 + insert_after_line + 追加模式 |
+| `mycode/tool/task.py` | 重写 | 多轮 agentic loop (MAX_TURNS=8) |
+| `mycode/tool/listdir.py` | 新增 | 目录浏览工具（flat + tree 模式） |
+| `mycode/tool/descriptions/listdir.md` | 新增 | listdir 描述文件 |
+| `mycode/tool/base.py` | 修改 | to_llm_tool() 使用 .md 描述 |
+| `mycode/tool/registry.py` | 修改 | 注册 listdir 工具 |
+| `mycode/tool/webfetch.py` | 重写 | HTML→Markdown 保留结构 |
+| `mycode/tool/websearch.py` | 重写 | 三层 fallback 解析 |
+| `mycode/tool/bash.py` | 重写 | 超时 kill + cwd 参数 |
+| `mycode/tool/write.py` | 修改 | 覆盖/新建区分提示 |
+| `mycode/tool/glob_tool.py` | 修复 | 截断后 count 值 |
+| `mycode/tool/batch.py` | 修复 | 结构化成功判断 |
 
 **共 12 个文件，其中 5 个重写、5 个修改、2 个新增。**
 

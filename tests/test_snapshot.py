@@ -2,12 +2,12 @@
 import os
 import shutil
 import pytest
-from opencode.snapshot.snapshot import Snapshot
+from mycode.snapshot.snapshot import Snapshot
 
 
 @pytest.fixture
 def _tmp_data(tmp_path, monkeypatch):
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
     return tmp_path
 
 

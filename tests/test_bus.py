@@ -1,8 +1,8 @@
 """Tests for the event bus."""
 import asyncio
 import pytest
-from opencode.bus.bus import Bus, global_emit, global_on
-from opencode.bus.events import EventDef, Event, SESSION_CREATED
+from mycode.bus.bus import Bus, global_emit, global_on
+from mycode.bus.events import EventDef, Event, SESSION_CREATED
 
 
 @pytest.mark.asyncio

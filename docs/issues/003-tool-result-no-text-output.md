@@ -2,7 +2,7 @@
 
 - **日期**: 2026-03-31
 - **状态**: ✅ 已修复
-- **影响范围**: `opencode/cli/main.py`、`opencode/session/prompt.py`
+- **影响范围**: `mycode/cli/main.py`、`mycode/session/prompt.py`
 
 ---
 
@@ -111,8 +111,8 @@ else:
 
 | 文件 | 修改 |
 |---|---|
-| `opencode/cli/main.py` | 工具完成后启动 Thinking spinner + 用完整 messages 更新 history |
-| `opencode/session/prompt.py` | done event 携带完整 messages 列表 |
+| `mycode/cli/main.py` | 工具完成后启动 Thinking spinner + 用完整 messages 更新 history |
+| `mycode/session/prompt.py` | done event 携带完整 messages 列表 |
 
 ## 5. 经验教训
 

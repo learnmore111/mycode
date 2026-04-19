@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import opencode.project.instance as inst
-import opencode.storage.database as dbmod
+import mycode.project.instance as inst
+import mycode.storage.database as dbmod
 import pytest
 from fastapi.testclient import TestClient
 
-from opencode.server.app import create_app
+from mycode.server.app import create_app
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,7 @@ def client():
 
 
 def test_pause_routes_roundtrip(client: TestClient, tmp_path):
-    from opencode.session.session import create
+    from mycode.session.session import create
 
     session = create(title="pause-route")
     directory = str(tmp_path)
@@ -65,8 +65,8 @@ def test_pause_routes_roundtrip(client: TestClient, tmp_path):
 
 
 def test_changes_route_returns_recent_files(client: TestClient, tmp_path):
-    from opencode.session.message import create_assistant_message, create_tool_part, persist_turn
-    from opencode.session.session import create
+    from mycode.session.message import create_assistant_message, create_tool_part, persist_turn
+    from mycode.session.session import create
 
     session = create(title="changes-route")
     assistant = create_assistant_message(session.id, "parent-1", "openai", "test-model", "build")
@@ -88,7 +88,7 @@ def test_changes_route_returns_recent_files(client: TestClient, tmp_path):
 
 
 def test_resume_route_streams_and_clears_pause_state(client: TestClient, tmp_path, monkeypatch):
-    from opencode.session.session import create, get_paused_run, set_paused_run
+    from mycode.session.session import create, get_paused_run, set_paused_run
 
     session = create(title="resume-route")
     set_paused_run(session.id, last_user_text="继续处理未完成任务", partial_text="已输出部分内容")
@@ -97,7 +97,7 @@ def test_resume_route_streams_and_clears_pause_state(client: TestClient, tmp_pat
         yield SimpleNamespace(type="started", data={"session_id": prompt_input.session_id})
         yield SimpleNamespace(type="done", data={"ok": True})
 
-    monkeypatch.setattr("opencode.server.routes.session.prompt", fake_prompt)
+    monkeypatch.setattr("mycode.server.routes.session.prompt", fake_prompt)
 
     resp = client.post(f"/session/{session.id}/resume", params={"directory": str(tmp_path)})
     assert resp.status_code == 200

@@ -2,7 +2,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from opencode.session.compaction import (
+from mycode.session.compaction import (
     COMPACT_KEEP_TURNS,
     _build_compact_result,
     _extract_summary,
@@ -303,7 +303,7 @@ def _make_compact_kwargs(model=None):
 
 async def _fake_stream_with_summary(summary_text):
     """Create a fake async generator that yields TextDelta events."""
-    from opencode.session.llm import TextDelta, FinishEvent
+    from mycode.session.llm import TextDelta, FinishEvent
     yield TextDelta(text=f"<analysis>thinking</analysis>\n<summary>{summary_text}</summary>")
     yield FinishEvent(reason="stop", usage={}, cost=0.0)
 
@@ -326,8 +326,8 @@ def test_compact_preserves_recent_turns():
     kwargs = _make_compact_kwargs()
 
     with (
-        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary of old turns")),
-        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+        patch("mycode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary of old turns")),
+        patch("mycode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
     ):
         result, _ = asyncio.run(compact(msgs, **kwargs))
 
@@ -367,8 +367,8 @@ def test_compact_llm_failure_returns_original():
     kwargs = _make_compact_kwargs()
 
     with (
-        patch("opencode.session.compaction.llmmod.stream", side_effect=Exception("fail")),
-        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+        patch("mycode.session.compaction.llmmod.stream", side_effect=Exception("fail")),
+        patch("mycode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
     ):
         result, _ = asyncio.run(compact(msgs, **kwargs))
 
@@ -393,8 +393,8 @@ def test_compact_returns_metrics():
     kwargs = _make_compact_kwargs()
 
     with (
-        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary text")),
-        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+        patch("mycode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Summary text")),
+        patch("mycode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
     ):
         result, metrics = asyncio.run(compact(msgs, **kwargs))
 
@@ -437,8 +437,8 @@ def test_compact_metrics_include_old_messages():
     kwargs = _make_compact_kwargs()
 
     with (
-        patch("opencode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Test summary")),
-        patch("opencode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
+        patch("mycode.session.compaction.llmmod.stream", return_value=_fake_stream_with_summary("Test summary")),
+        patch("mycode.session.compaction._load_compaction_prompt", new_callable=AsyncMock, return_value="Summarize"),
     ):
         result, metrics = asyncio.run(compact(msgs, **kwargs))
 

@@ -2,16 +2,16 @@
 import json
 import os
 import pytest
-from opencode.config.config import parse_jsonc, get, invalidate, ConfigParseError
-from opencode.config.models import Config, AgentConfig
-from opencode.config.paths import global_config_file, project_files, config_directories
+from mycode.config.config import parse_jsonc, get, invalidate, ConfigParseError
+from mycode.config.models import Config, AgentConfig
+from mycode.config.paths import global_config_file, project_files, config_directories
 
 
 @pytest.fixture(autouse=True)
 def _clear(tmp_path, monkeypatch):
     invalidate()
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.config", staticmethod(lambda: tmp_path / "config"))
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.config", staticmethod(lambda: tmp_path / "config"))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
     yield
     invalidate()
 
@@ -43,7 +43,7 @@ def test_get_default():
 
 
 def test_get_with_directory(tmp_path):
-    cfg_file = tmp_path / "opencode.json"
+    cfg_file = tmp_path / "mycode.json"
     cfg_file.write_text(json.dumps({"model": "openai/gpt-4o"}))
     cfg = get(str(tmp_path))
     assert cfg.model == "openai/gpt-4o"
@@ -62,10 +62,10 @@ def test_agent_config():
 
 
 def test_project_files(tmp_path):
-    (tmp_path / "opencode.json").write_text("{}")
+    (tmp_path / "mycode.json").write_text("{}")
     files = project_files(str(tmp_path))
     assert len(files) == 1
-    assert files[0].endswith("opencode.json")
+    assert files[0].endswith("mycode.json")
 
 
 def test_project_files_empty(tmp_path):
@@ -74,12 +74,12 @@ def test_project_files_empty(tmp_path):
 
 
 def test_config_directories(tmp_path):
-    dot = tmp_path / ".opencode"
+    dot = tmp_path / ".mycode"
     dot.mkdir()
     dirs = config_directories(str(tmp_path))
-    assert any(".opencode" in d for d in dirs)
+    assert any(".mycode" in d for d in dirs)
 
 
 def test_global_config_file():
     p = global_config_file()
-    assert "opencode" in str(p)
+    assert "mycode" in str(p)

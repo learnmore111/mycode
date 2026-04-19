@@ -1,7 +1,7 @@
 """Tests for session SQLite persistence."""
 import os, pytest
-import opencode.project.instance as inst
-import opencode.storage.database as dbmod
+import mycode.project.instance as inst
+import mycode.storage.database as dbmod
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,7 @@ def _use_memory_db(monkeypatch, tmp_path):
 
 
 def test_create_and_get():
-    from opencode.session.session import create, get
+    from mycode.session.session import create, get
     s = create(title="hello")
     assert s.title == "hello"
     loaded = get(s.id)
@@ -29,7 +29,7 @@ def test_create_and_get():
 
 
 def test_list_sessions():
-    from opencode.session.session import create, list_sessions
+    from mycode.session.session import create, list_sessions
     create(title="a")
     create(title="b")
     sessions = list_sessions()
@@ -39,7 +39,7 @@ def test_list_sessions():
 
 
 def test_touch():
-    from opencode.session.session import create, get, touch
+    from mycode.session.session import create, get, touch
     s = create(title="t")
     old = s.time_updated
     import time; time.sleep(0.01)
@@ -49,14 +49,14 @@ def test_touch():
 
 
 def test_set_title():
-    from opencode.session.session import create, get, set_title
+    from mycode.session.session import create, get, set_title
     s = create(title="old")
     set_title(s.id, "new")
     assert get(s.id).title == "new"
 
 
 def test_remove():
-    from opencode.session.session import create, remove, list_sessions, list_deleted, get
+    from mycode.session.session import create, remove, list_sessions, list_deleted, get
     s = create(title="rm")
     remove(s.id)
     # Should not appear in active sessions
@@ -71,7 +71,7 @@ def test_remove():
 
 
 def test_restore():
-    from opencode.session.session import create, remove, restore, list_sessions, list_deleted
+    from mycode.session.session import create, remove, restore, list_sessions, list_deleted
     s = create(title="restore-me")
     remove(s.id)
     # Verify it's in deleted
@@ -85,13 +85,13 @@ def test_restore():
 
 
 def test_restore_nonexistent():
-    from opencode.session.session import restore
+    from mycode.session.session import restore
     with pytest.raises(KeyError):
         restore("nonexistent-id")
 
 
 def test_set_summary_persists_diffs():
-    from opencode.session.session import create, get, set_summary
+    from mycode.session.session import create, get, set_summary
 
     s = create(title="summary-diffs")
     summary = {
@@ -112,7 +112,7 @@ def test_set_summary_persists_diffs():
 
 
 def test_paused_run_roundtrip():
-    from opencode.session.session import clear_paused_run, create, get_paused_run, set_paused_run
+    from mycode.session.session import clear_paused_run, create, get_paused_run, set_paused_run
 
     s = create(title="paused")
     saved = set_paused_run(

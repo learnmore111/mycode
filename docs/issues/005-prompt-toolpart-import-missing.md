@@ -3,7 +3,7 @@
 - **日期**: 2026-03-31
 - **状态**: ✅ 已修复
 - **提交**: `198c217`
-- **影响范围**: `opencode/session/prompt.py`
+- **影响范围**: `mycode/session/prompt.py`
 
 ---
 
@@ -14,7 +14,7 @@
 ```
 ✓ listdir
   [dir]  agent-mem-note/
-✓ Fetch https://opencode.ai
+✓ Fetch https://mycode.ai
   - OpenCode | The open source AI coding agent...
 
 ✗ Error: name 'ToolPart' is not defined
@@ -33,7 +33,7 @@ for p in iteration_parts:
 但 import 区域遗漏了 `ToolPart`：
 
 ```python
-from opencode.session.message import (
+from mycode.session.message import (
     Part,
     TextPart,          # ← 有 TextPart
     # ToolPart 缺失！
@@ -49,7 +49,7 @@ from opencode.session.message import (
 ## 4. 修复
 
 ```python
-from opencode.session.message import (
+from mycode.session.message import (
     Part,
     TextPart,
     ToolPart,          # ← 补充导入

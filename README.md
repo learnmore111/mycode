@@ -15,31 +15,31 @@
 uv sync
 
 # 查看帮助
-uv run opencode --help
+uv run mycode --help
 
 # 设置 API Key（任意 OpenAI 兼容接口）
 export OPENAI_API_KEY="your-token"
 export OPENAI_API_BASE="https://your-endpoint.com/v1"  # 可选，默认 OpenAI 官方
 
 # 交互式模式（Rich UI + Markdown 渲染 + 上下文进度条）
-uv run opencode run
+uv run mycode run
 
 # Headless 模式（单次执行，适合脚本/CI）
-uv run opencode run --message "列出当前目录的文件"
+uv run mycode run --message "列出当前目录的文件"
 
 # 启动 API Server
-uv run opencode serve --port 4096
+uv run mycode serve --port 4096
 
 # 一键启动后端 + 前端开发服务器
-uv run opencode dev                            # 后端 :4096 + 前端 :3000
-uv run opencode dev --port 8080 --frontend-port 5173  # 自定义端口
+uv run mycode dev                            # 后端 :4096 + 前端 :3000
+uv run mycode dev --port 8080 --frontend-port 5173  # 自定义端口
 
 # 启动 Web UI（手动分别启动）
 cd web && npm install && npm run dev   # :3000，代理 API 到 :4096
 
 # 构建 Web UI 后单端口运行
 cd web && npm run build
-uv run opencode serve --port 4096      # 打开 http://localhost:4096
+uv run mycode serve --port 4096      # 打开 http://localhost:4096
 
 # 运行测试
 uv run pytest tests/ -v
@@ -119,14 +119,14 @@ uv run pytest tests/ -v
 | `websearch` | 网页搜索 | 多引擎支持 |
 | `question` | 向用户提问 | 阻塞等待回复 |
 | `todo` | 任务列表管理 | 会话内 in-memory 状态 |
-| `skill` | 技能文件加载 | 项目 + `~/.opencode/skills/` 搜索、列出可用技能、自动注入 skills 列表到 system-reminder |
+| `skill` | 技能文件加载 | 项目 + `~/.mycode/skills/` 搜索、列出可用技能、自动注入 skills 列表到 system-reminder |
 | `batch` | 并行工具执行 (实验性) | 多工具同时调用 |
 
 ### 基础设施 (Infrastructure)
 
 | 模块 | 说明 |
 |------|------|
-| **`config/`** | JSONC 配置解析 + Pydantic v2 模型 + 多层合并（全局→环境→项目→.opencode）|
+| **`config/`** | JSONC 配置解析 + Pydantic v2 模型 + 多层合并（全局→环境→项目→.mycode）|
 | **`storage/`** | SQLAlchemy 表定义（5 表：Project/Session/Message/Part/Permission）+ SQLite + JSON 文件存储 |
 | **`bus/`** | asyncio pub/sub 事件总线，17 种事件类型，支持类型化订阅、通配符订阅和全局广播 |
 | **`permission/`** | 权限系统。Wildcard 规则评估 + ask/reply 阻塞流（allow/deny/ask），集成到 processor 的 tool 执行中 |
@@ -202,22 +202,22 @@ Lint 错误:         0
 ## CLI 命令
 
 ```bash
-opencode --help                     # 查看所有命令
-opencode serve [--port 4096]        # 启动 API 服务器
-opencode dev [--port --frontend-port] # 一键启动后端 + 前端开发服务器
-opencode run [DIR]                  # 交互式模式（默认）
-opencode run [DIR] -p "message"     # Headless 模式运行
-opencode run [DIR] -a plan          # 指定 agent 模式
-opencode providers                  # 列出可用 AI 提供商
-opencode models                     # 列出可用模型
-opencode config show [DIR]          # 查看合并后配置
-opencode config path                # 查看全局配置路径
-opencode config set KEY VALUE       # 设置全局配置项
-opencode session list [-n 20]       # 列出最近会话
-opencode session delete ID          # 删除会话
-opencode mcp list                   # 列出 MCP 服务器
-opencode snapshot track [DIR]       # 创建快照
-opencode snapshot diff HASH [DIR]   # 查看快照 diff
+mycode --help                     # 查看所有命令
+mycode serve [--port 4096]        # 启动 API 服务器
+mycode dev [--port --frontend-port] # 一键启动后端 + 前端开发服务器
+mycode run [DIR]                  # 交互式模式（默认）
+mycode run [DIR] -p "message"     # Headless 模式运行
+mycode run [DIR] -a plan          # 指定 agent 模式
+mycode providers                  # 列出可用 AI 提供商
+mycode models                     # 列出可用模型
+mycode config show [DIR]          # 查看合并后配置
+mycode config path                # 查看全局配置路径
+mycode config set KEY VALUE       # 设置全局配置项
+mycode session list [-n 20]       # 列出最近会话
+mycode session delete ID          # 删除会话
+mycode mcp list                   # 列出 MCP 服务器
+mycode snapshot track [DIR]       # 创建快照
+mycode snapshot diff HASH [DIR]   # 查看快照 diff
 ```
 
 ### 交互式模式特性
@@ -246,7 +246,7 @@ opencode snapshot diff HASH [DIR]   # 查看快照 diff
 | Cost 计算 | 基于 litellm 定价数据自动计算费用 |
 | 上下文进度条 | 颜色编码显示当前消息列表的上下文窗口占用率（绿→黄→橙→红）|
 | 斜杠命令 | `/help` `/clear` `/model` `/history` `/steps` `/debug` `/memory` `/quit` |
-| Debug 模式 | `/debug` 将每轮 LLM 输入输出 dump 到 `.opencode/debug/` |
+| Debug 模式 | `/debug` 将每轮 LLM 输入输出 dump 到 `.mycode/debug/` |
 | 会话记忆 | `/memory` 查看结构化记忆 + 会话笔记 |
 
 ## API 端点
@@ -321,7 +321,7 @@ POST   /log                        # 写日志
 
 ### 自定义 Provider
 
-如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），在项目根目录创建 `opencode.json`：
+如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），在项目根目录创建 `mycode.json`：
 
 ```jsonc
 {
@@ -354,7 +354,7 @@ POST   /log                        # 写日志
 ```bash
 export OPENAI_API_BASE=https://your-proxy.com/v1
 export OPENAI_API_KEY=sk-xxx
-uv run opencode run --message "hello"
+uv run mycode run --message "hello"
 ```
 
 ## Web UI
@@ -379,18 +379,18 @@ uv run opencode run --message "hello"
 
 ```bash
 # 一键启动（推荐）
-uv run opencode dev                              # 后端 :4096 + 前端 :3000
+uv run mycode dev                              # 后端 :4096 + 前端 :3000
 
 # 自定义端口
-uv run opencode dev --port 8080 --frontend-port 5173
+uv run mycode dev --port 8080 --frontend-port 5173
 
 # 手动分别启动（开发模式）
 cd web && npm install && npm run dev             # Vite :3000，代理到 :4096
-uv run opencode serve --port 4096                # 后端 API
+uv run mycode serve --port 4096                # 后端 API
 
 # 生产模式（单端口）
 cd web && npm run build                          # 构建到 web/dist/
-uv run opencode serve --port 4096                # 打开 http://localhost:4096
+uv run mycode serve --port 4096                # 打开 http://localhost:4096
 ```
 
 ### 前端技术栈
@@ -462,7 +462,7 @@ web/
 | 会话恢复（从 DB 加载历史继续对话） | 待实现 |
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
 | LSP didChange 通知 | 待实现 |
-| Python SDK (`opencode-sdk`) | 待评估 |
+| Python SDK (`mycode-sdk`) | 待评估 |
 
 ---
 
@@ -476,22 +476,22 @@ uv sync --extra dev
 uv run pytest tests/ -v
 
 # 运行测试 (带覆盖率)
-uv run pytest tests/ --cov=opencode --cov-report=term-missing
+uv run pytest tests/ --cov=mycode --cov-report=term-missing
 
 # Lint
-uv run ruff check opencode/
+uv run ruff check mycode/
 
 # 自动修复 Lint
-uv run ruff check opencode/ --fix
+uv run ruff check mycode/ --fix
 
 # 类型检查
-uv run mypy opencode/
+uv run mypy mycode/
 ```
 
 ### 项目结构
 
 ```
-opencode/
+mycode/
 ├── agent/          # Agent 定义 (7 内置 agent)
 ├── auth/           # 认证持久化 + Token 过期检测 + 环境变量发现
 ├── bus/            # 事件总线 (asyncio pub/sub, 17 种事件)

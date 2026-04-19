@@ -1,12 +1,12 @@
 """Tests for message persistence (save_message, save_parts, persist_turn)."""
 import pytest
-import opencode.project.instance as inst
-import opencode.storage.database as dbmod
-from opencode.session.message import (
+import mycode.project.instance as inst
+import mycode.storage.database as dbmod
+from mycode.session.message import (
     create_user_message, create_assistant_message, create_text_part, create_tool_part,
     save_message, save_part, save_parts, persist_turn, TextPart, ToolPart,
 )
-from opencode.storage.models import MessageTable, PartTable, SessionTable
+from mycode.storage.models import MessageTable, PartTable, SessionTable
 
 
 @pytest.fixture(autouse=True)

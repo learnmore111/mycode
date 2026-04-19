@@ -1,6 +1,6 @@
 # OpenCode MCP Server
 
-将 opencode AI 编程助手暴露为 MCP (Model Context Protocol) 工具，支持外部 AI Agent（如 CodeBuddy、Claude Desktop、Cursor 等）与 opencode 进行多轮对话交互。
+将 mycode AI 编程助手暴露为 MCP (Model Context Protocol) 工具，支持外部 AI Agent（如 CodeBuddy、Claude Desktop、Cursor 等）与 mycode 进行多轮对话交互。
 
 ## 功能概述
 
@@ -24,24 +24,24 @@
 
 ```bash
 cd /path/to/your/project
-uv run opencode serve --port 4096
+uv run mycode serve --port 4096
 ```
 
 ### 2. 启动 MCP Server
 
 **方式 A: CLI 子命令**
 ```bash
-uv run opencode mcp serve --directory /path/to/project
+uv run mycode mcp serve --directory /path/to/project
 ```
 
 **方式 B: 脚本入口**
 ```bash
-OPENCODE_DIRECTORY=/path/to/project uv run opencode-mcp
+OPENCODE_DIRECTORY=/path/to/project uv run mycode-mcp
 ```
 
 **方式 C: Python 模块**
 ```bash
-OPENCODE_DIRECTORY=/path/to/project uv run python -m opencode.mcp_server
+OPENCODE_DIRECTORY=/path/to/project uv run python -m mycode.mcp_server
 ```
 
 ### 3. 在 CodeBuddy 中配置
@@ -51,12 +51,12 @@ OPENCODE_DIRECTORY=/path/to/project uv run python -m opencode.mcp_server
 ```json
 {
   "mcpServers": {
-    "opencode": {
+    "mycode": {
       "command": "uv",
       "args": [
         "run",
-        "--directory", "/Users/your-username/Desktop/code-agent/opencode_py",
-        "opencode-mcp"
+        "--directory", "/Users/your-username/Desktop/code-agent/mycode_py",
+        "mycode-mcp"
       ],
       "env": {
         "OPENCODE_URL": "http://127.0.0.1:4096",
@@ -78,13 +78,13 @@ OPENCODE_DIRECTORY=/path/to/project uv run python -m opencode.mcp_server
                   ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  OpenCode MCP Server                                         │
-│  (opencode/mcp_server/server.py)                            │
+│  (mycode/mcp_server/server.py)                            │
 └─────────────────┬───────────────────────────────────────────┘
                   │ HTTP + SSE
                   ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  OpenCode HTTP Server                                        │
-│  (opencode serve --port 4096)                               │
+│  (mycode serve --port 4096)                               │
 └─────────────────────────────────────────────────────────────┘
                   │
                   ▼
@@ -107,11 +107,11 @@ result = create_session(title="修复登录Bug")
 
 # 3. 第一轮对话
 result = send_message(session_id="abc123", message="请帮我分析 auth.py 的代码")
-# 返回 opencode agent 的分析结果
+# 返回 mycode agent 的分析结果
 
 # 4. 第二轮对话（上下文自动保持）
 result = send_message(session_id="abc123", message="请修复其中的安全漏洞")
-# opencode 记得之前分析的内容，直接进行修复
+# mycode 记得之前分析的内容，直接进行修复
 
 # 5. 第三轮对话
 result = send_message(session_id="abc123", message="添加单元测试")
@@ -123,7 +123,7 @@ result = send_message(session_id="abc123", message="添加单元测试")
 ### 测试环境
 - macOS Darwin
 - Python 3.14
-- opencode 0.1.0
+- mycode 0.1.0
 - MCP SDK 1.x
 - 模型: openai/deepseek-v3.2
 
@@ -135,7 +135,7 @@ result = send_message(session_id="abc123", message="添加单元测试")
 | 会话创建 | ✅ PASS | 成功创建并返回 session_id |
 | 多轮对话 | ✅ PASS | 4 轮对话全部成功，上下文保持 |
 | 上下文保留 | ✅ PASS | 后续问题能正确引用前文内容 |
-| 工具调用 | ✅ PASS | opencode agent 成功调用 read/search 工具 |
+| 工具调用 | ✅ PASS | mycode agent 成功调用 read/search 工具 |
 | 会话清理 | ✅ PASS | 成功删除测试会话 |
 
 ### 测试输出示例
@@ -150,7 +150,7 @@ result = send_message(session_id="abc123", message="添加单元测试")
 {
   "model": "openai/deepseek-v3.2",
   "agent": "build",
-  "response": "opencode 是一个开源的 AI 编程助手...",
+  "response": "mycode 是一个开源的 AI 编程助手...",
   "tokens": {"input": 7818, "output": 93},
   "context": {"used": 7911, "limit": 65536}
 }
@@ -159,7 +159,7 @@ result = send_message(session_id="abc123", message="添加单元测试")
 📌 send_message() - Turn 2:
 {
   "model": "openai/deepseek-v3.2",
-  "response": "opencode 支持以下 LLM 提供商：1. OpenAI...",
+  "response": "mycode 支持以下 LLM 提供商：1. OpenAI...",
   "tokens": {"input": 32744, "output": 205}
 }
 // 注意 input tokens 增加，说明包含了对话历史
@@ -169,10 +169,10 @@ result = send_message(session_id="abc123", message="添加单元测试")
 {
   "response": "项目版本号：0.1",
   "tool_calls": [
-    {"tool": "read", "status": "completed", "output": "[project]\nname = \"opencode\"\nversion = \"0.1.0\"..."}
+    {"tool": "read", "status": "completed", "output": "[project]\nname = \"mycode\"\nversion = \"0.1.0\"..."}
   ]
 }
-// opencode agent 自动调用了 read 工具
+// mycode agent 自动调用了 read 工具
 
 📊 Conversation Statistics:
    Turn 1: 7818 in / 93 out tokens
@@ -187,7 +187,7 @@ result = send_message(session_id="abc123", message="添加单元测试")
 | 维度 | MCP（当前方案） | ACP（未实现） |
 |------|----------------|--------------|
 | **通信模式** | 🔴 单向：调用方驱动 | ✅ 双向对等通信 |
-| **协作关系** | 🔴 主从：opencode 是工具 | ✅ 对等：两个独立 agent |
+| **协作关系** | 🔴 主从：mycode 是工具 | ✅ 对等：两个独立 agent |
 | **主动通知** | 🔴 需轮询 | ✅ 事件推送 |
 | **任务编排** | 🔴 线性调用链 | ✅ 多 agent 网络 |
 | **实现复杂度** | ✅ 简单（仅包装 HTTP） | 🔴 需双端实现 ACP |
@@ -196,13 +196,13 @@ result = send_message(session_id="abc123", message="添加单元测试")
 
 ### MCP 的局限
 
-1. **单向驱动**：opencode 无法主动向 CodeBuddy 请求信息
+1. **单向驱动**：mycode 无法主动向 CodeBuddy 请求信息
 2. **无事件推送**：长任务需要阻塞等待或轮询
-3. **工具级集成**：opencode 被降级为"高级工具"，不是独立 agent
+3. **工具级集成**：mycode 被降级为"高级工具"，不是独立 agent
 
 ### 何时考虑 ACP
 
-- 需要 opencode 主动回调（如请求额外文件）
+- 需要 mycode 主动回调（如请求额外文件）
 - 需要多 agent 协作编排
 - 需要实时进度推送
 
@@ -217,11 +217,11 @@ result = send_message(session_id="abc123", message="添加单元测试")
 
 ### Q: 为什么 `list_models()` 返回空列表？
 
-A: `opencode serve` 命令需要在正确的项目目录下启动，且需要设置 API Key 环境变量：
+A: `mycode serve` 命令需要在正确的项目目录下启动，且需要设置 API Key 环境变量：
 ```bash
 export OPENAI_API_KEY=xxx  # 或其他 provider 的 key
 cd /path/to/project
-uv run opencode serve --port 4096
+uv run mycode serve --port 4096
 ```
 
 ### Q: 如何在不同项目间切换？
@@ -230,12 +230,12 @@ A: 修改 `OPENCODE_DIRECTORY` 环境变量，指向目标项目目录。每个�
 
 ### Q: 长时间操作会超时吗？
 
-A: MCP Server 默认 timeout 为 300 秒（5 分钟）。如果 opencode agent 的操作超过此时间，需要调整 `httpx.AsyncClient` 的 timeout 参数。
+A: MCP Server 默认 timeout 为 300 秒（5 分钟）。如果 mycode agent 的操作超过此时间，需要调整 `httpx.AsyncClient` 的 timeout 参数。
 
 ## 文件结构
 
 ```
-opencode/mcp_server/
+mycode/mcp_server/
 ├── __init__.py          # 包初始化
 ├── __main__.py          # python -m 入口
 └── server.py            # MCP Server 实现
@@ -245,4 +245,4 @@ opencode/mcp_server/
 
 - [MCP Protocol Specification](https://modelcontextprotocol.io/)
 - [FastMCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [OpenCode HTTP API](../opencode/server/)
+- [OpenCode HTTP API](../mycode/server/)
