@@ -8,6 +8,10 @@ import { useChat } from './hooks/useChat'
 import { useGit } from './hooks/useGit'
 import { usePermission } from './hooks/usePermission'
 import { useProviders } from './hooks/useProviders'
+import { listSkills } from './api/skills'
+import { getMcpStatus } from './api/mcp'
+import type { SkillInfo } from './api/skills'
+import type { McpStatus } from './api/mcp'
 
 export default function App() {
   const session = useSession()
@@ -15,6 +19,26 @@ export default function App() {
   const git = useGit()
   const permission = usePermission()
   const providerState = useProviders()
+
+  // --- Skills state ---
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [skillsLoading, setSkillsLoading] = useState(true)
+  const refreshSkills = useCallback(async () => {
+    setSkillsLoading(true)
+    try { setSkills(await listSkills()) } catch { /* ignore */ }
+    finally { setSkillsLoading(false) }
+  }, [])
+  useEffect(() => { refreshSkills() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- MCP state ---
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
+  const [mcpLoading, setMcpLoading] = useState(true)
+  const refreshMcp = useCallback(async () => {
+    setMcpLoading(true)
+    try { setMcpStatus(await getMcpStatus()) } catch { /* ignore */ }
+    finally { setMcpLoading(false) }
+  }, [])
+  useEffect(() => { refreshMcp() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Sidebar resizable width ---
   const SIDEBAR_MIN = 180
@@ -94,6 +118,12 @@ export default function App() {
         onSelectGitFile={git.openDiff}
         onRefreshGit={git.refresh}
         width={sidebarWidth}
+        skills={skills}
+        skillsLoading={skillsLoading}
+        onRefreshSkills={refreshSkills}
+        mcpStatus={mcpStatus}
+        mcpLoading={mcpLoading}
+        onRefreshMcp={refreshMcp}
       />
       {/* Drag handle */}
       <div

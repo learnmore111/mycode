@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from mycode import __version__
 from mycode.bus.bus import Bus
-from mycode.server.routes import config, event, file, git, mcp, permission, project, provider, session
+from mycode.server.routes import config, event, file, git, mcp, permission, project, provider, session, skills, skills
 
 # Maximum sizes for log endpoint to prevent DoS
 _MAX_LOG_SERVICE_LEN = 128
@@ -84,6 +84,8 @@ def create_app() -> FastAPI:
     app.include_router(git.router)
     app.include_router(permission.router)
     app.include_router(mcp.router)
+    app.include_router(skills.router)
+    app.include_router(skills.router)
     app.include_router(event.router)
     app.include_router(project.router)
 
