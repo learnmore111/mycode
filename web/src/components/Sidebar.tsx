@@ -14,9 +14,15 @@ import {
   Clock,
   CalendarDays,
   GitBranch,
+  Wand2,
+  Plug,
 } from 'lucide-react'
 import GitSidebar from './GitSidebar'
+import SkillsSidebar from './SkillsSidebar'
+import McpSidebar from './McpSidebar'
 import type { GitStatus, Session } from '../types'
+import type { SkillInfo } from '../api/skills'
+import type { McpStatus } from '../api/mcp'
 import { getSessionSearchText, getSessionSummaryBadges } from '../utils/sessionInsights'
 
 interface Props {
@@ -35,6 +41,12 @@ interface Props {
   onSelectGitFile: (path: string) => void
   onRefreshGit: () => void
   width?: number
+  skills: SkillInfo[]
+  skillsLoading: boolean
+  onRefreshSkills: () => void
+  mcpStatus: McpStatus | null
+  mcpLoading: boolean
+  onRefreshMcp: () => void
 }
 
 function getTimeGroup(timestamp: number): string {
@@ -151,12 +163,18 @@ export default function Sidebar({
   onSelectGitFile,
   onRefreshGit,
   width = 256,
+  skills,
+  skillsLoading,
+  onRefreshSkills,
+  mcpStatus,
+  mcpLoading,
+  onRefreshMcp,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [showDeleted, setShowDeleted] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [isSearching, setIsSearching] = useState(false)
-  const [activeTab, setActiveTab] = useState<'sessions' | 'git'>('sessions')
+  const [activeTab, setActiveTab] = useState<'sessions' | 'git' | 'skills' | 'mcp'>('sessions')
 
   const filteredSessions = useMemo(() => {
     if (!searchQuery.trim()) return sessions
@@ -202,6 +220,28 @@ export default function Sidebar({
           title="Git"
         >
           <GitBranch size={15} />
+        </button>
+        <button
+          onClick={() => setActiveTab('skills')}
+          className={`p-2 rounded-lg transition-colors ${
+            activeTab === 'skills'
+              ? 'bg-accent-light text-accent'
+              : 'hover:bg-surface-hover text-ink-muted hover:text-ink-secondary'
+          }`}
+          title="技能"
+        >
+          <Wand2 size={15} />
+        </button>
+        <button
+          onClick={() => setActiveTab('mcp')}
+          className={`p-2 rounded-lg transition-colors ${
+            activeTab === 'mcp'
+              ? 'bg-accent-light text-accent'
+              : 'hover:bg-surface-hover text-ink-muted hover:text-ink-secondary'
+          }`}
+          title="MCP"
+        >
+          <Plug size={15} />
         </button>
         <button
           onClick={onCreate}
@@ -256,28 +296,50 @@ export default function Sidebar({
       </div>
 
       <div className="px-3 pb-3">
-        <div className="grid grid-cols-2 gap-1 rounded-xl bg-surface-2 p-1">
+        <div className="grid grid-cols-4 gap-1 rounded-xl bg-surface-2 p-1">
           <button
             onClick={() => setActiveTab('sessions')}
-            className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
+            className={`flex items-center justify-center gap-1 rounded-lg px-2 py-2 text-xxs font-medium transition-all ${
               activeTab === 'sessions'
                 ? 'bg-surface-0 text-accent shadow-xs'
                 : 'text-ink-muted hover:text-ink-secondary'
             }`}
           >
-            <MessageSquare size={12} />
+            <MessageSquare size={11} />
             <span>会话</span>
           </button>
           <button
             onClick={() => setActiveTab('git')}
-            className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
+            className={`flex items-center justify-center gap-1 rounded-lg px-2 py-2 text-xxs font-medium transition-all ${
               activeTab === 'git'
                 ? 'bg-surface-0 text-accent shadow-xs'
                 : 'text-ink-muted hover:text-ink-secondary'
             }`}
           >
-            <GitBranch size={12} />
+            <GitBranch size={11} />
             <span>Git</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('skills')}
+            className={`flex items-center justify-center gap-1 rounded-lg px-2 py-2 text-xxs font-medium transition-all ${
+              activeTab === 'skills'
+                ? 'bg-surface-0 text-accent shadow-xs'
+                : 'text-ink-muted hover:text-ink-secondary'
+            }`}
+          >
+            <Wand2 size={11} />
+            <span>技能</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('mcp')}
+            className={`flex items-center justify-center gap-1 rounded-lg px-2 py-2 text-xxs font-medium transition-all ${
+              activeTab === 'mcp'
+                ? 'bg-surface-0 text-accent shadow-xs'
+                : 'text-ink-muted hover:text-ink-secondary'
+            }`}
+          >
+            <Plug size={11} />
+            <span>MCP</span>
           </button>
         </div>
       </div>
@@ -420,7 +482,7 @@ export default function Sidebar({
             </div>
           </div>
         </>
-      ) : (
+      ) : activeTab === 'git' ? (
         <GitSidebar
           status={gitStatus}
           loading={gitLoading}
@@ -429,7 +491,19 @@ export default function Sidebar({
           onSelectFile={onSelectGitFile}
           onRefresh={onRefreshGit}
         />
-      )}
+      ) : activeTab === 'skills' ? (
+        <SkillsSidebar
+          skills={skills}
+          loading={skillsLoading}
+          onRefresh={onRefreshSkills}
+        />
+      ) : activeTab === 'mcp' ? (
+        <McpSidebar
+          status={mcpStatus}
+          loading={mcpLoading}
+          onRefresh={onRefreshMcp}
+        />
+      ) : null}
     </aside>
   )
 }

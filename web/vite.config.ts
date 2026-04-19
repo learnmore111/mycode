@@ -15,6 +15,8 @@ export default defineConfig({
       '/file': 'http://localhost:4096',
       '/config': 'http://localhost:4096',
       '/git': 'http://localhost:4096',
+      '/skill': 'http://localhost:4096',
+      '/mcp': 'http://localhost:4096',
     },
   },
   build: {
