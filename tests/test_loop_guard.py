@@ -1,5 +1,5 @@
 """Tests for the three-layer loop guard system."""
-from opencode.session.loop_guard import (
+from mycode.session.loop_guard import (
     GuardAction,
     LoopGuard,
     LoopGuardConfig,

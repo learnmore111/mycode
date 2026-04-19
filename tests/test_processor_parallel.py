@@ -15,14 +15,14 @@ from typing import Any
 
 import pytest
 
-from opencode.bus.bus import Bus
-from opencode.bus.events import PART_UPDATED
-from opencode.provider.schema import Model, ModelApi
-from opencode.session import llm as llmmod
-from opencode.session.message import AssistantMessage, ToolPart, create_tool_part
-from opencode.session.processor import DOOM_LOOP_THRESHOLD, ProcessorContext, process
-from opencode.tool import registry as tool_registry
-from opencode.tool.base import ToolContext, ToolInfo, ToolOk, ToolResult
+from mycode.bus.bus import Bus
+from mycode.bus.events import PART_UPDATED
+from mycode.provider.schema import Model, ModelApi
+from mycode.session import llm as llmmod
+from mycode.session.message import AssistantMessage, ToolPart, create_tool_part
+from mycode.session.processor import DOOM_LOOP_THRESHOLD, ProcessorContext, process
+from mycode.tool import registry as tool_registry
+from mycode.tool.base import ToolContext, ToolInfo, ToolOk, ToolResult
 
 # ── Helpers ────────────────────────────────────────────────────────────
 

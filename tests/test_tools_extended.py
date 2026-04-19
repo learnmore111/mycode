@@ -4,12 +4,12 @@ import tempfile
 
 import pytest
 
-import opencode.project.instance as inst
-from opencode.tool.base import ToolContext
-from opencode.tool.question import tool as question_tool
-from opencode.tool.registry import all_tools, register_builtins
-from opencode.tool.skill import tool as skill_tool
-from opencode.tool.todo import tool as todo_tool
+import mycode.project.instance as inst
+from mycode.tool.base import ToolContext
+from mycode.tool.question import tool as question_tool
+from mycode.tool.registry import all_tools, register_builtins
+from mycode.tool.skill import tool as skill_tool
+from mycode.tool.todo import tool as todo_tool
 
 
 def _ctx(sid: str = "test") -> ToolContext:
@@ -59,7 +59,7 @@ async def test_skill_not_found():
 @pytest.mark.asyncio
 async def test_skill_found():
     with tempfile.TemporaryDirectory() as d:
-        skill_dir = os.path.join(d, ".opencode", "skills")
+        skill_dir = os.path.join(d, ".mycode", "skills")
         os.makedirs(skill_dir)
         with open(os.path.join(skill_dir, "python.md"), "w") as f:
             f.write("# Python Skill\nUse type hints everywhere.")
@@ -73,7 +73,7 @@ async def test_skill_found():
             token.reset()
 
 def test_all_builtins_registered():
-    from opencode.tool.registry import clear
+    from mycode.tool.registry import clear
     clear()
     register_builtins()
     tools = all_tools()

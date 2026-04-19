@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from opencode.session.memory.memory import (
+from mycode.session.memory.memory import (
     InteractionEntry,
     SessionMemory,
     SessionSummary,

@@ -6,9 +6,9 @@ This Python AI coding agent framework implements a sophisticated sub-agent syste
 
 ## 1. Agent Definition and Configuration
 
-### 1.1 Agent Types (`opencode/agent/agent.py`)
+### 1.1 Agent Types (`mycode/agent/agent.py`)
 
-**File**: `opencode/agent/agent.py`
+**File**: `mycode/agent/agent.py`
 
 Agents are defined using the `AgentInfo` dataclass (lines 30-48):
 
@@ -70,7 +70,7 @@ Sub-agents like "explore" have restrictive permissions:
 
 ### 2.1 Task Tool Implementation
 
-**File**: `opencode/tool/task.py`
+**File**: `mycode/tool/task.py`
 
 The `TaskTool` (lines 48-182) is the primary mechanism for spawning sub-agents.
 
@@ -145,7 +145,7 @@ async def call(self, params: TaskParams, ctx: ToolContext) -> ToolResult:
 
 ### 3.1 Context Flow (ToolContext)
 
-**File**: `opencode/tool/base.py` (lines 29-42)
+**File**: `mycode/tool/base.py` (lines 29-42)
 
 ```python
 @dataclass
@@ -227,7 +227,7 @@ Tool may check session_id, use project context, etc.
 
 **Finding**: Sub-agents do NOT get their own database sessions.
 
-Evidence from `opencode/session/session.py`:
+Evidence from `mycode/session/session.py`:
 - `create()` function (lines 85-100) would create a new SessionInfo
 - Sub-agents never call this
 - No `parent_id` tracking for sub-agent sessions
@@ -240,7 +240,7 @@ Evidence from `opencode/session/session.py`:
 
 ### 4.2 Project Context Isolation
 
-**File**: `opencode/project/instance.py`
+**File**: `mycode/project/instance.py`
 
 Uses Python's `contextvars.ContextVar` for per-async-task context:
 
@@ -260,7 +260,7 @@ This is CORRECT behavior for a sub-agent, but it means:
 
 ### 4.3 Loop Guard and Iteration Limits
 
-**File**: `opencode/session/loop_guard.py`
+**File**: `mycode/session/loop_guard.py`
 
 Each sub-agent has its OWN loop guard instance:
 
@@ -294,7 +294,7 @@ for turn in range(MAX_TURNS):  # Line 84 in task.py
 ### 5.1 CRITICAL ISSUES
 
 #### Issue #1: Context Leakage - File Attribution Error
-**Location**: `opencode/tool/task.py:161`
+**Location**: `mycode/tool/task.py:161`
 
 **Problem**:
 ```python
@@ -323,7 +323,7 @@ result = await tool_impl.execute(tool_args, sub_ctx)
 ```
 
 #### Issue #2: Missing Context in ToolContext
-**Location**: `opencode/tool/base.py:29-42`
+**Location**: `mycode/tool/base.py:29-42`
 
 **Problem**:
 ```python
@@ -344,7 +344,7 @@ The `messages` field suggests tools should receive conversation history, but:
 **Impact**: Tools can't access parent/sub-agent conversation context
 
 #### Issue #3: No Error Propagation from Sub-Agents
-**Location**: `opencode/tool/task.py:163-164`
+**Location**: `mycode/tool/task.py:163-164`
 
 **Problem**:
 ```python
@@ -362,7 +362,7 @@ If a sub-agent tool crashes, the error is converted to a string and sent to LLM.
 **Fix**: Return structured error in ToolResult with is_error flag, then check it in task.py
 
 #### Issue #4: No Result Caching in Sub-Agents
-**Location**: `opencode/tool/task.py` (entire tool)
+**Location**: `mycode/tool/task.py` (entire tool)
 
 **Problem**:
 Sub-agents run their own LLM loop but:
@@ -377,7 +377,7 @@ Example: If a sub-agent reads the same file twice, it will call the read tool tw
 **Mitigation**: Could use LoopGuard inside task.py
 
 #### Issue #5: Hardcoded MAX_TURNS = 8 for Sub-Agents
-**Location**: `opencode/tool/task.py:24`
+**Location**: `mycode/tool/task.py:24`
 
 **Problem**:
 ```python
@@ -397,7 +397,7 @@ for turn in range(max_turns):
 ```
 
 #### Issue #6: TOCTOU in Sub-Agent Context 
-**Location**: `opencode/tool/task.py:62-75`
+**Location**: `mycode/tool/task.py:62-75`
 
 **Problem**:
 ```python
@@ -416,7 +416,7 @@ These are awaited calls. Between the check and use, configuration could change (
 **Severity**: VERY LOW - Unlikely in practice, but poor defensive programming
 
 #### Issue #7: Abort Signal Check Timing
-**Location**: `opencode/tool/task.py:86, 104, 148`
+**Location**: `mycode/tool/task.py:86, 104, 148`
 
 **Problem**:
 ```python
@@ -450,7 +450,7 @@ The tool_impl.execute() call (line 161) cannot be interrupted mid-execution.
 ### 5.2 DESIGN ISSUES
 
 #### Design Issue #1: Sub-Agent Tool Set Inconsistency
-**Location**: `opencode/tool/task.py:26-27, 78`
+**Location**: `mycode/tool/task.py:26-27, 78`
 
 ```python
 _EXCLUDED_TOOLS = frozenset({"task", "todo", "question", "batch"})
@@ -474,7 +474,7 @@ This makes sense for preventing infinite nesting, but:
 **Better Design**: Allow nested sub-agents up to depth N (e.g., depth 2), with configurable limit.
 
 #### Design Issue #2: No Sub-Agent Progress Tracking
-**Location**: `opencode/tool/task.py:174-179`
+**Location**: `mycode/tool/task.py:174-179`
 
 Sub-agent only returns final output:
 ```python
@@ -505,7 +505,7 @@ metadata={
 ```
 
 #### Design Issue #3: No Sub-Agent Session Visibility
-**Location**: `opencode/session/session.py`
+**Location**: `mycode/session/session.py`
 
 Sub-agents don't create SessionInfo records, so:
 - ❌ No way to view sub-agent's work later
@@ -521,7 +521,7 @@ This might be intentional (sub-agents are temporary helpers), but it limits obse
 ### 5.3 RACE CONDITIONS AND CONCURRENCY ISSUES
 
 #### Race Condition #1: Shared Tool Registry Access
-**Location**: `opencode/tool/registry.py` and `opencode/tool/task.py:78`
+**Location**: `mycode/tool/registry.py` and `mycode/tool/task.py:78`
 
 ```python
 tools = [t for t in tool_registry.to_llm_tools() 
@@ -552,7 +552,7 @@ def visible_tools() -> list[ToolInfo]:
 ```
 
 #### Race Condition #2: Session Lock Acquisition
-**Location**: `opencode/session/prompt.py:61-78`
+**Location**: `mycode/session/prompt.py:61-78`
 
 ```python
 async def _acquire_session(session_id: str) -> bool:
@@ -586,7 +586,7 @@ Actually, no race here since sub-agents don't acquire their own session lock. Th
 ### 5.4 ERROR HANDLING ISSUES
 
 #### Error Handling #1: Agent Not Found
-**Location**: `opencode/tool/task.py:66-68`
+**Location**: `mycode/tool/task.py:66-68`
 
 ```python
 agent = await agentmod.get(agent_name)
@@ -599,7 +599,7 @@ Good: Returns error to parent.
 But: Should this be logged? Should parent agent try a different agent?
 
 #### Error Handling #2: Cascading Failures
-**Location**: `opencode/tool/task.py:72-74`
+**Location**: `mycode/tool/task.py:72-74`
 
 ```python
 try:
@@ -615,7 +615,7 @@ If model is unavailable, sub-agent fails completely. Parent might want to:
 - But instead, task tool fails immediately
 
 #### Error Handling #3: Tool Execution Inside Sub-Agent
-**Location**: `opencode/tool/task.py:161-164`
+**Location**: `mycode/tool/task.py:161-164`
 
 ```python
 try:
@@ -639,7 +639,7 @@ tool_output = result.output if not result.is_error else f"Error: {result.output}
 ### 5.5 LOGGING AND OBSERVABILITY
 
 #### Observability #1: Sub-Agent Operations Not Logged with Context
-**Location**: `opencode/tool/task.py` (entire file)
+**Location**: `mycode/tool/task.py` (entire file)
 
 Sub-agent operations (lines 84-172) don't log:
 - Which sub-agent is running

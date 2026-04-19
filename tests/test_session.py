@@ -1,10 +1,10 @@
 """Tests for session and message models."""
 import pytest
-from opencode.session.message import (
+from mycode.session.message import (
     create_user_message, create_assistant_message, create_text_part, TextPart, ToolPart,
 )
-from opencode.session.system import build
-from opencode.session.processor import build_tool_results_messages
+from mycode.session.system import build
+from mycode.session.processor import build_tool_results_messages
 
 def test_create_user_message():
     msg = create_user_message("sess1")
@@ -29,7 +29,7 @@ def test_system_prompt_with_agent():
     assert any("code reviewer" in p for p in parts)
 
 def test_system_prompt_with_model():
-    from opencode.provider.schema import Model, ModelApi
+    from mycode.provider.schema import Model, ModelApi
     model = Model(id="claude-sonnet-4", providerID="anthropic", api=ModelApi(id="claude-sonnet-4-20250514"), name="Sonnet")
     parts = build(model=model, agent_prompt="You are helpful.")
     # Should contain the Anthropic prompt (OpenCode)

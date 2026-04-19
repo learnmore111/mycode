@@ -1,7 +1,7 @@
 """Tests for the permission system."""
-from opencode.permission.evaluate import evaluate
-from opencode.permission.schema import Rule
-from opencode.permission.permission import from_config, merge
+from mycode.permission.evaluate import evaluate
+from mycode.permission.schema import Rule
+from mycode.permission.permission import from_config, merge
 
 def test_evaluate_default_ask():
     result = evaluate("bash", "ls")

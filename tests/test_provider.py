@@ -1,12 +1,12 @@
 """Tests for provider schema and transform."""
 import pytest
-from opencode.provider.schema import (
+from mycode.provider.schema import (
     Model, ModelApi, ModelCapabilities, ModelCost, ModelLimit, CacheCost, ProviderInfo,
 )
-from opencode.provider.transform import (
+from mycode.provider.transform import (
     temperature, top_p, max_tokens, supports_cache, reasoning_params, build_litellm_kwargs,
 )
-from opencode.provider.provider import parse_model, litellm_model_name
+from mycode.provider.provider import parse_model, litellm_model_name
 
 
 def _make_model(mid="claude-sonnet-4", pid="anthropic", npm="@ai-sdk/anthropic", **kw) -> Model:

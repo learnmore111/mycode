@@ -1,6 +1,6 @@
 # OpenCode Tools 与 Subagent 完整文档
 
-> 本文档详细记录了 opencode 项目中所有内置 Tools 和 Subagent 的实现细节。
+> 本文档详细记录了 mycode 项目中所有内置 Tools 和 Subagent 的实现细节。
 
 ---
 
@@ -52,7 +52,7 @@
 
 ### 基础架构
 
-**目录位置**: `/opencode/tool/`
+**目录位置**: `/mycode/tool/`
 
 **核心文件**:
 
@@ -128,14 +128,14 @@ def register(tool: ToolInfo) -> None:
 
 def register_builtins() -> None:
     """注册所有内置工具"""
-    from opencode.tool import bash, edit, glob_tool, grep, question, read, skill, task, todo, webfetch, websearch, write
+    from mycode.tool import bash, edit, glob_tool, grep, question, read, skill, task, todo, webfetch, websearch, write
     for mod in [bash, read, edit, write, glob_tool, grep, task, webfetch, websearch, question, todo, skill]:
         if hasattr(mod, "tool"):
             register(mod.tool)
     
     # 实验性 batch 工具（需配置启用）
     if cfg.experimental and cfg.experimental.batch_tool:
-        from opencode.tool import batch
+        from mycode.tool import batch
         register(batch.tool)
 
 def get(tool_id: str) -> ToolInfo | None:
@@ -177,7 +177,7 @@ def to_llm_tools() -> list[dict[str, Any]]:
 
 ### 1. bash - Shell 命令执行
 
-**文件**: `/opencode/tool/bash.py`
+**文件**: `/mycode/tool/bash.py`
 
 **功能**: 执行 shell 命令，用于运行命令、安装包或与系统交互。
 
@@ -240,7 +240,7 @@ class BashTool(ToolInfo):
 
 ### 2. read - 读取文件
 
-**文件**: `/opencode/tool/read.py`
+**文件**: `/mycode/tool/read.py`
 
 **功能**: 读取文件内容，支持行范围读取。
 
@@ -298,7 +298,7 @@ class ReadTool(ToolInfo):
 
 ### 3. edit - 文件编辑
 
-**文件**: `/opencode/tool/edit.py`
+**文件**: `/mycode/tool/edit.py`
 
 **功能**: 通过精确字符串替换来编辑文件。
 
@@ -358,7 +358,7 @@ class EditTool(ToolInfo):
 
 ### 4. write - 写入文件
 
-**文件**: `/opencode/tool/write.py`
+**文件**: `/mycode/tool/write.py`
 
 **功能**: 写入文件内容，自动创建目录，覆盖已有内容。
 
@@ -403,7 +403,7 @@ class WriteTool(ToolInfo):
 
 ### 5. glob - 文件模式搜索
 
-**文件**: `/opencode/tool/glob_tool.py`
+**文件**: `/mycode/tool/glob_tool.py`
 
 **功能**: 使用 glob 模式查找文件，返回相对路径。
 
@@ -447,7 +447,7 @@ class GlobTool(ToolInfo):
 
 ### 6. grep - 内容搜索
 
-**文件**: `/opencode/tool/grep.py`
+**文件**: `/mycode/tool/grep.py`
 
 **功能**: 使用正则表达式搜索文件内容（优先使用 ripgrep）。
 
@@ -500,7 +500,7 @@ class GrepTool(ToolInfo):
 
 ### 7. task - 子代理任务
 
-**文件**: `/opencode/tool/task.py`
+**文件**: `/mycode/tool/task.py`
 
 **功能**: 启动子代理处理复杂任务，独立上下文运行。
 
@@ -568,7 +568,7 @@ class TaskTool(ToolInfo):
 
 ### 8. webfetch - URL 内容获取
 
-**文件**: `/opencode/tool/webfetch.py`
+**文件**: `/mycode/tool/webfetch.py`
 
 **功能**: 获取 URL 内容，HTTP 自动升级为 HTTPS。
 
@@ -622,7 +622,7 @@ class WebFetchTool(ToolInfo):
 
 ### 9. websearch - 网络搜索
 
-**文件**: `/opencode/tool/websearch.py`
+**文件**: `/mycode/tool/websearch.py`
 
 **功能**: 搜索网络，返回搜索结果（使用 DuckDuckGo，无需 API key）。
 
@@ -681,7 +681,7 @@ class WebSearchTool(ToolInfo):
 
 ### 10. question - 向用户提问
 
-**文件**: `/opencode/tool/question.py`
+**文件**: `/mycode/tool/question.py`
 
 **功能**: 向用户提问以获取澄清或额外信息。
 
@@ -726,7 +726,7 @@ class QuestionTool(ToolInfo):
 
 ### 11. todo - 任务列表管理
 
-**文件**: `/opencode/tool/todo.py`
+**文件**: `/mycode/tool/todo.py`
 
 **功能**: 创建和管理任务列表以跟踪多步骤任务进度。
 
@@ -792,9 +792,9 @@ class TodoTool(ToolInfo):
 
 ### 12. skill - 加载技能文件
 
-**文件**: `/opencode/tool/skill.py`
+**文件**: `/mycode/tool/skill.py`
 
-**功能**: 加载技能文件获取专业指导，技能文件位于 `.opencode/skills/`。
+**功能**: 加载技能文件获取专业指导，技能文件位于 `.mycode/skills/`。
 
 **参数**:
 
@@ -809,7 +809,7 @@ class SkillTool(ToolInfo):
     id = "skill"
     description = (
         "Load a skill file to get specialized instructions. "
-        "Skills are markdown files in .opencode/skills/ that provide domain-specific knowledge."
+        "Skills are markdown files in .mycode/skills/ that provide domain-specific knowledge."
     )
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -817,8 +817,8 @@ class SkillTool(ToolInfo):
         
         # 搜索路径
         search_dirs = [
-            os.path.join(base, ".opencode", "skills"),
-            os.path.join(base, ".opencode", "skill"),
+            os.path.join(base, ".mycode", "skills"),
+            os.path.join(base, ".mycode", "skill"),
         ]
 
         for d in search_dirs:
@@ -834,20 +834,20 @@ class SkillTool(ToolInfo):
 
         return ToolResult(
             title=f"Skill: {name}",
-            output=f"Skill '{name}' not found. Searched in .opencode/skills/",
+            output=f"Skill '{name}' not found. Searched in .mycode/skills/",
             metadata={"found": False},
         )
 ```
 
 **特性**:
 - 支持 `.md`, `.txt`, 无扩展名
-- 搜索 `.opencode/skills/` 和 `.opencode/skill/`
+- 搜索 `.mycode/skills/` 和 `.mycode/skill/`
 
 ---
 
 ### 13. batch - 批量并行执行（实验性）
 
-**文件**: `/opencode/tool/batch.py`
+**文件**: `/mycode/tool/batch.py`
 
 **功能**: 在单个请求中并行执行多个工具调用。
 
@@ -959,7 +959,7 @@ class BatchTool(ToolInfo):
 
 #### 1. general - 通用子代理
 
-**文件**: `/opencode/agent/agent.py`
+**文件**: `/mycode/agent/agent.py`
 
 **用途**: 研究复杂问题和执行多步骤任务
 
@@ -986,7 +986,7 @@ class BatchTool(ToolInfo):
 
 #### 2. explore - 探索子代理
 
-**文件**: `/opencode/agent/agent.py`
+**文件**: `/mycode/agent/agent.py`
 
 **用途**: 快速探索代码库，文件搜索，代码关键词搜索
 
@@ -1017,7 +1017,7 @@ class BatchTool(ToolInfo):
 - ✅ grep, glob, list, bash, read, webfetch, websearch, codesearch
 - ❌ 其他所有工具（不能修改文件）
 
-**专用 Prompt** (`/opencode/agent/prompts/explore.txt`):
+**专用 Prompt** (`/mycode/agent/prompts/explore.txt`):
 
 ```
 You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
@@ -1144,33 +1144,33 @@ Rules:
 
 | 文件 | 路径 |
 |------|------|
-| 基础类 | `/opencode/tool/base.py` |
-| 注册中心 | `/opencode/tool/registry.py` |
-| bash | `/opencode/tool/bash.py` |
-| read | `/opencode/tool/read.py` |
-| edit | `/opencode/tool/edit.py` |
-| write | `/opencode/tool/write.py` |
-| glob | `/opencode/tool/glob_tool.py` |
-| grep | `/opencode/tool/grep.py` |
-| task | `/opencode/tool/task.py` |
-| webfetch | `/opencode/tool/webfetch.py` |
-| websearch | `/opencode/tool/websearch.py` |
-| question | `/opencode/tool/question.py` |
-| todo | `/opencode/tool/todo.py` |
-| skill | `/opencode/tool/skill.py` |
-| batch | `/opencode/tool/batch.py` |
+| 基础类 | `/mycode/tool/base.py` |
+| 注册中心 | `/mycode/tool/registry.py` |
+| bash | `/mycode/tool/bash.py` |
+| read | `/mycode/tool/read.py` |
+| edit | `/mycode/tool/edit.py` |
+| write | `/mycode/tool/write.py` |
+| glob | `/mycode/tool/glob_tool.py` |
+| grep | `/mycode/tool/grep.py` |
+| task | `/mycode/tool/task.py` |
+| webfetch | `/mycode/tool/webfetch.py` |
+| websearch | `/mycode/tool/websearch.py` |
+| question | `/mycode/tool/question.py` |
+| todo | `/mycode/tool/todo.py` |
+| skill | `/mycode/tool/skill.py` |
+| batch | `/mycode/tool/batch.py` |
 
 ### Agent 文件
 
 | 文件 | 路径 |
 |------|------|
-| Agent 系统核心 | `/opencode/agent/agent.py` |
-| Agent 模块导出 | `/opencode/agent/__init__.py` |
-| Agent 配置模型 | `/opencode/config/models.py` |
-| explore prompt | `/opencode/agent/prompts/explore.txt` |
-| compaction prompt | `/opencode/agent/prompts/compaction.txt` |
-| summary prompt | `/opencode/agent/prompts/summary.txt` |
-| title prompt | `/opencode/agent/prompts/title.txt` |
+| Agent 系统核心 | `/mycode/agent/agent.py` |
+| Agent 模块导出 | `/mycode/agent/__init__.py` |
+| Agent 配置模型 | `/mycode/config/models.py` |
+| explore prompt | `/mycode/agent/prompts/explore.txt` |
+| compaction prompt | `/mycode/agent/prompts/compaction.txt` |
+| summary prompt | `/mycode/agent/prompts/summary.txt` |
+| title prompt | `/mycode/agent/prompts/title.txt` |
 
 ---
 

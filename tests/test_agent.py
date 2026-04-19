@@ -1,6 +1,6 @@
 """Tests for the agent system."""
 import pytest
-from opencode.agent.agent import AgentInfo, get, list_agents, default_agent, invalidate
+from mycode.agent.agent import AgentInfo, get, list_agents, default_agent, invalidate
 
 
 @pytest.fixture(autouse=True)

@@ -1,12 +1,12 @@
 """Tests for the auth system."""
 import pytest
-from opencode.auth.auth import ApiKeyAuth, OAuthAuth, get, set_, remove, all_
+from mycode.auth.auth import ApiKeyAuth, OAuthAuth, get, set_, remove, all_
 
 
 @pytest.fixture(autouse=True)
 def _use_tmp_data(tmp_path, monkeypatch):
     """Redirect GlobalPaths.data() to a temp dir."""
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path))
 
 
 @pytest.mark.asyncio

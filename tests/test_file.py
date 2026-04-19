@@ -1,10 +1,10 @@
 """Tests for file, snapshot, project, shell modules."""
 import os, tempfile
 import pytest
-from opencode.shell.shell import preferred, acceptable
-from opencode.project.project import from_directory
-from opencode.file.file import read, list_dir
-import opencode.project.instance as inst
+from mycode.shell.shell import preferred, acceptable
+from mycode.project.project import from_directory
+from mycode.file.file import read, list_dir
+import mycode.project.instance as inst
 
 
 def test_shell_preferred():

@@ -1,12 +1,12 @@
 """Tests for JSON storage and storage models."""
 import pytest
-from opencode.storage.json_storage import read, write, remove, list_keys, exists
-from opencode.storage.models import SessionTable, MessageTable, PartTable
+from mycode.storage.json_storage import read, write, remove, list_keys, exists
+from mycode.storage.models import SessionTable, MessageTable, PartTable
 
 
 @pytest.fixture(autouse=True)
 def _use_tmp_storage(tmp_path, monkeypatch):
-    monkeypatch.setattr("opencode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path))
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,10 @@
 """Tests for utility modules."""
 
-from opencode.util import hash as hashmod
-from opencode.util import wildcard
-from opencode.util import ids
-from opencode.util import slug
-from opencode.util.error import NamedError, NotFoundError
+from mycode.util import hash as hashmod
+from mycode.util import wildcard
+from mycode.util import ids
+from mycode.util import slug
+from mycode.util.error import NamedError, NotFoundError
 
 
 def test_hash_fast():
