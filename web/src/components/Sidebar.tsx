@@ -34,6 +34,7 @@ interface Props {
   selectedGitPath: string | null
   onSelectGitFile: (path: string) => void
   onRefreshGit: () => void
+  width?: number
 }
 
 function getTimeGroup(timestamp: number): string {
@@ -149,6 +150,7 @@ export default function Sidebar({
   selectedGitPath,
   onSelectGitFile,
   onRefreshGit,
+  width = 256,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [showDeleted, setShowDeleted] = useState(false)
@@ -218,7 +220,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="w-64 flex-shrink-0 flex flex-col border-r border-line bg-surface-0">
+    <aside style={{ width }} className="flex-shrink-0 flex flex-col border-r border-line bg-surface-0">
       <div className="px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shadow-xs">

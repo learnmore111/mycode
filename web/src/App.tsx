@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import ChatArea from './components/ChatArea'
 import PermissionModal from './components/PermissionModal'
@@ -15,6 +15,51 @@ export default function App() {
   const git = useGit()
   const permission = usePermission()
   const providerState = useProviders()
+
+  // --- Sidebar resizable width ---
+  const SIDEBAR_MIN = 180
+  const SIDEBAR_MAX = 480
+  const SIDEBAR_DEFAULT = 256
+  const STORAGE_KEY = 'sidebar-width'
+
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      const n = parseInt(saved, 10)
+      if (!isNaN(n) && n >= SIDEBAR_MIN && n <= SIDEBAR_MAX) return n
+    }
+    return SIDEBAR_DEFAULT
+  })
+  const dragging = useRef(false)
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragging.current = true
+    document.body.classList.add('select-none', 'cursor-col-resize')
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, e.clientX))
+      setSidebarWidth(next)
+    }
+    const onUp = () => {
+      if (!dragging.current) return
+      dragging.current = false
+      document.body.classList.remove('select-none', 'cursor-col-resize')
+      setSidebarWidth((w) => {
+        localStorage.setItem(STORAGE_KEY, String(w))
+        return w
+      })
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   useEffect(() => {
     chat.loadHistory()
@@ -37,6 +82,12 @@ export default function App() {
         selectedGitPath={git.selectedPath}
         onSelectGitFile={git.openDiff}
         onRefreshGit={git.refresh}
+        width={sidebarWidth}
+      />
+      {/* Drag handle */}
+      <div
+        onMouseDown={onDragStart}
+        className="w-1 flex-shrink-0 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 transition-colors"
       />
       <ChatArea
         session={session.active}
