@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { RefreshCcw, Plug, PlugZap, Power, PowerOff, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
+import { RefreshCcw, Plug, PlugZap, Power, PowerOff, ChevronDown, ChevronRight, Wrench, Plus, X, Trash2 } from 'lucide-react'
 import type { McpStatus } from '../api/mcp'
-import { connectMcp, disconnectMcp } from '../api/mcp'
+import { connectMcp, disconnectMcp, addMcpServer, removeMcpServer } from '../api/mcp'
 
 interface Props {
   status: McpStatus | null
@@ -19,6 +19,12 @@ const STATUS_STYLES: Record<string, { color: string; label: string }> = {
 export default function McpSidebar({ status, loading, onRefresh }: Props) {
   const [expandedServer, setExpandedServer] = useState<string | null>(null)
   const [busyServer, setBusyServer] = useState<string | null>(null)
+  const [showAdd, setShowAdd] = useState(false)
+  const [addName, setAddName] = useState('')
+  const [addType, setAddType] = useState<'local' | 'remote'>('local')
+  const [addCommand, setAddCommand] = useState('')
+  const [addUrl, setAddUrl] = useState('')
+  const [adding, setAdding] = useState(false)
 
   const servers = status ? Object.entries(status.servers) : []
   const allTools = status?.tools ?? []
@@ -42,6 +48,43 @@ export default function McpSidebar({ status, loading, onRefresh }: Props) {
       onRefresh()
     } catch (err) {
       console.error('Disconnect MCP failed', err)
+    } finally {
+      setBusyServer(null)
+    }
+  }
+
+  const handleAdd = async () => {
+    if (!addName.trim()) return
+    setAdding(true)
+    try {
+      if (addType === 'local') {
+        const parts = addCommand.trim().split(/\s+/)
+        if (parts.length === 0 || !parts[0]) return
+        await addMcpServer({ name: addName.trim(), type: 'local', command: parts })
+      } else {
+        if (!addUrl.trim()) return
+        await addMcpServer({ name: addName.trim(), type: 'remote', url: addUrl.trim() })
+      }
+      onRefresh()
+      setShowAdd(false)
+      setAddName('')
+      setAddCommand('')
+      setAddUrl('')
+    } catch (err) {
+      console.error('Add MCP server failed', err)
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const handleRemove = async (name: string) => {
+    if (!confirm(`确定要移除 MCP 服务器 "${name}"？`)) return
+    setBusyServer(name)
+    try {
+      await removeMcpServer(name)
+      onRefresh()
+    } catch (err) {
+      console.error('Remove MCP server failed', err)
     } finally {
       setBusyServer(null)
     }
@@ -77,6 +120,77 @@ export default function McpSidebar({ status, loading, onRefresh }: Props) {
             {servers.length} 个服务器 · {allTools.length} 个工具
           </div>
         </div>
+
+        {/* Add button */}
+        <button
+          onClick={() => setShowAdd(!showAdd)}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+            showAdd
+              ? 'bg-surface-2 text-ink-secondary'
+              : 'bg-accent text-white hover:bg-accent-hover shadow-xs'
+          }`}
+        >
+          {showAdd ? <X size={12} /> : <Plus size={12} />}
+          <span>{showAdd ? '取消' : '添加服务器'}</span>
+        </button>
+
+        {/* Add form */}
+        {showAdd && (
+          <div className="rounded-xl border border-line bg-surface-1 p-3 space-y-2.5 animate-slide-up">
+            <input
+              type="text"
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              placeholder="服务器名称"
+              className="w-full bg-surface-2 rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-muted outline-none border border-line-subtle focus:border-accent/30 transition-colors"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAddType('local')}
+                className={`px-2.5 py-1 rounded-lg text-xxs font-medium transition-colors ${
+                  addType === 'local' ? 'bg-accent text-white' : 'bg-surface-2 text-ink-muted hover:text-ink-secondary'
+                }`}
+              >
+                本地 (stdio)
+              </button>
+              <button
+                onClick={() => setAddType('remote')}
+                className={`px-2.5 py-1 rounded-lg text-xxs font-medium transition-colors ${
+                  addType === 'remote' ? 'bg-accent text-white' : 'bg-surface-2 text-ink-muted hover:text-ink-secondary'
+                }`}
+              >
+                远程 (HTTP)
+              </button>
+            </div>
+            {addType === 'local' ? (
+              <input
+                type="text"
+                value={addCommand}
+                onChange={(e) => setAddCommand(e.target.value)}
+                placeholder="启动命令（如 python -m mcp.server）"
+                className="w-full bg-surface-2 rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-muted outline-none border border-line-subtle focus:border-accent/30 font-mono transition-colors"
+              />
+            ) : (
+              <input
+                type="text"
+                value={addUrl}
+                onChange={(e) => setAddUrl(e.target.value)}
+                placeholder="服务器 URL（如 http://localhost:9000）"
+                className="w-full bg-surface-2 rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-muted outline-none border border-line-subtle focus:border-accent/30 font-mono transition-colors"
+              />
+            )}
+            <div className="flex justify-end">
+              <button
+                onClick={handleAdd}
+                disabled={adding || !addName.trim() || (addType === 'local' ? !addCommand.trim() : !addUrl.trim())}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xxs font-medium hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {adding ? <RefreshCcw size={10} className="animate-spin" /> : <Plus size={10} />}
+                <span>添加并连接</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-3">
@@ -129,22 +243,33 @@ export default function McpSidebar({ status, loading, onRefresh }: Props) {
 
                     {isBusy ? (
                       <RefreshCcw size={12} className="animate-spin text-ink-muted flex-shrink-0" />
-                    ) : isConnected ? (
-                      <button
-                        onClick={() => handleDisconnect(name)}
-                        className="p-1.5 rounded-lg text-ink-muted hover:bg-status-error-light hover:text-status-error transition-colors flex-shrink-0"
-                        title="断开连接"
-                      >
-                        <PowerOff size={12} />
-                      </button>
                     ) : (
-                      <button
-                        onClick={() => handleConnect(name)}
-                        className="p-1.5 rounded-lg text-ink-muted hover:bg-status-success-light hover:text-status-success transition-colors flex-shrink-0"
-                        title="连接"
-                      >
-                        <Power size={12} />
-                      </button>
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
+                        {isConnected ? (
+                          <button
+                            onClick={() => handleDisconnect(name)}
+                            className="p-1.5 rounded-lg text-ink-muted hover:bg-status-error-light hover:text-status-error transition-colors"
+                            title="断开连接"
+                          >
+                            <PowerOff size={12} />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleConnect(name)}
+                            className="p-1.5 rounded-lg text-ink-muted hover:bg-status-success-light hover:text-status-success transition-colors"
+                            title="连接"
+                          >
+                            <Power size={12} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleRemove(name)}
+                          className="p-1.5 rounded-lg text-ink-muted hover:bg-status-error-light hover:text-status-error transition-colors"
+                          title="移除"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
                     )}
                   </div>
 

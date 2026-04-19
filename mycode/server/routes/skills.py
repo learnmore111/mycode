@@ -5,8 +5,15 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/skill", tags=["skill"])
+
+
+class _CreateSkill(BaseModel):
+    name: str
+    content: str
+    scope: str = "project"  # "project" or "global"
 
 
 @router.get("")
@@ -22,6 +29,36 @@ async def list_skills():
         path = _find_skill_path(s["name"], search_dirs)
         result.append({**s, "path": path})
     return result
+
+
+@router.post("")
+async def create_skill(body: _CreateSkill):
+    """Create or overwrite a skill file."""
+    from mycode.project.instance import current_or_none
+    from mycode.tool.base import atomic_write
+
+    name = body.name.strip()
+    if not name or not name.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(400, f"无效的技能名称: '{name}'，仅支持字母数字、连字符和下划线")
+    if not body.content.strip():
+        raise HTTPException(400, "技能内容不能为空")
+
+    inst = current_or_none()
+    base = inst.directory if inst else os.getcwd()
+    skills_dir = (
+        Path.home() / ".mycode" / "skills"
+        if body.scope == "global"
+        else Path(base) / ".mycode" / "skills"
+    )
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    file_path = skills_dir / f"{name}.md"
+
+    try:
+        atomic_write(str(file_path), body.content)
+    except Exception as exc:
+        raise HTTPException(500, f"写入失败: {exc}") from exc
+
+    return {"ok": True, "name": name, "path": str(file_path), "scope": body.scope}
 
 
 @router.get("/{name}")

@@ -23,3 +23,10 @@ export async function getSkill(name: string): Promise<SkillDetail> {
 export async function deleteSkill(name: string): Promise<void> {
   await apiFetch(`/skill/${encodeURIComponent(name)}`, { method: 'DELETE' })
 }
+
+export async function createSkill(name: string, content: string, scope: string = 'project'): Promise<void> {
+  await apiFetch('/skill', {
+    method: 'POST',
+    body: JSON.stringify({ name, content, scope }),
+  })
+}

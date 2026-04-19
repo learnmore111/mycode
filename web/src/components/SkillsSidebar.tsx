@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { RefreshCcw, Trash2, Wand2, ChevronDown, ChevronRight, FileText } from 'lucide-react'
-import { getSkill, deleteSkill } from '../api/skills'
+import { RefreshCcw, Trash2, Wand2, ChevronDown, ChevronRight, FileText, Plus, X } from 'lucide-react'
+import { getSkill, deleteSkill, createSkill } from '../api/skills'
 import type { SkillInfo } from '../api/skills'
 
 interface Props {
@@ -13,6 +13,11 @@ export default function SkillsSidebar({ skills, loading, onRefresh }: Props) {
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null)
   const [skillContent, setSkillContent] = useState<string | null>(null)
   const [contentLoading, setContentLoading] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newContent, setNewContent] = useState('')
+  const [newScope, setNewScope] = useState<'project' | 'global'>('project')
+  const [creating, setCreating] = useState(false)
 
   const toggleSkill = async (name: string) => {
     if (expandedSkill === name) {
@@ -46,6 +51,22 @@ export default function SkillsSidebar({ skills, loading, onRefresh }: Props) {
     }
   }
 
+  const handleCreate = async () => {
+    if (!newName.trim() || !newContent.trim()) return
+    setCreating(true)
+    try {
+      await createSkill(newName.trim(), newContent, newScope)
+      onRefresh()
+      setShowCreate(false)
+      setNewName('')
+      setNewContent('')
+    } catch (err) {
+      console.error('Create skill failed', err)
+    } finally {
+      setCreating(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 py-10">
@@ -76,6 +97,67 @@ export default function SkillsSidebar({ skills, loading, onRefresh }: Props) {
             共 {skills.length} 个技能 · .mycode/skills/
           </div>
         </div>
+
+        {/* Create button */}
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+            showCreate
+              ? 'bg-surface-2 text-ink-secondary'
+              : 'bg-accent text-white hover:bg-accent-hover shadow-xs'
+          }`}
+        >
+          {showCreate ? <X size={12} /> : <Plus size={12} />}
+          <span>{showCreate ? '取消' : '创建技能'}</span>
+        </button>
+
+        {/* Create form */}
+        {showCreate && (
+          <div className="rounded-xl border border-line bg-surface-1 p-3 space-y-2.5 animate-slide-up">
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="技能名称（如 python-expert）"
+              className="w-full bg-surface-2 rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-muted outline-none border border-line-subtle focus:border-accent/30 transition-colors"
+            />
+            <textarea
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              placeholder="技能内容（Markdown 格式）..."
+              rows={6}
+              className="w-full bg-surface-2 rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-muted outline-none border border-line-subtle focus:border-accent/30 resize-none font-mono transition-colors"
+            />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setNewScope('project')}
+                  className={`px-2.5 py-1 rounded-lg text-xxs font-medium transition-colors ${
+                    newScope === 'project' ? 'bg-accent text-white' : 'bg-surface-2 text-ink-muted hover:text-ink-secondary'
+                  }`}
+                >
+                  项目
+                </button>
+                <button
+                  onClick={() => setNewScope('global')}
+                  className={`px-2.5 py-1 rounded-lg text-xxs font-medium transition-colors ${
+                    newScope === 'global' ? 'bg-accent text-white' : 'bg-surface-2 text-ink-muted hover:text-ink-secondary'
+                  }`}
+                >
+                  全局
+                </button>
+              </div>
+              <button
+                onClick={handleCreate}
+                disabled={creating || !newName.trim() || !newContent.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xxs font-medium hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {creating ? <RefreshCcw size={10} className="animate-spin" /> : <Plus size={10} />}
+                <span>创建</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-3">
