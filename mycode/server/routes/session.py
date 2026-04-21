@@ -315,7 +315,6 @@ def _stream_session_prompt(
         import asyncio as _aio
 
         from mycode.session.message import rebuild_history_from_db
-        from mycode.session.prompt import _release_session
 
         project = ProjectInfo(id="global", worktree=directory)
         ctx = InstanceContext(directory=directory, worktree=directory, project=project)
@@ -332,7 +331,12 @@ def _stream_session_prompt(
                 yield {"event": event.type, "data": json.dumps(event.data)}
         except _aio.CancelledError:
             logger.debug("SSE stream cancelled by client", session_id=session_id)
-            # Propagate abort so prompt() can short-circuit its loop.
+            # Signal abort so prompt()'s inner loop short-circuits on its
+            # next awaitable. prompt() owns the session lock and releases
+            # it in its own finally when the CancelledError propagates
+            # back in via the `async for` above — we deliberately do NOT
+            # touch the lock here because asyncio.Lock has no owner
+            # semantics and we must not release someone else's lock.
             abort_event.set()
             raise
         except Exception:
@@ -354,13 +358,6 @@ def _stream_session_prompt(
                 clear_abort_signal(session_id)
             except Exception:
                 logger.exception("abort signal clear failed", session_id=session_id)
-            # prompt() already releases the session on its own finally, but
-            # if the generator was cancelled before prompt() could start we
-            # still leave the lock held. Double-release is a no-op here.
-            try:
-                _release_session(session_id)
-            except Exception:
-                logger.exception("session release failed", session_id=session_id)
 
     return EventSourceResponse(event_generator())
 
