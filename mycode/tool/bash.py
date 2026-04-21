@@ -83,16 +83,28 @@ class BashTool(CallableTool[BashParams]):
         if os.path.basename(shell) in ("fish", "nu"):
             shell = shutil.which("bash") or shutil.which("zsh") or "/bin/sh"
 
-        # Build environment — restrict sensitive env var overrides
+        # Build environment — restrict sensitive env var overrides.
+        # Compare case-insensitively because Windows shells collapse
+        # ``Path`` and ``PATH`` to the same variable; blocking just the
+        # uppercase name would leak on cross-platform environments.
+        # We also normalise the stored key to uppercase when it matches a
+        # known security-sensitive variable so Unix cannot accidentally end
+        # up with both ``PATH`` and ``path`` at once.
         env = {**os.environ, "AGENT": "1"}
         if params.env:
-            for key, value in params.env.items():
-                if key.upper() in _BLOCKED_ENV_VARS:
+            for raw_key, value in params.env.items():
+                if not isinstance(raw_key, str) or not raw_key:
                     return ToolError(
-                        f"Cannot override protected environment variable: {key}",
+                        f"Invalid environment variable name: {raw_key!r}",
                         title=command[:80],
                     )
-                env[key] = value
+                normalized = raw_key.upper()
+                if normalized in _BLOCKED_ENV_VARS:
+                    return ToolError(
+                        f"Cannot override protected environment variable: {raw_key}",
+                        title=command[:80],
+                    )
+                env[raw_key] = value
 
         proc = None
         try:

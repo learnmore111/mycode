@@ -42,18 +42,35 @@ _TOOL_TARGET_PATTERNS = [
     re.compile(r"^Inserted\s+\d+\s+line\(s\)\s+after\s+line\s+\d+\s+in\s+(.+?)(?:\s+\(|$)", re.MULTILINE),
 ]
 
-# Abort signals: session_id -> asyncio.Event
-_abort_signals: dict[str, asyncio.Event] = {}
+# Abort signals: session_id -> (asyncio.Event, registered_at_ts).
+# Also tracks registration time so stale entries from crashed streams can be
+# garbage collected on each access rather than leaking forever.
+_abort_signals: dict[str, tuple[asyncio.Event, float]] = {}
+_ABORT_SIGNAL_TTL_SECONDS = 3600.0
+
+
+def _gc_abort_signals() -> None:
+    """Drop abort signals older than TTL that nobody has released."""
+    import time as _time
+
+    now = _time.time()
+    stale = [sid for sid, (_ev, ts) in _abort_signals.items() if now - ts > _ABORT_SIGNAL_TTL_SECONDS]
+    for sid in stale:
+        _abort_signals.pop(sid, None)
 
 
 def get_abort_signal(session_id: str) -> asyncio.Event | None:
     """Get the abort signal for a session, if any."""
-    return _abort_signals.get(session_id)
+    entry = _abort_signals.get(session_id)
+    return entry[0] if entry else None
 
 
 def set_abort_signal(session_id: str, event: asyncio.Event) -> None:
     """Register an abort signal for a session."""
-    _abort_signals[session_id] = event
+    import time as _time
+
+    _gc_abort_signals()
+    _abort_signals[session_id] = (event, _time.time())
     logger.debug("abort signal registered", session_id=session_id)
 
 
@@ -132,21 +149,18 @@ def _normalize_summary_file(diff: Any) -> str | None:
 
 
 def _collect_session_code_changes(session_id: str, limit: int = 6) -> list[dict[str, Any]]:
-    from mycode.storage.database import get_session as get_db_session
+    from mycode.storage.database import session_scope
     from mycode.storage.models import PartTable
 
     changes: list[dict[str, Any]] = []
     seen: set[str] = set()
-    db = get_db_session()
-    try:
+    with session_scope() as db:
         parts = (
             db.query(PartTable)
             .filter(PartTable.session_id == session_id, PartTable.type == "tool")
             .order_by(PartTable.time_completed.desc().nullslast(), PartTable.time_created.desc())
             .all()
         )
-    finally:
-        db.close()
 
     for part in parts:
         if not part.tool or part.tool not in _MUTATING_TOOLS:
@@ -202,20 +216,17 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
     from mycode.session.context import build_context_snapshot
     from mycode.session.message import rebuild_history_from_db
     from mycode.session.system import build as build_system
-    from mycode.storage.database import get_session as get_db_session
+    from mycode.storage.database import session_scope
     from mycode.storage.models import MessageTable
     from mycode.tool import registry as tool_registry
 
-    db = get_db_session()
-    try:
+    with session_scope() as db:
         assistant_rows = (
             db.query(MessageTable)
             .filter(MessageTable.session_id == session_id, MessageTable.role == "assistant")
             .order_by(MessageTable.time_created)
             .all()
         )
-    finally:
-        db.close()
 
     last_assistant = assistant_rows[-1] if assistant_rows else None
     assistant_turns = len(assistant_rows)
@@ -302,7 +313,9 @@ def _stream_session_prompt(
 
     async def event_generator():
         import asyncio as _aio
+
         from mycode.session.message import rebuild_history_from_db
+        from mycode.session.prompt import _release_session
 
         project = ProjectInfo(id="global", worktree=directory)
         ctx = InstanceContext(directory=directory, worktree=directory, project=project)
@@ -319,10 +332,35 @@ def _stream_session_prompt(
                 yield {"event": event.type, "data": json.dumps(event.data)}
         except _aio.CancelledError:
             logger.debug("SSE stream cancelled by client", session_id=session_id)
+            # Propagate abort so prompt() can short-circuit its loop.
+            abort_event.set()
+            raise
+        except Exception:
+            logger.exception("SSE stream failed", session_id=session_id)
+            raise
         finally:
-            token.reset()
-            await bus.close()
-            clear_abort_signal(session_id)
+            # Defensive cleanup — every resource released even if earlier
+            # awaits raised. Each step is guarded so one failure does not
+            # block the others.
+            try:
+                token.reset()
+            except Exception:
+                logger.exception("context reset failed", session_id=session_id)
+            try:
+                await bus.close()
+            except Exception:
+                logger.exception("bus close failed", session_id=session_id)
+            try:
+                clear_abort_signal(session_id)
+            except Exception:
+                logger.exception("abort signal clear failed", session_id=session_id)
+            # prompt() already releases the session on its own finally, but
+            # if the generator was cancelled before prompt() could start we
+            # still leave the lock held. Double-release is a no-op here.
+            try:
+                _release_session(session_id)
+            except Exception:
+                logger.exception("session release failed", session_id=session_id)
 
     return EventSourceResponse(event_generator())
 
@@ -432,12 +470,11 @@ async def session_context(session_id: str, directory: str = Query(default=".")):
 async def session_messages(session_id: str, directory: str = Query(default=".")):
     """Get all messages and their parts for a session."""
     from mycode.project.instance import provide
-    from mycode.storage.database import get_session as get_db_session
+    from mycode.storage.database import session_scope
     from mycode.storage.models import MessageTable, PartTable
 
     async def _fn():
-        db = get_db_session()
-        try:
+        with session_scope() as db:
             messages = (
                 db.query(MessageTable)
                 .filter(MessageTable.session_id == session_id)
@@ -502,8 +539,6 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
                     "time": {"created": m.time_created, "completed": m.time_completed},
                 })
             return result
-        finally:
-            db.close()
 
     return await provide(directory, _fn)
 

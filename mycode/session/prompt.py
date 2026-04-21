@@ -52,12 +52,31 @@ import asyncio as _aio  # noqa: E402  # noqa: E402
 
 _session_locks: dict[str, _aio.Lock] = {}
 _locks_mutex = _aio.Lock()
+# Tracks last-use timestamp for stale lock garbage collection.
+_session_lock_last_used: dict[str, float] = {}
+# Idle locks older than this are swept from _session_locks.
+_SESSION_LOCK_GC_IDLE_SECONDS = 3600.0
 
 
 def is_session_busy(session_id: str) -> bool:
     """Check if a session is currently being processed."""
     lock = _session_locks.get(session_id)
     return lock is not None and lock.locked()
+
+
+def _gc_session_locks_locked() -> None:
+    """Drop idle, unlocked session-lock entries. Must be called with _locks_mutex held."""
+    now = time.time()
+    stale: list[str] = []
+    for sid, last in list(_session_lock_last_used.items()):
+        if now - last < _SESSION_LOCK_GC_IDLE_SECONDS:
+            continue
+        lock = _session_locks.get(sid)
+        if lock is None or not lock.locked():
+            stale.append(sid)
+    for sid in stale:
+        _session_locks.pop(sid, None)
+        _session_lock_last_used.pop(sid, None)
 
 
 async def _acquire_session(session_id: str) -> bool:
@@ -69,6 +88,7 @@ async def _acquire_session(session_id: str) -> bool:
     to prevent two coroutines from passing the check simultaneously.
     """
     async with _locks_mutex:
+        _gc_session_locks_locked()
         if session_id not in _session_locks:
             _session_locks[session_id] = _aio.Lock()
         lock = _session_locks[session_id]
@@ -76,16 +96,24 @@ async def _acquire_session(session_id: str) -> bool:
         if lock.locked():
             return False
         await lock.acquire()
+        _session_lock_last_used[session_id] = time.time()
         logger.debug("session acquired", session_id=session_id)
         return True
 
 
 def _release_session(session_id: str) -> None:
-    """Release a session after processing."""
+    """Release a session after processing. Safe to call multiple times."""
     lock = _session_locks.get(session_id)
-    if lock and lock.locked():
-        lock.release()
-        logger.debug("session released", session_id=session_id)
+    if lock is None:
+        return
+    if lock.locked():
+        try:
+            lock.release()
+            logger.debug("session released", session_id=session_id)
+        except RuntimeError:
+            # Lock already released (idempotent guard for cleanup paths).
+            logger.debug("session release ignored — already released", session_id=session_id)
+    _session_lock_last_used[session_id] = time.time()
 
 @dataclass
 class PromptInput:

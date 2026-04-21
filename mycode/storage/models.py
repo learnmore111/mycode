@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import Column, Float, Integer, String, Text
+from sqlalchemy import Column, Float, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -123,6 +123,12 @@ class MessageTable(Base):
     time_created = Column(Integer, nullable=False)
     time_completed = Column(Integer, nullable=True)
 
+    __table_args__ = (
+        # Canonical ordering for "give me all messages of this session in
+        # turn order" — covers rebuild_history_from_db and session views.
+        Index("ix_message_session_created", "session_id", "time_created"),
+    )
+
 
 class PartTable(Base):
     __tablename__ = "part"
@@ -140,6 +146,16 @@ class PartTable(Base):
     # Time
     time_created = Column(Integer, nullable=False)
     time_completed = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        # Dedupe tool calls at the DB level: each (session, tool_call_id)
+        # must map to at most one part. Nulls are allowed (for non-tool
+        # parts) and SQLite treats multiple NULLs as distinct, so this
+        # constraint only bites actual duplicate tool-call inserts.
+        UniqueConstraint("session_id", "tool_call_id", name="uq_part_session_tool_call"),
+        # Fast lookup for "all parts belonging to a message in order".
+        Index("ix_part_message_created", "message_id", "time_created"),
+    )
 
     @property
     def state(self) -> dict[str, Any] | None:
