@@ -254,9 +254,13 @@ async def prompt(
         all_parts: list[Part] = []
         iterations_done = 0
         stop_reason = ""
-        prev_skills: list[dict[str, str]] | None = None
-        prev_date: str | None = None
         prev_iter_usage: dict[str, int | float] | None = None  # Per-iteration usage from previous iteration
+        _reminder_user_messages: list[dict[str, Any]] = []  # system-reminder dicts to persist
+
+        # Initialize incremental reminder state from history so we don't
+        # re-send the full skills/date reminder on every new prompt() call
+        # when the session already contains previous reminders.
+        prev_skills, prev_date = _extract_reminder_state_from_history(history)
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
@@ -328,13 +332,16 @@ async def prompt(
                     )
                 await _aio.to_thread(_save_compact_event)
 
-            # Build system-reminder messages (skills + memory) — injected temporarily, not persisted
+            # Build system-reminder messages (skills + memory + date)
+            # Appended directly to `messages` so they are persisted and survive
+            # history rebuild, ensuring incremental updates remain coherent.
             reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
             if reminder_text:
-                iter_messages = list(messages)
-                iter_messages.append({"role": "user", "content": reminder_text})
-            else:
-                iter_messages = messages
+                reminder_msg_dict = {"role": "user", "content": reminder_text}
+                messages.append(reminder_msg_dict)
+                # Track for DB persistence
+                _reminder_user_messages.append(reminder_msg_dict)
+            iter_messages = messages
 
             stream_input = llmmod.StreamInput(
                 model=model,
@@ -520,9 +527,20 @@ async def prompt(
         user_text_part = create_text_part(session_id, user_msg.id)
         user_text_part.content = user_text
 
+        # Prepare system-reminder user messages for persistence
+        reminder_persist: list[tuple[Any, Any]] = []
+        for rmd in _reminder_user_messages:
+            r_msg = create_user_message(session_id, is_meta=True, origin="system")
+            r_part = create_text_part(session_id, r_msg.id)
+            r_part.content = rmd["content"]
+            reminder_persist.append((r_msg, r_part))
+
         def _persist_all() -> None:
             save_message(user_msg)
             save_part(user_text_part)
+            for r_msg, r_part in reminder_persist:
+                save_message(r_msg)
+                save_part(r_part)
             persist_turn(session_id, assistant_msg, all_parts)
 
         await _aio.to_thread(_persist_all)
@@ -572,6 +590,91 @@ def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str
         logger.warn("debug dump failed", error=str(e))
 
     return str(filepath)
+
+
+def _extract_reminder_state_from_history(
+    history: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, str]] | None, str | None]:
+    """Scan history for previously persisted system-reminder messages.
+
+    Returns ``(prev_skills, prev_date)`` extracted from the **last** reminder
+    that contained each section.  If the history has no reminders at all,
+    returns ``(None, None)`` so that ``_build_system_reminders`` treats the
+    next call as the initial (full) send.
+    """
+    if not history:
+        return None, None
+
+    import re
+
+    prev_skills: list[dict[str, str]] | None = None
+    prev_date: str | None = None
+
+    # Walk history in order; later reminders overwrite earlier ones.
+    for msg in history:
+        if msg.get("role") != "user":
+            continue
+        content: str = msg.get("content") or ""
+        if "<system-reminder>" not in content:
+            continue
+
+        # --- Extract skills ---
+        # Full list format: "The following skills are available ..."
+        # Incremental format: "New skills available:"
+        # Both list skills as "- name: description" lines.
+        # We look for the *full list* pattern to capture the complete state.
+        full_match = re.search(
+            r"<system-reminder>\s*The following skills are available[^\n]*\n(.*?)</system-reminder>",
+            content,
+            re.DOTALL,
+        )
+        if full_match:
+            skills: list[dict[str, str]] = []
+            for line in full_match.group(1).strip().splitlines():
+                line = line.strip()
+                if line.startswith("- "):
+                    line = line[2:]
+                    if ": " in line:
+                        name, desc = line.split(": ", 1)
+                        skills.append({"name": name.strip(), "description": desc.strip()})
+                    else:
+                        skills.append({"name": line.strip(), "description": ""})
+            if skills:
+                prev_skills = skills
+        else:
+            # Check for incremental "New skills available:" — means prev_skills
+            # existed and was extended; we can't reconstruct the full list from
+            # just an incremental update, but we know skills *were* sent before.
+            # Build a merged view by adding new skills to existing prev_skills.
+            inc_match = re.search(
+                r"<system-reminder>\s*New skills available:\s*\n(.*?)</system-reminder>",
+                content,
+                re.DOTALL,
+            )
+            if inc_match and prev_skills is not None:
+                existing_names = {s["name"] for s in prev_skills}
+                for line in inc_match.group(1).strip().splitlines():
+                    line = line.strip()
+                    if line.startswith("- "):
+                        line = line[2:]
+                        if ": " in line:
+                            name, desc = line.split(": ", 1)
+                            name, desc = name.strip(), desc.strip()
+                        else:
+                            name, desc = line.strip(), ""
+                        if name not in existing_names:
+                            prev_skills.append({"name": name, "description": desc})
+                            existing_names.add(name)
+
+        # --- Extract date ---
+        date_match = re.search(
+            r"<system-reminder>\s*(?:Today's date|Date has changed[^:]*?):\s*(.+?)\s*</system-reminder>",
+            content,
+        )
+        if date_match:
+            prev_date = date_match.group(1).strip()
+
+    return prev_skills, prev_date
 
 
 def _build_system_reminders(
