@@ -9,15 +9,12 @@ Features:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from mycode.agent import agent as agentmod
-from mycode.permission.evaluate import evaluate as eval_permission
-from mycode.permission.schema import Rule
 from mycode.provider import provider as providermod
 from mycode.session import llm as llmmod
 from mycode.session.loop_guard import LoopGuard, LoopGuardConfig
@@ -25,6 +22,7 @@ from mycode.session.system import build as build_system
 from mycode.tool import registry as tool_registry
 from mycode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult, ToolResultBuilder
 from mycode.util import log as logmod
+from mycode.util.subagent import build_agent_ruleset, check_tool_permission, is_aborted
 
 logger = logmod.create(service="tool.task")
 
@@ -33,44 +31,9 @@ MAX_TURNS = 8
 _EXCLUDED_TOOLS = frozenset({"task", "todo", "question", "batch"})
 
 
-def _is_aborted(ctx: ToolContext) -> bool:
-    """Check if the abort signal has been set."""
-    abort = ctx.abort
-    if abort is None:
-        return False
-    if isinstance(abort, asyncio.Event):
-        return abort.is_set()
-    if callable(abort):
-        return bool(abort())
-    return False
 
-
-def _build_agent_ruleset(agent: Any) -> list[Rule]:
-    """Convert agent permission config dicts to Rule objects."""
-    return [
-        Rule(
-            permission=r.get("permission", "*"),
-            pattern=r.get("pattern", "*"),
-            action=r.get("action", "ask"),
-        )
-        for r in (agent.permission or [])
-    ]
-
-
-def _check_tool_permission(tool_name: str, ruleset: list[Rule]) -> str | None:
-    """Check if a tool is allowed by the agent's permission ruleset.
-
-    Returns None if allowed, or an error message string if denied.
-    Permission rules that resolve to "ask" are treated as denied for sub-agents
-    since there is no interactive user to ask.
-    """
-    result = eval_permission(tool_name, "*", ruleset)
-    if result.action == "allow":
-        return None
-    if result.action == "deny":
-        return f"Tool '{tool_name}' is denied by agent permission rules"
-    # "ask" — sub-agents cannot interactively ask the user, treat as denied
-    return f"Tool '{tool_name}' requires permission (action=ask) which is not available in sub-agent context"
+# Shared helpers imported from mycode.util.subagent:
+# is_aborted, build_agent_ruleset, check_tool_permission
 
 
 class TaskParams(BaseModel):
@@ -108,7 +71,7 @@ class TaskTool(CallableTool[TaskParams]):
             return ToolError(f"Model error: {e}", title=f"Task ({agent_name})")
 
         # Build agent permission ruleset for tool authorization
-        agent_ruleset = _build_agent_ruleset(agent)
+        agent_ruleset = build_agent_ruleset(agent)
 
         # Initialize sub-agent loop guard for pattern detection and caching
         guard_config = LoopGuardConfig(
@@ -131,7 +94,7 @@ class TaskTool(CallableTool[TaskParams]):
 
         for turn in range(MAX_TURNS):
             # Check abort signal before each turn
-            if _is_aborted(ctx):
+            if is_aborted(ctx):
                 builder.add("\n\n(Sub-agent aborted by user)")
                 break
 
@@ -156,7 +119,7 @@ class TaskTool(CallableTool[TaskParams]):
 
             async for event in llmmod.stream(stream_input):
                 # Check abort during streaming
-                if _is_aborted(ctx):
+                if is_aborted(ctx):
                     builder.add("\n\n(Sub-agent aborted by user)")
                     return ToolOk(
                         builder.build() or "Sub-agent aborted.",
@@ -184,7 +147,7 @@ class TaskTool(CallableTool[TaskParams]):
 
             # Record step text production for loop guard
             guard.begin_step(turn)
-            step = guard._steps[-1]
+            step = guard.steps[-1]
             guard.complete_step(step, text_length=len(assistant_text))
 
             if not pending_tool_calls or finish_reason != "tool-calls":
@@ -205,7 +168,7 @@ class TaskTool(CallableTool[TaskParams]):
                 total_tool_calls += 1
 
                 # Check abort before each tool execution
-                if _is_aborted(ctx):
+                if is_aborted(ctx):
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.tool_call_id,
@@ -214,7 +177,7 @@ class TaskTool(CallableTool[TaskParams]):
                     continue
 
                 # Permission check — enforce agent's permission rules
-                perm_error = _check_tool_permission(tc.tool_name, agent_ruleset)
+                perm_error = check_tool_permission(tc.tool_name, agent_ruleset)
                 if perm_error:
                     logger.warn("sub-agent tool denied", tool=tc.tool_name, agent=agent_name, reason=perm_error)
                     guard.record_tool_call(tc.tool_name, {}, output=perm_error, is_error=True)

@@ -118,6 +118,18 @@ def _build_agents() -> dict[str, AgentInfo]:
                 {"permission": "codesearch", "pattern": "*", "action": "allow"},
             ],
         ),
+        "coder": AgentInfo(
+            name="coder",
+            description="Code modification agent for isolated worktree execution. Has full write permissions.",
+            mode="subagent",
+            native=True,
+            prompt=_load_prompt("subagent"),
+            permission=[
+                *base,
+                {"permission": "question", "pattern": "*", "action": "deny"},
+                {"permission": "todowrite", "pattern": "*", "action": "deny"},
+            ],
+        ),
         "compaction": AgentInfo(
             name="compaction",
             mode="primary",

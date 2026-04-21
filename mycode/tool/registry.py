@@ -115,13 +115,14 @@ def register_builtins() -> None:
         question,
         read,
         skill,
+        subagent,
         task,
         todo,
         webfetch,
         websearch,
         write,
     )
-    for mod in [bash, read, edit, write, glob_tool, grep, listdir, task, webfetch, websearch, question, todo, skill, create_skill]:
+    for mod in [bash, read, edit, write, glob_tool, grep, listdir, task, subagent, webfetch, websearch, question, todo, skill, create_skill]:
         if hasattr(mod, "tool"):
             register(mod.tool)
 
