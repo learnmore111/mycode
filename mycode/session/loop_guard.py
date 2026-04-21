@@ -239,20 +239,42 @@ class ToolResultCache:
         """Invalidate cache entries affected by a mutating tool call.
 
         If `files` are provided, only entries that touched at least one of
-        those paths are dropped. Otherwise (unknown scope — e.g. a `bash`
-        command with arbitrary side effects) the full cache is cleared.
+        those paths — exactly, or as a prefix match — are dropped.
+        Otherwise (unknown scope — e.g. a `bash` command with arbitrary
+        side effects) the full cache is cleared.
+
+        Prefix matching exists so that editing ``src/foo.py`` correctly
+        invalidates a cached ``grep`` call whose scope was ``src`` (the
+        grep hit the directory, we just edited one of its files).
         """
         if not files:
             self._cache.clear()
             return
 
         file_set: set[str] = set(files)
+
+        def _affects(tagged: frozenset[str]) -> bool:
+            for tag in tagged:
+                if tag in file_set:
+                    return True
+                # Directory-scoped reads (e.g. grep on `src`) must be
+                # invalidated when any file under that dir was mutated,
+                # and vice versa (edit on `src` invalidates grep("src/x")).
+                for mutated in file_set:
+                    if mutated == tag:
+                        return True
+                    if mutated.startswith(tag.rstrip("/") + "/"):
+                        return True
+                    if tag.startswith(mutated.rstrip("/") + "/"):
+                        return True
+            return False
+
         stale = [
             key
             for key, (_out, tagged) in self._cache.items()
             # An entry with no file tags (e.g. websearch) is kept — those
             # outputs cannot be invalidated by file edits.
-            if tagged and (tagged & file_set)
+            if tagged and _affects(tagged)
         ]
         for key in stale:
             self._cache.pop(key, None)

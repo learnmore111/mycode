@@ -56,6 +56,19 @@ def test_from_config():
     assert ruleset[0].permission == "bash"
     assert ruleset[0].action == "allow"
 
+def test_evaluate_deny_beats_always_reply():
+    """An 'always-allow' reply at runtime must not override a project deny.
+
+    The runtime ruleset (simulated here as the second argument) is
+    evaluated alongside the base ruleset by PermissionManager; whichever
+    order they are merged in, a deny anywhere in the chain wins.
+    """
+    base = [Rule(permission="edit", pattern="*.env", action="deny")]
+    approved = [Rule(permission="edit", pattern="*", action="allow")]
+    result = evaluate("edit", ".env", base, approved)
+    assert result.action == "deny"
+
+
 def test_merge():
     r1 = [Rule(permission="*", pattern="*", action="allow")]
     r2 = [Rule(permission="edit", pattern="*", action="deny")]
