@@ -184,6 +184,7 @@ class SessionMemoryConfig(BaseModel):
 class ExperimentalConfig(BaseModel):
     disable_paste_summary: bool | None = None
     batch_tool: bool | None = None
+    subagent_tool: bool | None = None
     open_telemetry: bool | None = Field(None, alias="openTelemetry")
     primary_tools: list[str] | None = None
     continue_loop_on_deny: bool | None = None

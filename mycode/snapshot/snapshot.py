@@ -1,33 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from mycode.util import log as logmod
+from mycode.util.git_async import git as _git
+from mycode.util.git_async import git_available as _git_available
 from mycode.util.hash import fast as hash_fast
 from mycode.util.paths import GlobalPaths
 
 logger = logmod.create(service="snapshot")
-
-
-def _git_available() -> bool:
-    """Check if git is available on the system."""
-    return shutil.which("git") is not None
-
-
-async def _git(args: list[str], cwd: str | None = None, env: dict | None = None) -> tuple[int, str, str]:
-    if not _git_available():
-        return 1, "", "git not found"
-    merged_env = {**os.environ, **(env or {})}
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        cwd=cwd, env=merged_env,
-    )
-    stdout, stderr = await proc.communicate()
-    return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
 @dataclass
