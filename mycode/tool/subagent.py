@@ -14,7 +14,7 @@ import json
 import os
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mycode.agent import agent as agentmod
 from mycode.provider import provider as providermod
@@ -39,6 +39,14 @@ _ISOLATED_SAFE_AGENTS = frozenset({"coder", "build", "general"})
 
 MAX_PARALLEL = 10
 
+# Default and max turns per mode
+_TURNS_CONFIG: dict[str, tuple[int, int]] = {
+    #              (default, max)
+    "delegate":   (12, 30),
+    "parallel":   (8, 15),
+    "isolated":   (20, 30),
+}
+
 
 class SubAgentParams(BaseModel):
     """Parameters for the sub-agent tool."""
@@ -53,12 +61,46 @@ class SubAgentParams(BaseModel):
         default=None,
         description="(parallel mode) List of task descriptions to execute concurrently",
     )
+
+    @field_validator("tasks", mode="before")
+    @classmethod
+    def _parse_tasks_string(cls, v: Any) -> list[str] | None:
+        """Auto-parse tasks from JSON string — some models pass a stringified array."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(item) for item in parsed]
+                except json.JSONDecodeError:
+                    pass
+            # Single task string → wrap in list
+            return [v]
+        return v
+
     max_concurrency: int = Field(default=5, ge=1, le=MAX_PARALLEL, description="(parallel mode) Max concurrent sub-agents")
-    # Delegate mode
+    # Delegate/isolated mode
     context: str = Field(default="", description="(delegate/isolated) Context summary to provide to the sub-agent")
-    max_turns: int = Field(default=12, ge=1, le=30, description="(delegate/isolated) Maximum turns for the sub-agent loop")
+    max_turns: int | None = Field(
+        default=None,
+        ge=1, le=30,
+        description="Maximum turns for the sub-agent loop. Defaults vary by mode: delegate=12, parallel=8, isolated=20",
+    )
     # Isolated mode
     auto_merge: bool = Field(default=False, description="(isolated) Automatically apply changes to main working directory")
+
+    @model_validator(mode="after")
+    def _apply_turns_defaults(self) -> SubAgentParams:
+        """Apply mode-specific default and cap for max_turns."""
+        default, cap = _TURNS_CONFIG.get(self.mode, (12, 30))
+        if self.max_turns is None:
+            self.max_turns = default
+        elif self.max_turns > cap:
+            self.max_turns = cap
+        return self
 
 
 class SubAgentTool(CallableTool[SubAgentParams]):
@@ -126,6 +168,7 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         try:
             provider_id, model_id = await providermod.default_model()
             model = await providermod.get_model(provider_id, model_id)
+            api_key = await providermod.get_api_key(provider_id)
         except Exception as e:
             return ToolError(f"Model error: {e}")
 
@@ -145,6 +188,7 @@ class SubAgentTool(CallableTool[SubAgentParams]):
                     ctx=ctx,
                     _model=model,
                     _tools=tools,
+                    _api_key=api_key,
                 )
                 return idx, result.output, not result.is_error
 
@@ -284,18 +328,22 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         working_dir: str | None = None,
         _model: Any | None = None,
         _tools: list[dict[str, Any]] | None = None,
+        _api_key: str | None = None,
     ) -> ToolResult:
         """Execute the core sub-agent agentic loop.
 
         Args:
             _model: Pre-resolved model (avoids redundant lookups in parallel mode).
             _tools: Pre-built tool list (avoids redundant registry scans in parallel mode).
+            _api_key: Pre-fetched API key (avoids redundant lookups in parallel mode).
         """
         model = _model
+        api_key = _api_key
         if model is None:
             try:
                 provider_id, model_id = await providermod.default_model()
                 model = await providermod.get_model(provider_id, model_id)
+                api_key = await providermod.get_api_key(provider_id)
             except Exception as e:
                 return ToolError(f"Model error: {e}")
 
@@ -343,6 +391,8 @@ class SubAgentTool(CallableTool[SubAgentParams]):
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
                 temperature=agent.temperature,
+                api_key=api_key,
+                api_base=model.api.url or None,
             )
 
             text_parts: list[str] = []

@@ -28,7 +28,7 @@ logger = logmod.create(service="tool.task")
 
 MAX_TURNS = 8
 
-_EXCLUDED_TOOLS = frozenset({"task", "todo", "question", "batch"})
+_EXCLUDED_TOOLS = frozenset({"task", "subagent", "todo", "question", "batch"})
 
 
 
@@ -67,6 +67,7 @@ class TaskTool(CallableTool[TaskParams]):
         try:
             provider_id, model_id = await providermod.default_model()
             model = await providermod.get_model(provider_id, model_id)
+            api_key = await providermod.get_api_key(provider_id)
         except Exception as e:
             return ToolError(f"Model error: {e}", title=f"Task ({agent_name})")
 
@@ -111,6 +112,8 @@ class TaskTool(CallableTool[TaskParams]):
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
                 temperature=agent.temperature,
+                api_key=api_key,
+                api_base=model.api.url or None,
             )
 
             text_parts: list[str] = []
@@ -146,8 +149,7 @@ class TaskTool(CallableTool[TaskParams]):
                 builder.add(assistant_text)
 
             # Record step text production for loop guard
-            guard.begin_step(turn)
-            step = guard.steps[-1]
+            step = guard.begin_step(turn)
             guard.complete_step(step, text_length=len(assistant_text))
 
             if not pending_tool_calls or finish_reason != "tool-calls":
