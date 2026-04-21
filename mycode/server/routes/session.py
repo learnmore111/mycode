@@ -469,6 +469,18 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
 
             result = []
             for m in messages:
+                # Hide system-reminder messages from UI chat view.
+                # They are user messages injected by the agentic loop for
+                # skills/memory/date context; visible only in ContextViewer.
+                if m.role == "user":
+                    msg_parts = parts_by_msg.get(m.id, [])
+                    if msg_parts and all(
+                        "<system-reminder>" in (p.get("content") or "")
+                        for p in msg_parts
+                        if p.get("type") == "text"
+                    ):
+                        continue
+
                 result.append({
                     "id": m.id,
                     "sessionId": m.session_id,

@@ -46,10 +46,11 @@ class CreateSkillTool(CallableTool[CreateSkillParams]):
         content = params.content
         scope = params.scope
 
-        # Validate skill name
-        if not name or not name.replace("-", "").replace("_", "").isalnum():
+        # Validate skill name — allow "/" for subdirectory namespaces
+        parts = name.split("/")
+        if not name or not all(p.replace("-", "").replace("_", "").isalnum() for p in parts):
             return ToolError(
-                f"Invalid skill name: '{name}'. Use alphanumeric characters, hyphens, and underscores only.",
+                f"Invalid skill name: '{name}'. Use alphanumeric characters, hyphens, underscores, and '/' for namespaces.",
                 title=f"Create Skill: {name}",
                 metadata={"success": False},
             )
