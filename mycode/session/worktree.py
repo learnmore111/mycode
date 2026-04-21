@@ -5,6 +5,7 @@ used by the isolated sub-agent mode.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import uuid
@@ -129,8 +130,6 @@ async def apply_diff_text(diff: str, target_dir: str) -> bool:
     """
     if not diff:
         return True
-
-    import asyncio
 
     # Try with --3way first for better merge handling
     proc = await asyncio.create_subprocess_exec(
