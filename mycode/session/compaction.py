@@ -39,7 +39,26 @@ PRUNE_MINIMUM = 20_000  # tokens
 PRUNE_PROTECT = 40_000  # tokens
 OVERFLOW_RATIO = 0.85  # trigger at 85% of context window
 COMPACT_KEEP_TURNS = 3  # number of recent user turns to preserve verbatim
-SUMMARY_TOOL_OUTPUT_LIMIT = 1000  # chars — truncate tool outputs before summary call
+SUMMARY_TOOL_OUTPUT_LIMIT = 1000  # chars — default truncate for benign tool outputs
+
+# Error outputs / stack traces usually carry the *most* signal for why the
+# agent diverged, so we keep more of them around the compaction prompt. A
+# generic successful read/grep result compresses well at the default limit.
+SUMMARY_TOOL_OUTPUT_ERROR_LIMIT = 2500
+
+# Heuristic for identifying error-style payloads when the tool did not set
+# an explicit `is_error` flag (e.g. raw traces from `bash`).
+_ERROR_HINTS = (
+    "Traceback",
+    "Error:",
+    "error:",
+    "Exception",
+    "FATAL",
+    "fatal:",
+    "panic:",
+    "Exit code:",
+    "[error]",
+)
 
 # Provider-specific cache TTL (seconds).
 # Used to detect whether the API prefix cache has likely expired between turns.
@@ -234,6 +253,21 @@ def _split_by_turns(
 # ---------------------------------------------------------------------------
 
 
+def _tool_output_limit(content: str) -> int:
+    """Pick an appropriate truncation limit for a tool output string.
+
+    Error-like payloads (stack traces, non-zero exits) get a higher limit
+    because the summary LLM needs enough context to reason about *why*
+    something failed. Benign outputs compress well at the default.
+    """
+    if not content:
+        return SUMMARY_TOOL_OUTPUT_LIMIT
+    head = content[:400]
+    if any(hint in head for hint in _ERROR_HINTS):
+        return SUMMARY_TOOL_OUTPUT_ERROR_LIMIT
+    return SUMMARY_TOOL_OUTPUT_LIMIT
+
+
 def _truncate_tool_outputs_for_summary(
     messages: list[dict[str, Any]],
     limit: int = SUMMARY_TOOL_OUTPUT_LIMIT,
@@ -244,18 +278,26 @@ def _truncate_tool_outputs_for_summary(
     deep-copied.  Messages that fit within *limit* are shared with the
     original list (no allocation).
 
+    The *limit* argument is treated as a floor — individual tool messages
+    whose content looks like an error trace are allowed to keep
+    ``SUMMARY_TOOL_OUTPUT_ERROR_LIMIT`` chars so post-mortem signal is
+    preserved.
+
     This is used **only** for the compaction LLM call so that it sees less
     token volume.  The original messages are never modified.
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
         needs_copy = False
+        tool_limit = limit
 
         # Check tool result content
         if msg.get("role") == "tool":
             content = msg.get("content", "")
-            if isinstance(content, str) and len(content) > limit:
-                needs_copy = True
+            if isinstance(content, str):
+                tool_limit = max(limit, _tool_output_limit(content))
+                if len(content) > tool_limit:
+                    needs_copy = True
 
         # Check tool_call arguments in assistant messages
         for tc in msg.get("tool_calls", []):
@@ -272,8 +314,8 @@ def _truncate_tool_outputs_for_summary(
         msg_copy = copy.deepcopy(msg)
         if msg_copy.get("role") == "tool":
             content = msg_copy.get("content", "")
-            if isinstance(content, str) and len(content) > limit:
-                msg_copy["content"] = content[:limit] + f"\n... [truncated, {len(content)} chars total]"
+            if isinstance(content, str) and len(content) > tool_limit:
+                msg_copy["content"] = content[:tool_limit] + f"\n... [truncated, {len(content)} chars total]"
         for tc in msg_copy.get("tool_calls", []):
             fn = tc.get("function", {})
             args = fn.get("arguments", "")

@@ -172,7 +172,14 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         except Exception as e:
             return ToolError(f"Model error: {e}")
 
-        tools = [t for t in tool_registry.to_llm_tools() if t["function"]["name"] not in _EXCLUDED_TOOLS]
+        # `model` is a Pydantic instance and read-only from the agent loop's
+        # perspective — share by reference. `tools` is a list[dict]; the
+        # agent loop does not mutate it today, but downstream provider
+        # transforms sometimes append entries, so hand each sub-agent its
+        # own deep copy to prevent accidental cross-contamination.
+        import copy as _copy
+
+        shared_tools = [t for t in tool_registry.to_llm_tools() if t["function"]["name"] not in _EXCLUDED_TOOLS]
 
         semaphore = asyncio.Semaphore(params.max_concurrency)
 
@@ -180,14 +187,26 @@ class SubAgentTool(CallableTool[SubAgentParams]):
             async with semaphore:
                 if is_aborted(ctx):
                     return idx, "(aborted)", False
+                # Per-run ToolContext so that any state one sub-agent writes
+                # into its context (for example abort metadata) cannot be
+                # observed by a sibling in the gather.
+                sub_ctx = ToolContext(
+                    session_id=ctx.session_id,
+                    message_id=ctx.message_id,
+                    agent=ctx.agent,
+                    call_id=f"{ctx.call_id}:parallel[{idx}]",
+                )
+                # Copy tool definitions so sub-agent-specific mutations
+                # cannot leak to peers.
+                per_agent_tools = _copy.deepcopy(shared_tools)
                 result = await self._execute_agent_loop(
                     description=task_desc,
                     context=params.context,
                     agent=agent,
                     max_turns=params.max_turns,
-                    ctx=ctx,
+                    ctx=sub_ctx,
                     _model=model,
-                    _tools=tools,
+                    _tools=per_agent_tools,
                     _api_key=api_key,
                 )
                 return idx, result.output, not result.is_error

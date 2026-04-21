@@ -152,6 +152,27 @@ async def process_stream(
             logger.error("LLM error", error=event.error)
             ctx.assistant_message.error = {"message": event.error}
             ctx.should_break = True
+            # Any tool calls that were partially streamed before the error
+            # must be surfaced as failed so the doom-loop guard & UI see
+            # them instead of silently discarding. They are not executed.
+            for partial_tp in list(ctx.toolcalls.values()):
+                if partial_tp.state.get("status") in (None, "pending"):
+                    partial_tp.state["status"] = "error"
+                    partial_tp.state["is_error"] = True
+                    partial_tp.state["output"] = f"LLM stream aborted before tool args finalised: {event.error}"
+                    partial_tp.time_completed = int(time.time() * 1000)
+                    if partial_tp not in ctx.parts:
+                        ctx.parts.append(partial_tp)
+                    yield ProcessorEvent(type="tool_done", data={
+                        "tool": partial_tp.tool,
+                        "call_id": partial_tp.tool_call_id,
+                        "status": "error",
+                        "output": partial_tp.state["output"],
+                        "input": partial_tp.state.get("input", {}),
+                    })
+            # Drop the pending list so the executor phase does not try to
+            # run a partially-formed call.
+            tool_calls_pending.clear()
             yield ProcessorEvent(type="error", data={"message": event.error})
             break
 
@@ -300,6 +321,14 @@ async def process_stream(
                 else:
                     readonly_tasks.append((tp, tool_impl, tool_ctx))
 
+            # Safety: if a batch mixes readonly and mutating calls, run the
+            # mutating ones FIRST so any cached readonly result produced in
+            # the same iteration observes the post-mutation filesystem.
+            # Previously readonly ran before mutating, which allowed a mixed
+            # batch like [read(foo.py), edit(foo.py)] to cache a pre-edit
+            # snapshot of foo.py and hand it back to the next iteration.
+            mutating_first = bool(mutating_tasks) and bool(readonly_tasks)
+
             # Yield running events
             for tp, _, _ in executable:
                 tp.state["status"] = "running"
@@ -310,8 +339,14 @@ async def process_stream(
 
             all_results: list[tuple[bool, ProcessorEvent]] = []
 
-            # Run read-only tools in parallel
-            if readonly_tasks:
+            async def _run_mutating() -> None:
+                for tp, impl, tctx in mutating_tasks:
+                    result = await _run_tool_with_retry(tp, impl, tctx, ctx)
+                    all_results.append(result)
+
+            async def _run_readonly() -> None:
+                if not readonly_tasks:
+                    return
                 ro_results = await asyncio.gather(
                     *[_run_tool_with_retry(tp, impl, tctx, ctx) for tp, impl, tctx in readonly_tasks],
                     return_exceptions=True,
@@ -338,10 +373,12 @@ async def process_stream(
                     else:
                         all_results.append(result)
 
-            # Run mutating tools sequentially (order matters)
-            for tp, impl, tctx in mutating_tasks:
-                result = await _run_tool_with_retry(tp, impl, tctx, ctx)
-                all_results.append(result)
+            if mutating_first:
+                await _run_mutating()
+                await _run_readonly()
+            else:
+                await _run_readonly()
+                await _run_mutating()
 
             # Yield results and track failures
             all_success = True

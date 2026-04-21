@@ -5,6 +5,7 @@ Provides both sync and async access to the SQLite database.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
@@ -100,9 +101,35 @@ def get_session_factory() -> sessionmaker[Session]:
 
 
 def get_session() -> Session:
-    """Create a new database session."""
+    """Create a new database session.
+
+    Prefer :func:`session_scope` for call sites that can use a context
+    manager — it guarantees the session is closed even if the caller
+    raises. Plain ``get_session()`` remains for legacy code but callers
+    MUST wrap it in ``try/finally: session.close()``.
+    """
     factory = get_session_factory()
     return factory()
+
+
+@contextlib.contextmanager
+def session_scope() -> Any:
+    """Context-managed DB session.
+
+    Usage::
+
+        with session_scope() as db:
+            rows = db.query(MessageTable).all()
+
+    Guarantees ``close()`` on every exit path (normal, exception,
+    generator abandonment). Does NOT auto-commit — callers opt in via
+    :func:`use` / :func:`transaction` or explicit ``db.commit()``.
+    """
+    session = get_session()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 def use(fn: Any) -> Any:
@@ -111,27 +138,22 @@ def use(fn: Any) -> Any:
     Usage:
         result = Database.use(lambda session: session.query(Model).all())
     """
-    session = get_session()
-    try:
-        result = fn(session)
-        session.commit()
-        return result
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    with session_scope() as session:
+        try:
+            result = fn(session)
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
 
 
 def transaction(fn: Any) -> Any:
     """Execute a function within an explicit transaction."""
-    session = get_session()
-    try:
+    with session_scope() as session:
         with session.begin():
             result = fn(session)
         return result
-    finally:
-        session.close()
 
 
 def close() -> None:
@@ -167,6 +189,82 @@ def _migrate(engine: Engine) -> None:
         column="visible",
         ddl="ALTER TABLE session ADD COLUMN visible INTEGER NOT NULL DEFAULT 1",
     )
+
+    _add_index_if_missing(
+        engine, inspector,
+        table="message",
+        index_name="ix_message_session_created",
+        ddl="CREATE INDEX IF NOT EXISTS ix_message_session_created ON message(session_id, time_created)",
+    )
+
+    _add_index_if_missing(
+        engine, inspector,
+        table="part",
+        index_name="ix_part_message_created",
+        ddl="CREATE INDEX IF NOT EXISTS ix_part_message_created ON part(message_id, time_created)",
+    )
+
+    # Best-effort unique constraint on (session_id, tool_call_id). If the
+    # existing table has dupes the CREATE will fail — we log and continue
+    # so the process still boots; callers can remediate offline.
+    _add_unique_index_if_missing(
+        engine, inspector,
+        table="part",
+        index_name="uq_part_session_tool_call",
+        ddl="CREATE UNIQUE INDEX IF NOT EXISTS uq_part_session_tool_call ON part(session_id, tool_call_id) WHERE tool_call_id IS NOT NULL",
+    )
+
+
+def _add_index_if_missing(
+    engine: Engine,
+    inspector: Any,
+    *,
+    table: str,
+    index_name: str,
+    ddl: str,
+) -> None:
+    try:
+        existing = {idx.get("name") for idx in inspector.get_indexes(table)}
+    except Exception:
+        existing = set()
+    if index_name in existing:
+        return
+    from sqlalchemy import text
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+        logger.info("migration: added index", table=table, index=index_name)
+    except Exception as exc:
+        logger.warn("migration: failed to add index", table=table, index=index_name, error=str(exc))
+
+
+def _add_unique_index_if_missing(
+    engine: Engine,
+    inspector: Any,
+    *,
+    table: str,
+    index_name: str,
+    ddl: str,
+) -> None:
+    try:
+        existing = {idx.get("name") for idx in inspector.get_indexes(table)}
+    except Exception:
+        existing = set()
+    if index_name in existing:
+        return
+    from sqlalchemy import text
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+        logger.info("migration: added unique index", table=table, index=index_name)
+    except Exception as exc:
+        # Likely duplicates exist — keep boot non-fatal, but flag it.
+        logger.warn(
+            "migration: failed to add unique index (existing duplicates?)",
+            table=table, index=index_name, error=str(exc),
+        )
 
 
 def _add_column_if_missing(

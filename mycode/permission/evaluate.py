@@ -1,7 +1,16 @@
 """Permission rule evaluation.
 
 Evaluates permission rules using wildcard matching.
-Last matching rule wins (bottom of ruleset has highest priority).
+
+Resolution order:
+1. An explicit `deny` rule always wins (cannot be overridden by later `allow` /
+   `always` entries). This closes a footgun where an "always allow" reply at
+   runtime would otherwise override a deny declared in project config or an
+   agent's ruleset.
+2. Among non-deny matches, the LAST one wins — so the caller order
+   (`ruleset, self._approved`) keeps its "later takes priority" semantics
+   for the allow/ask case.
+3. If nothing matches, the default is `ask`.
 """
 
 from __future__ import annotations
@@ -13,9 +22,6 @@ from mycode.util.wildcard import match
 def evaluate(permission: str, pattern: str, *rulesets: Ruleset) -> Rule:
     """Evaluate permission rules. Returns the most specific matching rule.
 
-    Rules are evaluated in order; the LAST matching rule wins.
-    Default is "ask" if no rule matches.
-
     Args:
         permission: The permission being checked (e.g., "bash", "edit", "read")
         pattern: The pattern being checked (e.g., file path, command)
@@ -25,16 +31,18 @@ def evaluate(permission: str, pattern: str, *rulesets: Ruleset) -> Rule:
     for rs in rulesets:
         merged.extend(rs)
 
-    # Default: ask
-    result = Rule(permission=permission, pattern=pattern, action="ask")
+    last_match: Rule | None = None
 
     for rule in merged:
-        # Check if the rule's permission pattern matches
         if not match(permission, rule.permission):
             continue
-        # Check if the rule's file/command pattern matches
         if not match(pattern, rule.pattern):
             continue
-        result = Rule(permission=permission, pattern=pattern, action=rule.action)
+        # Explicit deny short-circuits — no later allow can override it.
+        if rule.action == "deny":
+            return Rule(permission=permission, pattern=pattern, action="deny")
+        last_match = rule
 
-    return result
+    if last_match is not None:
+        return Rule(permission=permission, pattern=pattern, action=last_match.action)
+    return Rule(permission=permission, pattern=pattern, action="ask")

@@ -165,17 +165,40 @@ async def apply_diff_text(diff: str, target_dir: str) -> bool:
 async def cleanup_worktree(worktree: WorktreeInfo) -> None:
     """Remove a worktree and its associated branch.
 
-    Safe to call even if the worktree was already removed.
+    Safe to call even if the worktree was already removed or git is in an
+    unusual state. Never raises — every step is best-effort because this
+    runs in a `finally` block where raising would mask the real error
+    from the caller (typically an isolated sub-agent run).
     """
     project_dir = worktree.project_dir
+    path = worktree.path
+    branch = worktree.branch
 
-    code, _, _ = await git(["worktree", "remove", "--force", worktree.path], cwd=project_dir)
-    if code != 0:
-        if os.path.exists(worktree.path):
-            shutil.rmtree(worktree.path, ignore_errors=True)
-        logger.debug("worktree force-removed", path=worktree.path)
+    # Step 1 — ask git to detach & remove the worktree metadata.
+    try:
+        code, _, err = await git(["worktree", "remove", "--force", path], cwd=project_dir)
+        if code != 0:
+            logger.debug("worktree remove returned non-zero", path=path, error=err)
+    except Exception as e:
+        logger.warn("worktree remove raised, will fall back to rmtree", path=path, error=str(e))
 
-    await git(["branch", "-D", worktree.branch], cwd=project_dir)
-    await git(["worktree", "prune"], cwd=project_dir)
+    # Step 2 — directory may still exist (especially after failed `remove`).
+    # Force-delete with `ignore_errors` so a stuck file (open editor, etc.)
+    # does not leak this error upstream. Retry a second time after a brief
+    # backoff because macOS fsevents sometimes hold a handle momentarily.
+    if os.path.exists(path):
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            await asyncio.sleep(0.2)
+            shutil.rmtree(path, ignore_errors=True)
+            if os.path.exists(path):
+                logger.warn("worktree directory still present after cleanup", path=path)
 
-    logger.info("worktree cleaned up", task_id=worktree.task_id, branch=worktree.branch)
+    # Step 3 — best-effort branch / prune cleanup. Never raise.
+    for args in (["branch", "-D", branch], ["worktree", "prune"]):
+        try:
+            await git(args, cwd=project_dir)
+        except Exception as e:
+            logger.debug("git cleanup step failed, continuing", args=args, error=str(e))
+
+    logger.info("worktree cleaned up", task_id=worktree.task_id, branch=branch)

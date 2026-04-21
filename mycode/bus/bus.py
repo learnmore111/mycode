@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from typing import TYPE_CHECKING, Any
 
 from mycode.bus.events import Event, EventDef
@@ -18,15 +19,33 @@ if TYPE_CHECKING:
 logger = logmod.create(service="bus")
 
 
+def _default_queue_size() -> int:
+    """Subscriber queue capacity. Override via ``MYCODE_BUS_QUEUE_SIZE``.
+
+    Values <= 0 map to an unbounded queue (use with care — a slow
+    subscriber can then balloon memory).
+    """
+    raw = os.environ.get("MYCODE_BUS_QUEUE_SIZE")
+    if not raw:
+        return 1000
+    try:
+        val = int(raw)
+    except ValueError:
+        logger.warn("invalid MYCODE_BUS_QUEUE_SIZE, using default", value=raw)
+        return 1000
+    return val if val > 0 else 0
+
+
 class Bus:
     """Per-instance event bus with typed pub/sub."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, queue_size: int | None = None) -> None:
         self._subscribers: dict[str, list[asyncio.Queue[Event]]] = {}
         self._wildcard: list[asyncio.Queue[Event]] = []
         self._callbacks: dict[str, list[Callable[[Event], Any]]] = {}
         self._wildcard_callbacks: list[Callable[[Event], Any]] = []
         self._closed = False
+        self._queue_size = queue_size if queue_size is not None else _default_queue_size()
 
     async def publish(self, event_def: EventDef, properties: dict[str, Any] | None = None) -> None:
         """Publish an event to all subscribers."""
@@ -68,7 +87,7 @@ class Bus:
 
     async def subscribe(self, event_def: EventDef) -> AsyncGenerator[Event, None]:
         """Subscribe to a specific event type. Yields events as they arrive."""
-        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
+        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=self._queue_size)
         subs = self._subscribers.setdefault(event_def.type, [])
         subs.append(q)
         logger.debug("subscribing", type=event_def.type)
@@ -80,12 +99,13 @@ class Bus:
                 except TimeoutError:
                     continue
         finally:
-            subs.remove(q)
+            with contextlib.suppress(ValueError):
+                subs.remove(q)
             logger.debug("unsubscribing", type=event_def.type)
 
     async def subscribe_all(self) -> AsyncGenerator[Event, None]:
         """Subscribe to all events."""
-        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
+        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=self._queue_size)
         self._wildcard.append(q)
         logger.debug("subscribing", type="*")
         try:
@@ -96,7 +116,8 @@ class Bus:
                 except TimeoutError:
                     continue
         finally:
-            self._wildcard.remove(q)
+            with contextlib.suppress(ValueError):
+                self._wildcard.remove(q)
             logger.debug("unsubscribing", type="*")
 
     def on(self, event_def: EventDef, callback: Callable[[Event], Any]) -> Callable[[], None]:
@@ -121,13 +142,17 @@ class Bus:
     async def close(self) -> None:
         """Shut down the bus, unblocking all subscribers."""
         self._closed = True
-        # Send a sentinel to unblock waiting subscribers
+        # Send a sentinel to unblock waiting subscribers. Queue may be full
+        # if the subscriber is slow — swallow the overflow; subscribers
+        # also poll `_closed` so they exit eventually either way.
         sentinel = Event(type=INSTANCE_DISPOSED.type, properties={})
-        for q in self._wildcard:
-            q.put_nowait(sentinel)
-        for qs in self._subscribers.values():
-            for q in qs:
+        for q in list(self._wildcard):
+            with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(sentinel)
+        for qs in list(self._subscribers.values()):
+            for q in list(qs):
+                with contextlib.suppress(asyncio.QueueFull):
+                    q.put_nowait(sentinel)
 
 
 from mycode.bus.events import INSTANCE_DISPOSED  # noqa: E402

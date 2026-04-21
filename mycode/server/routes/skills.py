@@ -19,7 +19,7 @@ class _CreateSkill(BaseModel):
 @router.get("")
 async def list_skills():
     """List all available skills with descriptions."""
-    from mycode.tool.skill import list_skills_with_descriptions, _get_search_dirs
+    from mycode.tool.skill import _get_search_dirs, list_skills_with_descriptions
 
     skills = list_skills_with_descriptions()
     search_dirs = _get_search_dirs()

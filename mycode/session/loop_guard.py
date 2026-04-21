@@ -16,6 +16,7 @@ Plus:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import time
@@ -170,6 +171,11 @@ class ToolResultCache:
     Eliminates redundant tool executions when the same tool is called
     with identical input (e.g. reading the same file twice).
     Only caches successful, read-only tool calls.
+
+    Cache entries are tagged with any file paths they depended on so that
+    when a mutating tool edits a specific file we only evict entries that
+    touched that file — avoiding over-broad `.clear()` storms on large
+    batches while still preventing stale-read issues.
     """
 
     # Tools that are safe to cache (read-only, deterministic)
@@ -177,36 +183,79 @@ class ToolResultCache:
         "read", "glob", "grep", "listdir", "webfetch", "websearch", "skill",
     })
 
+    # Keys in tool input that identify files the tool touched.
+    _FILE_INPUT_KEYS = ("file_path", "path", "filePath", "pathname")
+
+    # LRU-ish eviction uses an OrderedDict; most-recently-used lives at the
+    # end, oldest at the front.
     def __init__(self, max_size: int = 200):
-        self._cache: dict[str, str] = {}  # input_hash → output
+        from collections import OrderedDict
+
+        self._cache: OrderedDict[str, tuple[str, frozenset[str]]] = OrderedDict()
         self._max_size = max_size
+
+    @staticmethod
+    def _extract_files(tool_name: str, tool_input: dict[str, Any]) -> frozenset[str]:
+        """Best-effort extract file paths a read-only call depends on.
+
+        We only use this for invalidation hints — missing paths just mean
+        the entry gets dropped by the blanket fallback in `invalidate()`.
+        """
+        files: set[str] = set()
+        for key in ToolResultCache._FILE_INPUT_KEYS:
+            val = tool_input.get(key)
+            if isinstance(val, str) and val:
+                files.add(val)
+        # grep/glob carry their scope under "path" already handled above.
+        return frozenset(files)
 
     def get(self, tool_name: str, tool_input: dict[str, Any]) -> str | None:
         """Look up a cached result. Returns None on miss."""
         if tool_name not in self.CACHEABLE_TOOLS:
             return None
         key = ToolCallRecord.hash_input(tool_name, tool_input)
-        return self._cache.get(key)
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        # LRU touch — move to most-recently-used end.
+        self._cache.move_to_end(key)
+        return entry[0]
 
     def put(self, tool_name: str, tool_input: dict[str, Any], output: str) -> None:
         """Cache a successful tool result."""
         if tool_name not in self.CACHEABLE_TOOLS:
             return
         if len(self._cache) >= self._max_size:
-            # Evict oldest 25%
-            keys = list(self._cache.keys())
-            for k in keys[:len(keys) // 4]:
-                del self._cache[k]
+            # LRU eviction — drop oldest entry. Race-safe against an empty
+            # dict because the callers above are all synchronous.
+            with contextlib.suppress(KeyError):  # pragma: no cover — defensive
+                self._cache.popitem(last=False)
         key = ToolCallRecord.hash_input(tool_name, tool_input)
-        self._cache[key] = output
+        files = self._extract_files(tool_name, tool_input)
+        self._cache[key] = (output, files)
+        self._cache.move_to_end(key)
 
-    def invalidate(self, tool_name: str | None = None) -> None:
-        """Invalidate cache entries. Call after write/edit/bash operations.
+    def invalidate(self, tool_name: str | None = None, files: frozenset[str] | set[str] | None = None) -> None:
+        """Invalidate cache entries affected by a mutating tool call.
 
-        Always clears all entries because we cannot know exactly which
-        files changed from a mutating tool call.
+        If `files` are provided, only entries that touched at least one of
+        those paths are dropped. Otherwise (unknown scope — e.g. a `bash`
+        command with arbitrary side effects) the full cache is cleared.
         """
-        self._cache.clear()
+        if not files:
+            self._cache.clear()
+            return
+
+        file_set: set[str] = set(files)
+        stale = [
+            key
+            for key, (_out, tagged) in self._cache.items()
+            # An entry with no file tags (e.g. websearch) is kept — those
+            # outputs cannot be invalidated by file edits.
+            if tagged and (tagged & file_set)
+        ]
+        for key in stale:
+            self._cache.pop(key, None)
 
     @property
     def size(self) -> int:
@@ -294,9 +343,15 @@ class LoopGuard:
         self._history.append(record)
 
         # Cache invalidation for mutating tools — always invalidate, even on error,
-        # because the tool may have partially modified files before failing
+        # because the tool may have partially modified files before failing.
+        # `edit`/`write` target a specific file so we can do a surgical evict;
+        # `bash` is opaque and we fall back to a full clear.
         if tool_name in MUTATING_TOOLS:
-            self.cache.invalidate()
+            touched = ToolResultCache._extract_files(tool_name, tool_input)
+            if tool_name == "bash" or not touched:
+                self.cache.invalidate()
+            else:
+                self.cache.invalidate(tool_name, touched)
         # Cache successful read-only results
         elif not is_error and output:
             self.cache.put(tool_name, tool_input, output)

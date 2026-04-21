@@ -243,8 +243,25 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                 cost=cost,
             )
 
+    except asyncio.CancelledError:
+        # Propagate cancellation — consumers will run their own cleanup.
+        # Ensure we don't swallow the cancel by adding new yields below.
+        raise
     except Exception as e:
         logger.error("stream error", error=str(e), model=model_name)
+        # Surface any in-flight tool calls as best-effort deltas BEFORE the
+        # error event. Without this, the processor layer would never see
+        # the tool call that was mid-assembly when the provider died, so
+        # subsequent retries could not attribute the failure to a specific
+        # call and would happily re-issue it.
+        for entry in list(tool_calls_in_progress.values()):
+            if entry.get("name"):
+                yield ToolCallDelta(
+                    tool_call_id=entry["id"],
+                    tool_name=entry["name"],
+                    args=entry.get("args", ""),
+                )
+        tool_calls_in_progress.clear()
         yield ErrorEvent(error=str(e))
         # Ensure a FinishEvent is always emitted so consumers don't hang
         if not pending_finish_reason:
