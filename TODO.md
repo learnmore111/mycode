@@ -85,23 +85,12 @@
 ---
 
 ### 7. apply_patch 工具(GPT-5 风格多文件 diff)
-**状态**: README 标注"待实现"。Edit/Write 当前是单文件语义,大规模重构时 LLM 要发十几次 edit,token 浪费。
-
-**待办**:
-- [ ] 新增 `mycode/tool/apply_patch.py`:接受统一 diff 格式(`*** Update File: path\n@@...\n+...\n-...`),原子性应用。
-- [ ] 引入 `patch_preview` 字段在执行前回显;失败时给出冲突 hunk 的行号。
-- [ ] 支持 rename / delete / new file 三种操作。
-- [ ] 与 changes 暂存 / 回退面板集成。
+**状态**: ✅ 已完成。`mycode/tool/apply_patch.py` 实现 Add/Update/Delete + 原子性应用 + 回滚。已注册到 tool registry，所有写入通过 `atomic_write` 自动触发 LSP `didChange`。
 
 ---
 
 ### 8. LSP didChange 增量通知
-**状态**: LSP 集成存在,但 Edit/Write 后不通知 LSP 服务,导致 diagnostics 陈旧。
-
-**待办**:
-- [ ] `tool/edit.py`、`tool/write.py` 在 atomic_write 后发送 `textDocument/didChange` 到相关 LSP 客户端。
-- [ ] `lsp/client.py` 增加增量/全量切换的 capability 协商。
-- [ ] 在 Web UI 的 MessageInput 旁显示 LSP diagnostics 的 badge。
+**状态**: ✅ 已完成。`atomic_write` → `_fire_post_write` → `LspManager.notify_changed` → `client.did_change` 钩子链自动工作。edit/write/apply_patch 所有文件修改都触发 LSP 更新。当前使用 Full sync 模式。
 
 ---
 
@@ -224,6 +213,6 @@
 | mypy 零错误目标 | ✅ 完成 (286→0) |
 | 会话导出 / 分叉 / fork | ❌ 未开始 |
 | OTel tracing | 🟡 仅 metrics |
-| apply_patch / LSP didChange | ❌ 未开始 |
+| apply_patch / LSP didChange | ✅ 完成 |
 
 *Last updated: 2026-04-22*
