@@ -46,12 +46,6 @@ from typing import TYPE_CHECKING, Literal, Protocol
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    #: Async callback invoked after every envelope the system routes.
-    #: Used by the orchestration event emitter to publish
-    #: ``orchestration.message.sent`` onto the global bus without making
-    #: the mailbox depend on the bus module directly.
-    OnSend = Callable[[Envelope], Awaitable[None]]
-
 # ---------------------------------------------------------------------------
 # Envelope
 # ---------------------------------------------------------------------------
@@ -195,7 +189,12 @@ class MailboxSystem:
     inboxes: dict[str, Mailbox] = field(default_factory=dict)
     event_log: list[Envelope] = field(default_factory=list)
     _counter: itertools.count = field(default_factory=lambda: itertools.count(1))
-    on_send: OnSend | None = None
+    # Async callback invoked after every envelope the system routes.
+    # Used by the orchestration event emitter to publish
+    # ``orchestration.message.sent`` onto the global bus without making
+    # the mailbox depend on the bus module directly.  ``None`` (default)
+    # is a zero-cost no-op.
+    on_send: Callable[[Envelope], Awaitable[None]] | None = None
 
     @classmethod
     def inprocess(cls, owners: list[str]) -> MailboxSystem:

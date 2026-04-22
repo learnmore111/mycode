@@ -24,24 +24,26 @@ import asyncio
 import json
 import os
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from mycode.bus import events as bus_events
-from mycode.bus.bus import Bus
 from mycode.orchestration.registry import (
     get_default_agent_registry,
     get_default_registry,
 )
+from mycode.orchestration.runtime.coordinator import run_coordinator
 from mycode.orchestration.runtime.events import BusOrchestrationEmitter
 from mycode.orchestration.runtime.swarm import run_swarm
-from mycode.orchestration.runtime.coordinator import run_coordinator
 from mycode.orchestration.topology import resolve_all_agents
 from mycode.orchestration.topology.loader import OrchestrationLoadError
 from mycode.orchestration.topology.validator import OrchestrationValidationError
+
+if TYPE_CHECKING:
+    from mycode.bus.bus import Bus
 
 router = APIRouter(prefix="/orchestration", tags=["orchestration"])
 

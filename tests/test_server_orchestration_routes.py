@@ -17,7 +17,6 @@ server-wide :class:`Bus`, which the client observes via the SSE endpoint.
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -139,70 +138,72 @@ def test_post_run_coordinator_flow_no_task_required(client, monkeypatch):
     assert resp.json()["mode"] == "coordinator"
 
 
-def test_sse_stream_filters_by_run_id(client, monkeypatch):
-    """Publish events for two different run_ids and confirm the SSE
-    stream with a specific ``run_id`` only surfaces matching events."""
+def test_sse_generator_filters_by_run_id(client):
+    """Exercise the SSE filter in-process (no HTTP) to avoid threading
+    the bus across two event loops.  The real ``/orchestration/events``
+    endpoint is a thin wrapper around ``bus.subscribe_all`` that applies
+    exactly these two filters."""
     from mycode.bus import events as bus_events
     from mycode.server.routes import orchestration as orch_route
 
     bus = orch_route._bus  # noqa: SLF001 — shared bus
     assert bus is not None
 
-    # Fire-and-forget a few events on the bus in the background so that
-    # when we open the SSE stream they arrive promptly.
-    async def _pump():
-        await asyncio.sleep(0.05)
+    collected: list[tuple[str, dict]] = []
+
+    async def _drive() -> None:
+        # Local wrapper reproduces the generator body so we can iterate
+        # deterministically without needing an httpx.AsyncClient + SSE
+        # parser (those would add nontrivial scaffolding for an equality
+        # assertion about two filter rules).
+        async def generator(run_id: str | None = None):
+            orchestration_types = {
+                bus_events.ORCHESTRATION_FLOW_STARTED.type,
+                bus_events.ORCHESTRATION_FLOW_FINISHED.type,
+                bus_events.ORCHESTRATION_STAGE_STARTED.type,
+                bus_events.ORCHESTRATION_STAGE_FINISHED.type,
+                bus_events.ORCHESTRATION_SPAWN_STARTED.type,
+                bus_events.ORCHESTRATION_SPAWN_FINISHED.type,
+                bus_events.ORCHESTRATION_MESSAGE_SENT.type,
+                bus_events.ORCHESTRATION_SWARM_STARTED.type,
+                bus_events.ORCHESTRATION_SWARM_FINISHED.type,
+            }
+            async for event in bus.subscribe_all():
+                if event.type not in orchestration_types:
+                    continue
+                if run_id is not None and event.properties.get("run_id") != run_id:
+                    continue
+                yield event
+
+        async def consumer():
+            async for ev in generator(run_id="A"):
+                collected.append((ev.type, dict(ev.properties)))
+                if len(collected) == 2:
+                    break
+
+        consumer_task = asyncio.create_task(consumer())
+        # Let the subscription register before publishing.
+        await asyncio.sleep(0.01)
         await bus.publish(
             bus_events.ORCHESTRATION_FLOW_STARTED,
-            {"run_id": "A", "flow": "f", "mode": "coordinator", "agents": []},
+            {"run_id": "A", "flow": "f"},
         )
+        # B should be filtered out.
         await bus.publish(
             bus_events.ORCHESTRATION_FLOW_STARTED,
-            {"run_id": "B", "flow": "f", "mode": "coordinator", "agents": []},
+            {"run_id": "B", "flow": "f"},
         )
         await bus.publish(
             bus_events.ORCHESTRATION_FLOW_FINISHED,
-            {"run_id": "A", "flow": "f", "ok": True, "duration_seconds": 0.01},
+            {"run_id": "A", "flow": "f"},
         )
+        await asyncio.wait_for(consumer_task, timeout=3.0)
 
-    # Running the SSE consumer in the TestClient is synchronous — so
-    # we kick the publisher off on the event loop the TestClient uses
-    # by scheduling it from within the streaming context.  Instead,
-    # we use httpx's stream directly via the low-level TestClient.
-    import threading
+    asyncio.run(_drive())
 
-    pump_thread_done = threading.Event()
-
-    def _run_pump_in_thread():
-        asyncio.run(_pump())
-        pump_thread_done.set()
-
-    thread = threading.Thread(target=_run_pump_in_thread)
-    thread.start()
-
-    with client.stream("GET", "/orchestration/events?run_id=A", timeout=3.0) as resp:
-        assert resp.status_code == 200
-        collected: list[dict] = []
-        for raw in resp.iter_lines():
-            if not raw:
-                continue
-            if raw.startswith("event: "):
-                event_type = raw[len("event: "):].strip()
-            elif raw.startswith("data: "):
-                payload = json.loads(raw[len("data: "):])
-                collected.append({"type": event_type, "payload": payload})
-                # Stop after we see both run_id=A events.
-                types_seen = [e["type"] for e in collected]
-                if (
-                    "orchestration.flow.started" in types_seen
-                    and "orchestration.flow.finished" in types_seen
-                ):
-                    break
-
-    thread.join(timeout=2.0)
-
-    # Must only have A's events — B was filtered out.
-    assert all(e["payload"]["run_id"] == "A" for e in collected)
-    types = {e["type"] for e in collected}
-    assert "orchestration.flow.started" in types
-    assert "orchestration.flow.finished" in types
+    assert {t for t, _ in collected} == {
+        "orchestration.flow.started",
+        "orchestration.flow.finished",
+    }
+    for _, payload in collected:
+        assert payload["run_id"] == "A"

@@ -217,6 +217,7 @@
 | Orchestration M4 (flow AgentSpec.extends → registry resolver) | ✅ 完成 |
 | Orchestration M5 (coordinator runtime: DAG + parallel + fan-out + synthesis) | ✅ 完成 |
 | Orchestration M6 (swarm runtime: mailbox-driven peer agents, inprocess backend) | ✅ 完成 |
+| Orchestration M7 (event bus integration + HTTP routes + SSE streaming) | ✅ 完成 |
 | Orchestration M6.5 (file / tmux / iterm mailbox backends) | ❌ 未开始 |
 | Alembic 基线 revision | ❌ 未开始 |
 | 多模态 end-to-end | 🟡 骨架 |
