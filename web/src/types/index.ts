@@ -72,6 +72,8 @@ export interface Message {
   sessionId: string
   role: 'user' | 'assistant'
   parentId?: string
+  turnNumber?: number | null
+  snapshotRef?: string | null
   modelId?: string
   providerId?: string
   agent?: string

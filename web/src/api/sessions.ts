@@ -79,3 +79,25 @@ export async function clearPausedRun(sessionId: string): Promise<void> {
 export async function abortSession(sessionId: string): Promise<void> {
   await apiFetch(`/session/${sessionId}/abort`, { method: 'POST' })
 }
+
+// ---- Rollback ----
+export interface RollbackResult {
+  kept: number
+  removed: number
+  snapshot_ref: string | null
+  restored: boolean
+}
+
+export async function rollbackToTurn(
+  sessionId: string,
+  turn: number,
+  options?: { restoreSnapshot?: boolean },
+): Promise<RollbackResult> {
+  return apiFetch<RollbackResult>(`/session/${sessionId}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({
+      turn,
+      restore_snapshot: options?.restoreSnapshot ?? true,
+    }),
+  })
+}

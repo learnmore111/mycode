@@ -488,8 +488,12 @@ async def _run_tool(
     tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext, ctx: ProcessorContext,
 ) -> tuple[bool, ProcessorEvent]:
     """Execute a single tool. Returns (success, event)."""
+    from mycode.util import metrics as _metrics
+
     try:
-        result = await tool_impl.execute(tp.state.get("input", {}), tool_ctx)
+        with _metrics.span("tool_call", tool=tp.tool, session_id=ctx.session_id):
+            result = await tool_impl.execute(tp.state.get("input", {}), tool_ctx)
+        _metrics.counter("tool_call_total", tool=tp.tool, outcome="error" if result.is_error else "ok")
 
         if result.is_error:
             tp.state["status"] = "error"

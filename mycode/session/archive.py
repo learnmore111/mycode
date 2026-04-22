@@ -33,8 +33,7 @@ from typing import Any
 
 from mycode.project.instance import current_or_none
 from mycode.session.message import get_compaction_events
-from mycode.session.session import SessionInfo, _from_row, _to_row_dict
-from mycode.session.session import create as create_session_row
+from mycode.session.session import SessionInfo, _to_row_dict
 from mycode.session.session import get as get_session
 from mycode.storage.database import get_session as get_db_session
 from mycode.storage.models import MessageTable, PartTable, SessionTable
@@ -220,7 +219,7 @@ def import_session(
             # Rewrite parent_id if it points at another imported message.
             if msg_cols.get("parent_id") in id_map:
                 msg_cols["parent_id"] = id_map[msg_cols["parent_id"]]
-            db.merge(MessageTable(**{k: v for k, v in msg_cols.items() if k in MessageTable.__table__.columns.keys()}))
+            db.merge(MessageTable(**{k: v for k, v in msg_cols.items() if k in MessageTable.__table__.columns}))
 
             for p in parts:
                 new_part_id = ids.part_id() if new_id else p.get("id")

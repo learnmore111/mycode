@@ -34,6 +34,8 @@ interface Props {
   onReturnToLastSession?: () => void
   onSelectGitFile?: (path: string) => void
   onRefreshGit?: () => void
+  onRollback?: (turn: number, options?: { restoreSnapshot?: boolean }) => Promise<unknown> | void
+  gitChangedPaths?: Set<string>
 }
 
 const SUGGESTIONS = [
@@ -50,6 +52,7 @@ function ChangesPanel({
   onDismissPausedRun,
   onSelectFile,
   onRefreshGit,
+  gitChangedPaths,
 }: {
   pausedRun: PausedRun | null
   codeChanges: SessionCodeChange[]
@@ -57,6 +60,7 @@ function ChangesPanel({
   onDismissPausedRun: () => void
   onSelectFile?: (path: string) => void
   onRefreshGit?: () => void
+  gitChangedPaths?: Set<string>
 }) {
   const [expanded, setExpanded] = useState(false)
   const [busyFiles, setBusyFiles] = useState<Record<string, 'stage' | 'revert'>>({})
@@ -205,27 +209,71 @@ function ChangesPanel({
             <div className="py-1.5">
               {codeChanges.map((change) => {
                 const busy = change.filePath ? busyFiles[change.filePath] : undefined
+                const isStale =
+                  !!change.filePath &&
+                  !!gitChangedPaths &&
+                  gitChangedPaths.size > 0 &&
+                  !gitChangedPaths.has(change.filePath)
+                const handleClick = () => {
+                  if (!change.filePath) return
+                  if (isStale) {
+                    // The file is no longer in git's changed-file list —
+                    // tell the user explicitly instead of firing a request
+                    // that will silently 404.
+                    onRefreshGit?.()
+                    alert(
+                      `文件「${change.filePath}」已不在 Git 改动列表中。\n\n` +
+                        '可能原因：\n' +
+                        '• 文件已被删除且从未被 Git 跟踪\n' +
+                        '• 改动已提交或已回退\n' +
+                        '• 会话之后工作区已被重置',
+                    )
+                    return
+                  }
+                  onSelectFile?.(change.filePath)
+                }
                 return (
                   <div
                     key={change.id}
                     className="flex items-center gap-2 px-3.5 py-1.5 hover:bg-surface-hover transition-colors group"
                   >
-                    <FileCode2 size={12} className="text-ink-faint flex-shrink-0" />
+                    <FileCode2
+                      size={12}
+                      className={`flex-shrink-0 ${isStale ? 'text-ink-faint/60' : 'text-ink-faint'}`}
+                    />
                     <button
-                      onClick={() => change.filePath && onSelectFile?.(change.filePath)}
+                      onClick={handleClick}
                       className={`flex-1 min-w-0 text-left ${
                         change.filePath ? 'hover:text-accent cursor-pointer' : 'cursor-default'
                       }`}
-                      title={change.filePath ? `查看 diff` : undefined}
+                      title={
+                        change.filePath
+                          ? isStale
+                            ? '文件已不在 Git 改动列表中，点击查看详情'
+                            : '查看 diff'
+                          : undefined
+                      }
                     >
-                      <span className="text-xs font-medium text-ink-strong truncate block">
+                      <span
+                        className={`text-xs font-medium truncate block ${
+                          isStale ? 'text-ink-muted line-through decoration-ink-faint/50' : 'text-ink-strong'
+                        }`}
+                      >
                         {change.filePath || `${change.tool} 修改`}
                       </span>
                     </button>
 
+                    {isStale && (
+                      <span
+                        className="text-xxs text-ink-faint flex-shrink-0"
+                        title="文件已不在 Git 改动列表中"
+                      >
+                        已失效
+                      </span>
+                    )}
                     <span className="text-xxs text-ink-faint font-mono flex-shrink-0">{change.tool}</span>
 
-                    {change.filePath && (
+                    {change.filePath && !isStale && (
                       <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                         {busy ? (
                           <Loader2 size={12} className="animate-spin text-ink-muted" />
@@ -287,6 +335,8 @@ export default function ChatArea({
   onReturnToLastSession,
   onSelectGitFile,
   onRefreshGit,
+  onRollback,
+  gitChangedPaths,
 }: Props) {
   const [showContext, setShowContext] = useState(false)
 
@@ -366,6 +416,7 @@ export default function ChatArea({
         streamText={streamText}
         streamParts={streamParts}
         loadingHistory={loadingHistory}
+        onRollback={onRollback}
       />
       {error && (
         <div className="mx-4 mb-2 px-4 py-2.5 bg-status-error-light border border-status-error/15 rounded-lg text-status-error text-sm">
@@ -392,6 +443,7 @@ export default function ChatArea({
         onDismissPausedRun={onDismissPausedRun}
         onSelectFile={onSelectGitFile}
         onRefreshGit={onRefreshGit}
+        gitChangedPaths={gitChangedPaths}
       />
       {showContext && contextSnapshot && (
         <ContextViewer snapshot={contextSnapshot} sessionId={session.id} onClose={() => setShowContext(false)} />

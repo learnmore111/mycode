@@ -249,7 +249,7 @@ async def git_status(directory: str = Query(default=".")):
             branch_info, files = await _status_snapshot(project.worktree)
             head = await _head_short(project.worktree)
         except RuntimeError as exc:
-            logger.warning("git status failed", error=str(exc), worktree=project.worktree)
+            logger.warn("git status failed", error=str(exc), worktree=project.worktree)
             return {
                 "available": False,
                 "reason": str(exc),

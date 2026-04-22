@@ -1,6 +1,7 @@
 """Permission API routes."""
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -70,11 +71,9 @@ async def permission_rules_clear(request: Request) -> dict[str, Any]:
     if not _manager:
         raise HTTPException(503, "Permission manager not initialized")
 
-    body = {}
-    try:
+    body: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
         body = await request.json()
-    except Exception:
-        pass
     perm = body.get("permission") if isinstance(body, dict) else None
     pat = body.get("pattern") if isinstance(body, dict) else None
 

@@ -81,7 +81,7 @@ class FileLock:
             else:
                 await self._acquire_unix()
         except Exception as e:
-            logger.warning("OS-level file locking failed, using fallback", error=str(e))
+            logger.warn("OS-level file locking failed, using fallback", error=str(e))
             # Fallback to per-path in-memory lock (shared across all FileLock instances for same path)
             try:
                 self._fallback_lock = await _get_fallback_lock(self.path)
@@ -176,7 +176,7 @@ class FileLock:
             self._is_locked = False
             logger.debug("released file lock", path=self.path)
         except Exception as e:
-            logger.warning("error releasing file lock", error=str(e))
+            logger.warn("error releasing file lock", error=str(e))
             self._is_locked = False
         finally:
             # Always release fallback lock if held

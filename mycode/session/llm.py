@@ -6,6 +6,7 @@ Wraps litellm.acompletion to provide a unified streaming interface.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging as _logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -113,7 +114,7 @@ class ErrorEvent:
 
 async def _with_abort(
     response: Any, abort_event: asyncio.Event | None,
-) -> "AsyncGenerator[Any, None]":
+) -> AsyncGenerator[Any, None]:
     """Iterate ``response`` but stop early if ``abort_event`` fires.
 
     litellm's streaming response is an async iterator. If we simply
@@ -288,12 +289,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         # event. Without this the user has to wait out the whole LLM
         # response before the agent loop can unwind. We still let the
         # current chunk land to avoid tearing the SSE parser mid-frame.
-        abort_event = stream_input.abort_event
-
-        async def _next_chunk():
-            return await response.__anext__()
-
-        async for chunk in _with_abort(response, abort_event):
+        async for chunk in _with_abort(response, stream_input.abort_event):
             # Collect usage from any chunk that has it
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage

@@ -8,6 +8,7 @@ import {
   getPausedRun,
   getSessionCodeChanges,
   pauseSession,
+  rollbackToTurn as rollbackToTurnRemote,
 } from '../api/sessions'
 import { streamMessage, streamResume } from '../api/stream'
 
@@ -342,6 +343,23 @@ export function useChat(sessionId: string | null) {
     setStatus('idle')
   }, [sessionId])
 
+  const rollbackToTurn = useCallback(
+    async (turn: number, options?: { restoreSnapshot?: boolean }) => {
+      if (!sessionId) return null
+      try {
+        const result = await rollbackToTurnRemote(sessionId, turn, options)
+        // Refresh both transcript and code-changes after rollback.
+        await reloadPersistedState()
+        return result
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '回退失败'
+        setError(msg)
+        throw err
+      }
+    },
+    [reloadPersistedState, sessionId],
+  )
+
   return {
     messages,
     streaming,
@@ -358,5 +376,6 @@ export function useChat(sessionId: string | null) {
     status,
     contextSnapshot,
     codeChanges,
+    rollbackToTurn,
   }
 }
