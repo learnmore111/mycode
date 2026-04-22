@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/skill", tags=["skill"])
@@ -60,6 +60,52 @@ async def create_skill(body: _CreateSkill) -> Any:
         raise HTTPException(500, f"写入失败: {exc}") from exc
 
     return {"ok": True, "name": name, "path": str(file_path), "scope": body.scope}
+
+
+@router.post("/upload")
+async def upload_skill(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+    scope: str = Form("project"),
+) -> Any:
+    """Upload a .md file as a skill."""
+    from mycode.project.instance import current_or_none
+    from mycode.tool.base import atomic_write
+
+    if not file.filename:
+        raise HTTPException(400, "未提供文件")
+
+    # Derive skill name from filename if not provided
+    skill_name = name.strip() if name else Path(file.filename).stem
+    if not skill_name or not skill_name.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(400, f"无效的技能名称: '{skill_name}'，仅支持字母数字、连字符和下划线")
+
+    # Read file content
+    raw = await file.read()
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "文件编码错误，请确保文件为 UTF-8 编码")
+
+    if not content.strip():
+        raise HTTPException(400, "技能文件内容为空")
+
+    inst = current_or_none()
+    base = inst.directory if inst else os.getcwd()
+    skills_dir = (
+        Path.home() / ".mycode" / "skills"
+        if scope == "global"
+        else Path(base) / ".mycode" / "skills"
+    )
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    file_path = skills_dir / f"{skill_name}.md"
+
+    try:
+        atomic_write(str(file_path), content)
+    except Exception as exc:
+        raise HTTPException(500, f"写入失败: {exc}") from exc
+
+    return {"ok": True, "name": skill_name, "path": str(file_path), "scope": scope}
 
 
 @router.get("/{name}")

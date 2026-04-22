@@ -246,15 +246,24 @@ def _migrate(engine: Engine) -> None:
 
     inspector = sa_inspect(engine)
 
-    # Alembic ownership check: if `alembic_version` exists, let Alembic
-    # drive and skip the hand-written fallback.
+    # Alembic ownership check: if `alembic_version` exists AND has at
+    # least one stamped revision, Alembic is authoritative — skip
+    # the hand-written fallback.  An empty `alembic_version` table
+    # (created by a previous aborted run or introspection) does NOT
+    # count; legacy migrations must still run.
     try:
         tables = set(inspector.get_table_names())
     except Exception:
         tables = set()
     if "alembic_version" in tables:
-        logger.info("skipping _migrate — alembic_version table present, Alembic is authoritative")
-        return
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).fetchone()
+        if row is not None:
+            logger.info("skipping _migrate — alembic_version table present, Alembic is authoritative")
+            return
+        logger.info("alembic_version table exists but is empty — running legacy migrations")
 
     _add_column_if_missing(
         engine, inspector,

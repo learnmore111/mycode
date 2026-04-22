@@ -146,6 +146,276 @@ async def list_agents(directory: str | None = Query(default=None)) -> Any:
     return entries
 
 
+# --- Agent CRUD ------------------------------------------------------------
+
+
+class _AgentBody(BaseModel):
+    """Request body for creating / updating an agent .md file."""
+
+    name: str
+    description: str = ""
+    extends: str | None = None
+    role: str | None = None
+    mode: str = "all"
+    tools: list[str] | None = None
+    prompt: str = ""
+    model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_turns: int | None = None
+    isolation: str = "none"
+    omit_claudemd: bool = False
+    permission: list[dict[str, str]] | None = None
+    scope: str = "project"  # "project" or "global"
+
+
+def _agent_to_md(body: _AgentBody) -> str:
+    """Serialize agent body to .md with YAML frontmatter."""
+    import yaml as _yaml
+
+    fm: dict[str, Any] = {}
+    if body.description:
+        fm["description"] = body.description
+    if body.extends:
+        fm["extends"] = body.extends
+    if body.role:
+        fm["role"] = body.role
+    if body.mode and body.mode != "all":
+        fm["mode"] = body.mode
+    if body.tools is not None:
+        fm["tools"] = body.tools
+    if body.model:
+        fm["model"] = body.model
+    if body.temperature is not None:
+        fm["temperature"] = body.temperature
+    if body.top_p is not None:
+        fm["top_p"] = body.top_p
+    if body.max_turns is not None:
+        fm["max_turns"] = body.max_turns
+    if body.isolation and body.isolation != "none":
+        fm["isolation"] = body.isolation
+    if body.omit_claudemd:
+        fm["omit_claudemd"] = True
+    if body.permission:
+        fm["permission"] = body.permission
+
+    parts: list[str] = []
+    if fm:
+        parts.append("---")
+        parts.append(_yaml.dump(fm, allow_unicode=True, default_flow_style=False).strip())
+        parts.append("---")
+    if body.prompt:
+        parts.append(body.prompt)
+    return "\n".join(parts) + "\n"
+
+
+def _agent_dir(scope: str) -> str:
+    """Return the agent directory for the given scope."""
+    from pathlib import Path
+
+    from mycode.project.instance import current_or_none
+
+    if scope == "global":
+        return str(Path.home() / ".mycode" / "agents")
+    inst = current_or_none()
+    base = inst.directory if inst else os.getcwd()
+    return str(os.path.join(base, ".mycode", "agents"))
+
+
+@router.post("/agent")
+async def create_agent(body: _AgentBody) -> Any:
+    """Create a new agent .md file."""
+    from pathlib import Path
+
+    name = body.name.strip()
+    if not name or not name.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(400, f"Invalid agent name: '{name}'")
+
+    d = _agent_dir(body.scope)
+    Path(d).mkdir(parents=True, exist_ok=True)
+    fp = os.path.join(d, f"{name}.md")
+    if os.path.exists(fp):
+        raise HTTPException(409, f"Agent '{name}' already exists at {fp}")
+
+    content = _agent_to_md(body)
+    Path(fp).write_text(content, encoding="utf-8")
+    return {"ok": True, "name": name, "path": fp, "scope": body.scope}
+
+
+@router.put("/agent/{name}")
+async def update_agent(name: str, body: _AgentBody) -> Any:
+    """Update an existing agent .md file."""
+    from pathlib import Path
+
+    body.name = name  # ensure consistency
+    d = _agent_dir(body.scope)
+    fp = os.path.join(d, f"{name}.md")
+
+    # Also check the other scope
+    other_scope = "global" if body.scope == "project" else "project"
+    other_fp = os.path.join(_agent_dir(other_scope), f"{name}.md")
+
+    if not os.path.exists(fp) and os.path.exists(other_fp):
+        fp = other_fp  # update wherever it actually lives
+
+    Path(os.path.dirname(fp)).mkdir(parents=True, exist_ok=True)
+    content = _agent_to_md(body)
+    Path(fp).write_text(content, encoding="utf-8")
+    return {"ok": True, "name": name, "path": fp}
+
+
+@router.delete("/agent/{name}")
+async def delete_agent(name: str, scope: str = Query(default="project")) -> Any:
+    """Delete an agent .md file."""
+    d = _agent_dir(scope)
+    fp = os.path.join(d, f"{name}.md")
+    if not os.path.isfile(fp):
+        # Try other scope
+        other = "global" if scope == "project" else "project"
+        fp2 = os.path.join(_agent_dir(other), f"{name}.md")
+        if os.path.isfile(fp2):
+            fp = fp2
+        else:
+            raise HTTPException(404, f"Agent '{name}' not found")
+    os.remove(fp)
+    return {"ok": True, "name": name, "path": fp}
+
+
+# --- Flow CRUD -------------------------------------------------------------
+
+
+class _FlowBody(BaseModel):
+    """Request body for creating / updating a flow YAML."""
+
+    name: str
+    description: str = ""
+    mode: str = "coordinator"
+    lead: str | None = None
+    agents: list[dict[str, Any]] = []
+    stages: list[dict[str, Any]] = []
+    vars: dict[str, str] = {}
+    backend: dict[str, str] | None = None
+    scope: str = "project"
+
+
+def _flow_dir(scope: str) -> str:
+    from pathlib import Path
+
+    from mycode.project.instance import current_or_none
+
+    if scope == "global":
+        home = os.environ.get("MYCODE_HOME")
+        if home:
+            return str(Path(home).expanduser() / "orchestrations")
+        return str(Path.home() / ".mycode" / "orchestrations")
+    inst = current_or_none()
+    base = inst.directory if inst else os.getcwd()
+    return str(os.path.join(base, ".mycode", "orchestrations"))
+
+
+@router.post("/flow")
+async def create_flow(body: _FlowBody) -> Any:
+    """Create a new flow YAML file."""
+    import yaml as _yaml
+    from pathlib import Path
+
+    name = body.name.strip()
+    if not name or not name.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(400, f"Invalid flow name: '{name}'")
+
+    d = _flow_dir(body.scope)
+    Path(d).mkdir(parents=True, exist_ok=True)
+    fp = os.path.join(d, f"{name}.yaml")
+
+    spec: dict[str, Any] = {"name": name, "mode": body.mode}
+    if body.description:
+        spec["description"] = body.description
+    if body.lead:
+        spec["lead"] = body.lead
+    if body.vars:
+        spec["vars"] = dict(body.vars)
+    if body.agents:
+        spec["agents"] = body.agents
+    if body.stages:
+        spec["stages"] = body.stages
+    if body.backend:
+        spec["backend"] = body.backend
+
+    content = _yaml.dump(spec, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    Path(fp).write_text(content, encoding="utf-8")
+    return {"ok": True, "name": name, "path": fp, "scope": body.scope}
+
+
+@router.put("/flow/{name}")
+async def update_flow(name: str, body: _FlowBody) -> Any:
+    """Update an existing flow YAML file."""
+    import yaml as _yaml
+    from pathlib import Path
+
+    body.name = name
+    d = _flow_dir(body.scope)
+    fp = os.path.join(d, f"{name}.yaml")
+
+    # Check both scopes + extensions
+    if not os.path.exists(fp):
+        for ext in [".yaml", ".yml", ".json"]:
+            candidate = os.path.join(d, f"{name}{ext}")
+            if os.path.exists(candidate):
+                fp = candidate
+                break
+        else:
+            other = "global" if body.scope == "project" else "project"
+            for ext in [".yaml", ".yml", ".json"]:
+                candidate = os.path.join(_flow_dir(other), f"{name}{ext}")
+                if os.path.exists(candidate):
+                    fp = candidate
+                    break
+
+    Path(os.path.dirname(fp)).mkdir(parents=True, exist_ok=True)
+    if not fp.endswith(".yaml"):
+        fp = os.path.join(os.path.dirname(fp), f"{name}.yaml")
+
+    spec: dict[str, Any] = {"name": name, "mode": body.mode}
+    if body.description:
+        spec["description"] = body.description
+    if body.lead:
+        spec["lead"] = body.lead
+    if body.vars:
+        spec["vars"] = dict(body.vars)
+    if body.agents:
+        spec["agents"] = body.agents
+    if body.stages:
+        spec["stages"] = body.stages
+    if body.backend:
+        spec["backend"] = body.backend
+
+    content = _yaml.dump(spec, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    Path(fp).write_text(content, encoding="utf-8")
+    return {"ok": True, "name": name, "path": fp}
+
+
+@router.delete("/flow/{name}")
+async def delete_flow(name: str, scope: str = Query(default="project")) -> Any:
+    """Delete a flow file."""
+    d = _flow_dir(scope)
+    for ext in [".yaml", ".yml", ".json"]:
+        fp = os.path.join(d, f"{name}{ext}")
+        if os.path.isfile(fp):
+            os.remove(fp)
+            return {"ok": True, "name": name, "path": fp}
+
+    # Try other scope
+    other = "global" if scope == "project" else "project"
+    d2 = _flow_dir(other)
+    for ext in [".yaml", ".yml", ".json"]:
+        fp = os.path.join(d2, f"{name}{ext}")
+        if os.path.isfile(fp):
+            os.remove(fp)
+            return {"ok": True, "name": name, "path": fp}
+
+    raise HTTPException(404, f"Flow '{name}' not found")
+
+
 # --- Run endpoint ----------------------------------------------------------
 
 
