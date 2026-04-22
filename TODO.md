@@ -211,6 +211,10 @@
 |------|------|
 | 并发 / 竞态修复(第一轮 15 项) | ✅ 完成 |
 | 可靠性 / 体验(第二轮 15 项) | ✅ 完成 |
+| Orchestration M1 (topology schema/loader/validator) | ✅ 完成 |
+| Orchestration M2 (agent registry + .md frontmatter) | ✅ 完成 |
+| Orchestration M3 (registry ↔ agent loader + subagent tools/max_turns) | ✅ 完成 |
+| Orchestration M4 (flow AgentSpec.extends → registry resolver) | ✅ 完成 |
 | Alembic 基线 revision | ❌ 未开始 |
 | 多模态 end-to-end | 🟡 骨架 |
 | mypy 零错误目标 | 🟡 252 条残留 |
