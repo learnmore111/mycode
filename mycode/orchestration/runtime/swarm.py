@@ -1,0 +1,584 @@
+"""Swarm runtime: mailbox-driven peer agents.
+
+A swarm execution is the message-oriented counterpart to coordinator
+mode: there is no pre-declared DAG; instead a ``lead`` agent is seeded
+with the user task and every agent (lead + teammates) can send direct
+or broadcast messages to other peers via the ``send_message`` tool.
+
+Execution model
+===============
+
+1. :func:`run_swarm` builds a :class:`MailboxSystem` with one inbox per
+   agent, seeds the lead's inbox with the user's task, then spawns one
+   :class:`asyncio.Task` per peer running :class:`LiteLLMSwarmRunner`
+   (or any :class:`SwarmAgentRunner` injected by a test).
+2. Each runner loops:
+   - ``drain`` its mailbox for any new envelopes;
+   - if any are shutdown-responses the lead has gathered enough
+     acknowledgements, the runner exits;
+   - otherwise append envelopes as ``user`` messages into the local
+     conversation and take **one** LLM turn;
+   - tool calls are executed in-line: ``send_message`` routes through
+     the mailbox, every other tool goes through the normal registry.
+3. The swarm terminates when:
+   a. the lead returns without any pending tool call *and* its mailbox
+      is empty (peaceful quiescence), or
+   b. the lead sends a ``shutdown_request`` to all peers and they
+      respond (graceful drain), or
+   c. the global turn budget or wall-clock limit is reached (safety).
+
+Design notes
+============
+
+- **``SwarmAgentRunner`` is a Protocol** mirroring
+  :class:`AgentRunner`. Tests inject a deterministic fake that
+  produces a scripted sequence of messages without ever touching
+  litellm.
+- **Send-message is per-swarm**: we do *not* register a global
+  ``send_message`` tool; the runner is handed a :class:`_SendMessageTool`
+  bound to the mailbox system and the sender's name. This keeps the
+  tool registry free of stateful singletons and lets two concurrent
+  swarm runs coexist without cross-talk.
+- **Termination fairness**: the lead can always request shutdown but
+  teammates can refuse by responding ``approve=False``; the lead then
+  decides (usually: continue a few more turns, then give up and force
+  termination at the turn budget). This mirrors how real collaborators
+  negotiate endings.
+- **No shared state** between peers other than the mailbox log — each
+  agent has its own conversation buffer and its own ``ToolContext``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
+
+from pydantic import BaseModel, Field
+
+from mycode.orchestration.runtime.context import SpawnOutput
+from mycode.orchestration.runtime.mailbox import Envelope, MailboxSystem
+from mycode.orchestration.runtime.spawn import DEFAULT_MAX_TURNS
+from mycode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
+
+if TYPE_CHECKING:
+    from mycode.agent.agent import AgentInfo
+    from mycode.orchestration.topology.schema import OrchestrationSpec
+
+
+class SwarmError(RuntimeError):
+    """Raised when a swarm run cannot start (unknown lead, no agents)."""
+
+
+# ---------------------------------------------------------------------------
+# send_message tool — bound to one swarm session
+# ---------------------------------------------------------------------------
+
+
+class SendMessageParams(BaseModel):
+    """Parameters for the per-swarm ``send_message`` tool."""
+
+    type: str = Field(
+        default="message",
+        description="message | broadcast | shutdown_request | shutdown_response",
+    )
+    recipient: str = Field(
+        default="",
+        description="Target agent name. Use 'main' to address the team lead. "
+        "Required for message / shutdown_* kinds.",
+    )
+    content: str = Field(default="", description="Message body.")
+    summary: str = Field(
+        default="",
+        description="5–10 word gist used by UIs / transcripts.",
+    )
+    approve: bool = Field(
+        default=True,
+        description="For shutdown_response only: whether to approve the shutdown.",
+    )
+
+
+class _SendMessageTool(CallableTool[SendMessageParams]):
+    """A :class:`CallableTool` bound to one swarm's mailbox.
+
+    The bound variant is instantiated once per swarm peer so that the
+    ``sender`` is implicit (agents never lie about who they are) and
+    the tool never appears in the global registry — it only exists for
+    the duration of the swarm run.
+    """
+
+    id = "send_message"
+    description = (
+        "Send a message to a swarm teammate.  'recipient' is another "
+        "agent's name, or 'main' for the team lead.  Use type='broadcast' "
+        "to fan-out to every teammate.  Use type='shutdown_request' to "
+        "propose ending the collaboration."
+    )
+
+    def __init__(self, system: MailboxSystem, sender: str, lead_name: str) -> None:
+        self._system = system
+        self._sender = sender
+        self._lead_name = lead_name
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        return False
+
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
+        return True
+
+    def _resolve_recipient(self, name: str) -> str:
+        if name == "main":
+            return self._lead_name
+        return name
+
+    async def call(self, params: SendMessageParams, ctx: ToolContext) -> ToolResult:
+        kind = params.type.lower().strip()
+        try:
+            if kind == "broadcast":
+                envs = await self._system.broadcast(
+                    sender=self._sender,
+                    content=params.content,
+                    summary=params.summary,
+                )
+                return ToolOk(
+                    f"Broadcast delivered to {len(envs)} peer(s).",
+                    title="send_message (broadcast)",
+                    metadata={"delivered": [e.recipient for e in envs]},
+                )
+
+            if not params.recipient:
+                return ToolError(
+                    "recipient is required for type!=broadcast",
+                    title="send_message",
+                )
+            recipient = self._resolve_recipient(params.recipient)
+
+            if kind == "message":
+                env = await self._system.send(
+                    sender=self._sender,
+                    recipient=recipient,
+                    content=params.content,
+                    summary=params.summary,
+                )
+                return ToolOk(
+                    f"Message delivered to {recipient!r} (seq={env.seq}).",
+                    title="send_message",
+                    metadata={"recipient": recipient, "seq": env.seq},
+                )
+
+            if kind == "shutdown_request":
+                env = await self._system.shutdown_request(
+                    sender=self._sender,
+                    recipient=recipient,
+                    reason=params.content,
+                )
+                return ToolOk(
+                    f"Shutdown requested of {recipient!r} (seq={env.seq}).",
+                    title="send_message (shutdown_request)",
+                    metadata={"recipient": recipient, "seq": env.seq},
+                )
+
+            if kind == "shutdown_response":
+                env = await self._system.shutdown_response(
+                    sender=self._sender,
+                    recipient=recipient,
+                    approve=params.approve,
+                    note=params.content,
+                )
+                return ToolOk(
+                    f"Shutdown {'approved' if params.approve else 'declined'} "
+                    f"for {recipient!r} (seq={env.seq}).",
+                    title="send_message (shutdown_response)",
+                    metadata={"recipient": recipient, "seq": env.seq, "approve": params.approve},
+                )
+
+            return ToolError(
+                f"Unknown type={params.type!r}; "
+                f"expected message|broadcast|shutdown_request|shutdown_response",
+                title="send_message",
+            )
+        except KeyError as exc:
+            return ToolError(str(exc), title="send_message")
+
+
+# ---------------------------------------------------------------------------
+# SwarmAgentRunner — per-peer loop contract
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SwarmAgentContext:
+    """Input passed to a :class:`SwarmAgentRunner`."""
+
+    agent: AgentInfo
+    sender_name: str  # == agent.name; kept distinct for readability
+    system: MailboxSystem
+    lead_name: str
+    initial_task: str | None  # only the lead gets a seed task
+    max_turns: int
+    # Called by the runner after every turn so the orchestrator can
+    # decide whether the global budget is exhausted.  Returning True
+    # tells the runner to stop cleanly.
+    should_stop: Callable[[], bool]
+
+
+class SwarmAgentRunner(Protocol):
+    """Per-peer async loop.  Returns the :class:`SpawnOutput` summarising
+    everything this peer produced during the run."""
+
+    async def __call__(self, sctx: SwarmAgentContext) -> SpawnOutput: ...
+
+
+# ---------------------------------------------------------------------------
+# Default litellm-backed swarm runner
+# ---------------------------------------------------------------------------
+
+
+# Tools the swarm layer always strips (coordinator-only or interactive).
+_EXCLUDED_SWARM_TOOLS = frozenset({
+    "task", "subagent", "todo", "question", "batch",
+})
+
+
+class LiteLLMSwarmRunner:
+    """Reference swarm-peer runner, backed by litellm.
+
+    Each invocation drives **one agent** for up to ``max_turns`` turns.
+    Between turns the runner drains its inbox; delivered envelopes are
+    appended as ``user`` messages so the model naturally sees "who
+    said what".  A receive-then-quiet loop (no pending messages **and**
+    no outgoing tool call) lets the peer idle without wasting tokens.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: str = "orchestration",
+        message_id: str = "orchestration",
+        idle_poll_seconds: float = 0.05,
+        max_idle_polls: int = 40,  # ≈2s of idle waiting before a peer exits
+    ) -> None:
+        self._session_id = session_id
+        self._message_id = message_id
+        self._idle_poll_seconds = idle_poll_seconds
+        self._max_idle_polls = max_idle_polls
+
+    async def __call__(self, sctx: SwarmAgentContext) -> SpawnOutput:
+        from mycode.provider import provider as providermod
+        from mycode.session import llm as llmmod
+        from mycode.session.system import build as build_system
+        from mycode.tool import registry as tool_registry
+        from mycode.util.subagent import build_agent_ruleset, check_tool_permission
+
+        agent = sctx.agent
+        try:
+            provider_id, model_id = await providermod.default_model()
+            model = await providermod.get_model(provider_id, model_id)
+            api_key = await providermod.get_api_key(provider_id)
+        except Exception as exc:  # pragma: no cover
+            return SpawnOutput(
+                agent=agent.name,
+                task=sctx.initial_task or "(swarm peer)",
+                output=f"Model resolution failed: {exc}",
+                is_error=True,
+            )
+
+        system_prompt = build_system(agent_prompt=agent.prompt)
+        agent_ruleset = build_agent_ruleset(agent)
+
+        # Build the per-peer tool allow-list and inject the bound send_message.
+        all_tools = tool_registry.to_llm_tools()
+        if agent.tools is not None:
+            allowed = set(agent.tools)
+            llm_tools = [t for t in all_tools if t["function"]["name"] in allowed]
+        else:
+            llm_tools = [t for t in all_tools if t["function"]["name"] not in _EXCLUDED_SWARM_TOOLS]
+
+        send_tool = _SendMessageTool(sctx.system, sctx.sender_name, sctx.lead_name)
+        if agent.tools is None or "send_message" in set(agent.tools):
+            llm_tools.append(send_tool.to_llm_tool())
+
+        ctx = ToolContext(
+            session_id=self._session_id,
+            message_id=self._message_id,
+            agent=agent.name,
+        )
+
+        messages: list[dict[str, Any]] = []
+        if sctx.initial_task:
+            messages.append({"role": "user", "content": sctx.initial_task})
+
+        output_parts: list[str] = []
+        total_tool_calls = 0
+        last_text = ""
+        turn = 0
+        idle_polls = 0
+
+        effective_max_turns = min(
+            sctx.max_turns,
+            agent.max_turns or sctx.max_turns,
+        )
+
+        for turn in range(effective_max_turns):
+            if sctx.should_stop():
+                break
+
+            # 1) Drain the inbox; shutdown requests short-circuit the loop.
+            envs = await sctx.system.inboxes[sctx.sender_name].drain()
+            received_shutdown = False
+            for env in envs:
+                messages.append({"role": "user", "content": env.format_for_llm()})
+                if env.kind == "shutdown_request":
+                    received_shutdown = True
+
+            # If there's nothing to react to and no seed task on this turn,
+            # poll a few times before giving up so we don't exit the very
+            # first tick when peers haven't produced yet.
+            if not envs and not messages:
+                if idle_polls >= self._max_idle_polls:
+                    break
+                idle_polls += 1
+                await asyncio.sleep(self._idle_poll_seconds)
+                continue
+            idle_polls = 0
+
+            # 2) Take one LLM turn.
+            stream_input = llmmod.StreamInput(
+                model=model,
+                messages=messages,
+                system=system_prompt,
+                tools=llm_tools if model.capabilities.toolcall else None,
+                temperature=agent.temperature,
+                api_key=api_key,
+                api_base=model.api.url or None,
+            )
+
+            text_parts: list[str] = []
+            pending: list[llmmod.ToolCallDelta] = []
+            finish = "stop"
+            async for event in llmmod.stream(stream_input):
+                if isinstance(event, llmmod.TextDelta):
+                    text_parts.append(event.text)
+                elif isinstance(event, llmmod.ToolCallDelta):
+                    pending.append(event)
+                elif isinstance(event, llmmod.FinishEvent):
+                    finish = event.reason
+                elif isinstance(event, llmmod.ErrorEvent):
+                    return SpawnOutput(
+                        agent=agent.name,
+                        task=sctx.initial_task or "(swarm peer)",
+                        output="".join(output_parts) + f"\n\nError: {event.error}",
+                        is_error=True,
+                        turns=turn + 1,
+                        tool_calls=total_tool_calls,
+                    )
+
+            assistant_text = "".join(text_parts)
+            if assistant_text:
+                output_parts.append(assistant_text)
+                last_text = assistant_text
+
+            # 3) Execute tool calls (incl. send_message).
+            if pending and finish == "tool-calls":
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_text or None,
+                    "tool_calls": [
+                        {
+                            "id": tc.tool_call_id,
+                            "type": "function",
+                            "function": {"name": tc.tool_name, "arguments": tc.args},
+                        }
+                        for tc in pending
+                    ],
+                })
+
+                for tc in pending:
+                    total_tool_calls += 1
+                    if tc.tool_name == "send_message":
+                        impl: Any = send_tool
+                    else:
+                        perm_error = check_tool_permission(tc.tool_name, agent_ruleset)
+                        if perm_error:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.tool_call_id,
+                                "content": perm_error,
+                            })
+                            continue
+                        impl = tool_registry.get(tc.tool_name)
+                        if impl is None:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.tool_call_id,
+                                "content": f"Unknown tool: {tc.tool_name}",
+                            })
+                            continue
+
+                    try:
+                        args = json.loads(tc.args) if tc.args and tc.args.strip() else {}
+                    except json.JSONDecodeError as exc:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.tool_call_id,
+                            "content": f"Invalid JSON arguments: {exc}",
+                        })
+                        continue
+
+                    try:
+                        result = await impl.execute(args, ctx)
+                        tool_output = result.output
+                    except Exception as exc:  # noqa: BLE001
+                        tool_output = f"Error: {exc}"
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "content": tool_output,
+                    })
+                # Continue loop: maybe more responses land in the inbox.
+                continue
+
+            # 4) No tool call this turn. If we received a shutdown request
+            #    already delivered to the LLM and the LLM chose not to act,
+            #    treat this peer as settled.
+            if received_shutdown:
+                break
+
+            # No tool call and no new messages → peaceful idle; back off
+            # a tick so other peers get a chance before we reconsider.
+            await asyncio.sleep(self._idle_poll_seconds)
+
+        return SpawnOutput(
+            agent=agent.name,
+            task=sctx.initial_task or "(swarm peer)",
+            output=last_text or "".join(output_parts) or "(no output)",
+            is_error=False,
+            turns=turn + 1,
+            tool_calls=total_tool_calls,
+        )
+
+
+# ---------------------------------------------------------------------------
+# SwarmResult + run_swarm top-level API
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SwarmResult:
+    """Aggregated outcome of a swarm run."""
+
+    flow_name: str
+    lead: str
+    # Per-peer final outputs (the peer's last assistant text, plus
+    # token accounting).  Keyed by agent name.
+    peers: dict[str, SpawnOutput] = field(default_factory=dict)
+    # Full ordered message log (including broadcast fan-outs, shutdown
+    # negotiation, everything).  Tests and the CLI consume this.
+    transcript: list[Envelope] = field(default_factory=list)
+    # Convenience: the lead's final text is commonly the swarm answer.
+    lead_output: str = ""
+    terminated_reason: str = ""  # "lead-quiet" | "turn-budget" | "walltime" | "shutdown"
+
+
+async def run_swarm(
+    spec: OrchestrationSpec,
+    agents: dict[str, AgentInfo],
+    *,
+    user_task: str,
+    runner: SwarmAgentRunner | None = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    walltime_seconds: float = 300.0,
+) -> SwarmResult:
+    """Execute an orchestration spec in ``swarm`` mode.
+
+    Parameters
+    ----------
+    spec:
+        Validated spec with ``mode='swarm'`` and ``lead`` set.
+    agents:
+        Resolved ``{name → AgentInfo}`` from :mod:`agent_resolver`.
+    user_task:
+        The initial prompt delivered to the lead's inbox.
+    runner:
+        Per-peer loop.  Defaults to :class:`LiteLLMSwarmRunner`; tests
+        inject a deterministic fake.
+    max_turns:
+        Per-peer turn budget.  A peer that hits it is politely stopped.
+    walltime_seconds:
+        Hard deadline for the whole swarm; blown budgets terminate the
+        run even if peers are still chatting.
+    """
+    if spec.mode != "swarm":
+        raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
+    if not spec.lead:
+        raise SwarmError("swarm spec is missing 'lead'")
+    lead = spec.lead
+    if lead not in agents:
+        raise SwarmError(f"lead {lead!r} not in resolved agents: {sorted(agents)}")
+    if len(agents) < 2:
+        raise SwarmError("swarm requires at least 2 agents")
+
+    peer_runner = runner or LiteLLMSwarmRunner()
+    system = MailboxSystem.inprocess(list(agents.keys()))
+
+    # Seed the lead's inbox with the user task as a plain user-role
+    # message (the runner treats ``initial_task`` specially so it
+    # doesn't appear in the transcript as an envelope).
+    deadline = time.monotonic() + walltime_seconds
+    terminated_reason = {"value": ""}
+
+    def should_stop() -> bool:
+        if terminated_reason["value"]:
+            return True
+        if time.monotonic() >= deadline:
+            terminated_reason["value"] = "walltime"
+            return True
+        return False
+
+    async def _run_peer(name: str) -> tuple[str, SpawnOutput]:
+        sctx = SwarmAgentContext(
+            agent=agents[name],
+            sender_name=name,
+            system=system,
+            lead_name=lead,
+            initial_task=user_task if name == lead else None,
+            max_turns=max_turns,
+            should_stop=should_stop,
+        )
+        out = await peer_runner(sctx)
+        return name, out
+
+    tasks = [asyncio.create_task(_run_peer(name)) for name in agents]
+    try:
+        done_results = await asyncio.gather(*tasks, return_exceptions=False)
+    finally:
+        await system.close()
+
+    peers = dict(done_results)
+    if not terminated_reason["value"]:
+        terminated_reason["value"] = "lead-quiet"
+
+    lead_out = peers.get(lead)
+    return SwarmResult(
+        flow_name=spec.name,
+        lead=lead,
+        peers=peers,
+        transcript=list(system.event_log),
+        lead_output=(lead_out.output if lead_out else ""),
+        terminated_reason=terminated_reason["value"],
+    )
+
+
+__all__ = [
+    "LiteLLMSwarmRunner",
+    "SendMessageParams",
+    "SwarmAgentContext",
+    "SwarmAgentRunner",
+    "SwarmError",
+    "SwarmResult",
+    "run_swarm",
+]
