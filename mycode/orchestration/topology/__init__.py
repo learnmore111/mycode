@@ -1,5 +1,10 @@
 """Topology layer: parse orchestration files into in-memory specs."""
 
+from mycode.orchestration.topology.agent_resolver import (
+    AgentResolveError,
+    resolve_agent_spec,
+    resolve_all_agents,
+)
 from mycode.orchestration.topology.loader import (
     OrchestrationLoadError,
     load_file,
@@ -18,6 +23,7 @@ from mycode.orchestration.topology.validator import (
 )
 
 __all__ = [
+    "AgentResolveError",
     "AgentSpec",
     "OrchestrationLoadError",
     "OrchestrationSpec",
@@ -27,5 +33,7 @@ __all__ = [
     "load_file",
     "load_mapping",
     "render_variables",
+    "resolve_agent_spec",
+    "resolve_all_agents",
     "validate",
 ]

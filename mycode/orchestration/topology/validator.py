@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from mycode.orchestration.registry.agent_registry import AgentRegistry
     from mycode.orchestration.topology.schema import OrchestrationSpec
 
 _REMAINING_VAR_RE = re.compile(r"\{\{\s*[a-zA-Z_][a-zA-Z0-9_.]*\s*\}\}")
@@ -46,8 +47,19 @@ class _Report:
             raise OrchestrationValidationError(self.errors)
 
 
-def validate(spec: OrchestrationSpec) -> None:
-    """Validate a fully-loaded orchestration spec. Raises on failure."""
+def validate(
+    spec: OrchestrationSpec,
+    *,
+    registry: AgentRegistry | None = None,
+) -> None:
+    """Validate a fully-loaded orchestration spec. Raises on failure.
+
+    When ``registry`` is provided, additional cross-module checks are run:
+
+    - Every ``agent.extends`` reference must resolve against the registry.
+      Missing names are reported with the full list of known agents in the
+      error message to aid debugging.
+    """
     r = _Report()
 
     _check_unique_names(spec, r)
@@ -55,6 +67,8 @@ def validate(spec: OrchestrationSpec) -> None:
     _check_mode_constraints(spec, r)
     _check_stage_dag(spec, r)
     _check_unresolved_placeholders(spec, r)
+    if registry is not None:
+        _check_registry_extends(spec, registry, r)
 
     r.raise_if_any()
 
@@ -183,3 +197,24 @@ def _scan_string(context: str, s: str, r: _Report) -> None:
         if any(tok in token for tok in _IGNORED_TOKENS):
             continue
         r.add(f"{context}: unresolved placeholder {token}")
+
+
+def _check_registry_extends(
+    spec: OrchestrationSpec,
+    registry: AgentRegistry,
+    r: _Report,
+) -> None:
+    """Verify every ``agent.extends`` names an agent the registry can resolve.
+
+    Does *not* raise on registry I/O errors — those are treated as hard
+    configuration problems and surface via the registry's own exceptions
+    during ``resolve_agent_spec``.  Here we only confirm the parent name
+    exists in the discovery map, which is cheap and offline.
+    """
+    known: set[str] = {e.name for e in registry.list_entries()}
+    for a in spec.agents:
+        if a.extends and a.extends not in known:
+            # Friendly error with the first few known names to avoid noise.
+            sample = sorted(known)[:8]
+            suffix = f"; known agents include: {', '.join(sample)}" if sample else ""
+            r.add(f"agent {a.name!r}: extends references unknown agent {a.extends!r}{suffix}")
