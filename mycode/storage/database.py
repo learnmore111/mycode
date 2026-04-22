@@ -205,10 +205,25 @@ def _migrate(engine: Engine) -> None:
     SQLAlchemy's ``create_all`` only creates missing **tables**; it will not add
     new columns to tables that already exist.  This function inspects the live
     schema and adds any missing columns so that upgrades are seamless.
+
+    When the database is being managed by Alembic (detectable by the presence
+    of an ``alembic_version`` table) this function becomes a no-op — Alembic
+    is authoritative in that mode and running ad-hoc ALTER TABLEs would race
+    against its own migrations.
     """
     from sqlalchemy import inspect as sa_inspect
 
     inspector = sa_inspect(engine)
+
+    # Alembic ownership check: if `alembic_version` exists, let Alembic
+    # drive and skip the hand-written fallback.
+    try:
+        tables = set(inspector.get_table_names())
+    except Exception:
+        tables = set()
+    if "alembic_version" in tables:
+        logger.info("skipping _migrate — alembic_version table present, Alembic is authoritative")
+        return
 
     _add_column_if_missing(
         engine, inspector,

@@ -122,7 +122,8 @@ def register_builtins() -> None:
         websearch,
         write,
     )
-    for mod in [bash, read, edit, write, glob_tool, grep, listdir, task, subagent, webfetch, websearch, question, todo, skill, create_skill]:
+    from mycode.tool import apply_patch as apply_patch_mod
+    for mod in [bash, read, edit, write, glob_tool, grep, listdir, task, subagent, webfetch, websearch, question, todo, skill, create_skill, apply_patch_mod]:
         if hasattr(mod, "tool"):
             register(mod.tool)
 

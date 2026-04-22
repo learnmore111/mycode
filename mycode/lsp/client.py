@@ -5,6 +5,7 @@ import contextlib
 import itertools
 import json
 import os
+import time
 from typing import Any
 
 from mycode.util import log as logmod
@@ -158,6 +159,33 @@ class LspJsonRpcClient:
 
         await self.notify("textDocument/didOpen", {
             "textDocument": {"uri": f"file://{path}", "languageId": lang, "version": 1, "text": text},
+        })
+
+    async def did_change(self, path: str, text: str | None = None, *, version: int | None = None) -> None:
+        """Notify the server that ``path`` was modified on disk.
+
+        If ``text`` is None we re-read the file so the LSP sees the
+        post-mutation content. We always send a *full-document* sync
+        (``TextDocumentSyncKind.Full`` equivalent) because our tool
+        layer does not track fine-grained edits — correctness over
+        wire-efficiency for small/medium files.
+        """
+        if text is None:
+            loop = asyncio.get_event_loop()
+            try:
+                def _read() -> str:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        return f.read()
+                text = await loop.run_in_executor(None, _read)
+            except Exception:
+                return
+
+        if version is None:
+            version = int(time.time() * 1000) & 0x7FFFFFFF
+
+        await self.notify("textDocument/didChange", {
+            "textDocument": {"uri": f"file://{path}", "version": version},
+            "contentChanges": [{"text": text}],
         })
 
     async def hover(self, path: str, line: int, char: int) -> Any:
