@@ -41,7 +41,16 @@ import asyncio
 import itertools
 import time
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    #: Async callback invoked after every envelope the system routes.
+    #: Used by the orchestration event emitter to publish
+    #: ``orchestration.message.sent`` onto the global bus without making
+    #: the mailbox depend on the bus module directly.
+    OnSend = Callable[[Envelope], Awaitable[None]]
 
 # ---------------------------------------------------------------------------
 # Envelope
@@ -174,12 +183,19 @@ class MailboxSystem:
     ``recipient="*"`` plus one per-recipient copy so the transcript
     reflects actual delivery).  This is what the CLI / tests consume
     to reconstruct a conversation.
+
+    ``on_send`` is an optional async callback invoked once per routed
+    envelope (including the per-recipient copies fan-out emits).  It
+    exists purely so the orchestration event emitter can bridge to
+    :class:`mycode.bus.bus.Bus` without the mailbox importing the bus.
+    When ``None`` it's a zero-cost no-op.
     """
 
     owners: list[str] = field(default_factory=list)
     inboxes: dict[str, Mailbox] = field(default_factory=dict)
     event_log: list[Envelope] = field(default_factory=list)
     _counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    on_send: OnSend | None = None
 
     @classmethod
     def inprocess(cls, owners: list[str]) -> MailboxSystem:
@@ -234,6 +250,8 @@ class MailboxSystem:
         )
         self.event_log.append(env)
         await self.inboxes[recipient].put(env)
+        if self.on_send is not None:
+            await self.on_send(env)
         return env
 
     async def broadcast(
@@ -259,6 +277,8 @@ class MailboxSystem:
             timestamp=time.time(),
         )
         self.event_log.append(summary_env)
+        if self.on_send is not None:
+            await self.on_send(summary_env)
 
         delivered: list[Envelope] = []
         for owner in self.owners:
@@ -275,6 +295,8 @@ class MailboxSystem:
             )
             self.event_log.append(env)
             await self.inboxes[owner].put(env)
+            if self.on_send is not None:
+                await self.on_send(env)
             delivered.append(env)
         return delivered
 

@@ -10,7 +10,19 @@ from fastapi.staticfiles import StaticFiles
 
 from mycode import __version__
 from mycode.bus.bus import Bus
-from mycode.server.routes import config, event, file, git, mcp, permission, project, provider, session, skills
+from mycode.server.routes import (
+    config,
+    event,
+    file,
+    git,
+    mcp,
+    orchestration,
+    permission,
+    project,
+    provider,
+    session,
+    skills,
+)
 
 # Maximum sizes for log endpoint to prevent DoS
 _MAX_LOG_SERVICE_LEN = 128
@@ -33,6 +45,9 @@ def create_app() -> FastAPI:
     # Shared bus for SSE events
     bus = Bus()
     event.set_bus(bus)
+    # Orchestration routes share the same Bus so /orchestration/events and
+    # the generic /event stream observe identical payloads.
+    orchestration.set_bus(bus)
 
     # Shared permission manager — wired to both API routes and prompt engine
     from mycode.permission.permission import PermissionManager
@@ -95,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(event.router)
     app.include_router(project.router)
+    app.include_router(orchestration.router)
 
     # --- Static files: serve Web UI from web/dist if it exists ---
     # Try multiple locations: next to the mycode package, or in the project root

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mycode.agent.agent import AgentInfo
+    from mycode.orchestration.runtime.events import OrchestrationEventEmitter
     from mycode.orchestration.topology.schema import OrchestrationSpec
 
 
@@ -493,6 +494,7 @@ async def run_swarm(
     runner: SwarmAgentRunner | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     walltime_seconds: float = 300.0,
+    events: OrchestrationEventEmitter | None = None,
 ) -> SwarmResult:
     """Execute an orchestration spec in ``swarm`` mode.
 
@@ -512,6 +514,11 @@ async def run_swarm(
     walltime_seconds:
         Hard deadline for the whole swarm; blown budgets terminate the
         run even if peers are still chatting.
+    events:
+        Optional lifecycle emitter.  When supplied, the runtime publishes
+        ``orchestration.swarm.started`` / ``.swarm.finished`` and hooks
+        the mailbox so every routed envelope produces an
+        ``orchestration.message.sent`` event.
     """
     if spec.mode != "swarm":
         raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
@@ -525,6 +532,11 @@ async def run_swarm(
 
     peer_runner = runner or LiteLLMSwarmRunner()
     system = MailboxSystem.inprocess(list(agents.keys()))
+    # Wire the mailbox → emitter bridge so every message is visible on
+    # the bus.  We keep it on the system (not each peer) to get one
+    # emission per routed envelope even for broadcast fan-outs.
+    if events is not None:
+        system.on_send = events.message_sent
 
     # Seed the lead's inbox with the user task as a plain user-role
     # message (the runner treats ``initial_task`` specially so it
@@ -553,6 +565,11 @@ async def run_swarm(
         out = await peer_runner(sctx)
         return name, out
 
+    t0 = time.monotonic()
+    if events is not None:
+        peer_names = [n for n in agents if n != lead]
+        await events.swarm_started(lead=lead, peers=peer_names, user_task=user_task)
+
     tasks = [asyncio.create_task(_run_peer(name)) for name in agents]
     try:
         done_results = await asyncio.gather(*tasks, return_exceptions=False)
@@ -564,6 +581,15 @@ async def run_swarm(
         terminated_reason["value"] = "lead-quiet"
 
     lead_out = peers.get(lead)
+
+    if events is not None:
+        await events.swarm_finished(
+            lead=lead,
+            terminated_reason=terminated_reason["value"],
+            duration_seconds=time.monotonic() - t0,
+            peer_count=len(peers),
+        )
+
     return SwarmResult(
         flow_name=spec.name,
         lead=lead,

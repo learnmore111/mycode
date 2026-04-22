@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -49,6 +50,7 @@ from mycode.orchestration.runtime.spawn import (
 
 if TYPE_CHECKING:
     from mycode.agent.agent import AgentInfo
+    from mycode.orchestration.runtime.events import OrchestrationEventEmitter
     from mycode.orchestration.topology.schema import (
         OrchestrationSpec,
         SpawnSpec,
@@ -120,6 +122,7 @@ class Coordinator:
         agents: dict[str, AgentInfo],
         *,
         runner: AgentRunner | None = None,
+        events: OrchestrationEventEmitter | None = None,
     ) -> None:
         if spec.mode not in ("coordinator", "hybrid"):
             raise CoordinatorError(
@@ -128,6 +131,10 @@ class Coordinator:
         self.spec = spec
         self.agents = agents
         self.runner: AgentRunner = runner or LiteLLMAgentRunner()
+        # Optional lifecycle emitter.  ``None`` means "zero overhead" —
+        # every emission is gated on ``if self.events`` so turning it on
+        # does not require touching production code paths.
+        self.events: OrchestrationEventEmitter | None = events
 
     # --- DAG ----------------------------------------------------------------
 
@@ -191,16 +198,45 @@ class Coordinator:
     async def run(self) -> CoordinatorResult:
         """Execute every stage in topological order; return aggregated state."""
         ctx = RunContext(flow_name=self.spec.name, vars=dict(self.spec.vars))
+        flow_start = time.monotonic()
+        if self.events:
+            await self.events.flow_started(
+                mode=self.spec.mode,
+                agents=sorted(self.agents.keys()),
+                extra={"stage_count": len(self.spec.stages)},
+            )
 
-        for stage in self._topo_sort():
-            result = await self._run_stage(stage, ctx)
-            ctx.record(result)
-            # Short-circuit on coordinator-body errors; spawn errors are
-            # non-fatal because parallel stages commonly have partial
-            # successes and the coordinator synthesis can still report on
-            # what did succeed.
-            if result.is_error and stage.runs_on:
-                break
+        last_was_error = False
+        try:
+            for stage in self._topo_sort():
+                stage_start = time.monotonic()
+                if self.events:
+                    await self.events.stage_started(stage.id, extra={
+                        "parallel": stage.parallel,
+                        "runs_on": stage.runs_on,
+                        "fan_out_from": stage.fan_out_from,
+                    })
+                result = await self._run_stage(stage, ctx)
+                ctx.record(result)
+                if self.events:
+                    await self.events.stage_finished(
+                        result,
+                        duration_seconds=time.monotonic() - stage_start,
+                    )
+                # Short-circuit on coordinator-body errors; spawn errors
+                # are non-fatal because parallel stages commonly have
+                # partial successes and the coordinator synthesis can
+                # still report on what did succeed.
+                if result.is_error and stage.runs_on:
+                    last_was_error = True
+                    break
+        finally:
+            if self.events:
+                await self.events.flow_finished(
+                    ok=not last_was_error,
+                    duration_seconds=time.monotonic() - flow_start,
+                    extra={"stages_run": len(ctx.stage_order)},
+                )
 
         last = ctx.stages[ctx.stage_order[-1]] if ctx.stage_order else None
         return CoordinatorResult(context=ctx, last_stage=last)
@@ -225,31 +261,44 @@ class Coordinator:
     ) -> StageOutput:
         inputs_block = ctx.collect_inputs_text(stage.inputs) if stage.inputs else ""
 
-        async def _one(sp: SpawnSpec) -> SpawnOutput:
+        async def _one(idx: int, sp: SpawnSpec) -> SpawnOutput:
             agent = self._require_agent(sp.agent, stage.id)
-            return await self.runner(SpawnRequest(
+            if self.events:
+                await self.events.spawn_started(
+                    stage_id=stage.id, spawn_index=idx, agent=agent.name, task=sp.task,
+                )
+            t0 = time.monotonic()
+            out = await self.runner(SpawnRequest(
                 agent=agent,
                 task=sp.task,
                 inputs_block=inputs_block,
                 vars=dict(sp.vars) if sp.vars else None,
                 timeout_seconds=sp.timeout_seconds,
             ))
+            if self.events:
+                await self.events.spawn_finished(
+                    stage_id=stage.id,
+                    spawn_index=idx,
+                    spawn=out,
+                    duration_seconds=time.monotonic() - t0,
+                )
+            return out
 
         if stage.parallel and len(spawns) > 1:
             # Bound concurrency via a semaphore so ``max_concurrency``
             # actually limits in-flight work (not just Python tasks).
             sem = asyncio.Semaphore(max(1, stage.max_concurrency))
 
-            async def _guarded(sp: SpawnSpec) -> SpawnOutput:
+            async def _guarded(idx: int, sp: SpawnSpec) -> SpawnOutput:
                 async with sem:
-                    return await _one(sp)
+                    return await _one(idx, sp)
 
             results = await asyncio.gather(
-                *(_guarded(sp) for sp in spawns),
+                *(_guarded(i, sp) for i, sp in enumerate(spawns)),
                 return_exceptions=False,
             )
         else:
-            results = [await _one(sp) for sp in spawns]
+            results = [await _one(i, sp) for i, sp in enumerate(spawns)]
 
         return StageOutput(stage_id=stage.id, spawns=list(results))
 
@@ -300,11 +349,23 @@ class Coordinator:
         prompt_body = (stage.prompt or "").strip() or (
             f"Synthesize the outputs of stage(s) {stage.inputs!r} into a cohesive report."
         )
+        if self.events:
+            await self.events.spawn_started(
+                stage_id=stage.id, spawn_index=0, agent=agent.name, task=prompt_body,
+            )
+        t0 = time.monotonic()
         spawn = await self.runner(SpawnRequest(
             agent=agent,
             task=prompt_body,
             inputs_block=inputs_block,
         ))
+        if self.events:
+            await self.events.spawn_finished(
+                stage_id=stage.id,
+                spawn_index=0,
+                spawn=spawn,
+                duration_seconds=time.monotonic() - t0,
+            )
         return StageOutput(
             stage_id=stage.id,
             spawns=[spawn],
@@ -333,6 +394,7 @@ async def run_coordinator(
     agents: dict[str, AgentInfo],
     *,
     runner: AgentRunner | None = None,
+    events: OrchestrationEventEmitter | None = None,
 ) -> CoordinatorResult:
     """One-shot helper: build a :class:`Coordinator` and call ``run()``."""
-    return await Coordinator(spec, agents, runner=runner).run()
+    return await Coordinator(spec, agents, runner=runner, events=events).run()

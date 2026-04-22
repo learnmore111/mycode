@@ -53,3 +53,23 @@ INSTANCE_DISPOSED = EventDef("server.instance.disposed")
 
 # --- Project Events ---
 PROJECT_UPDATED = EventDef("project.updated")
+
+# --- Orchestration Events (M7) ---
+# Every payload carries ``run_id`` plus ``flow`` (flow name) so multiple
+# concurrent orchestration runs can multiplex on the same bus.  Stage
+# events additionally carry ``stage_id``; spawn events carry
+# ``spawn_index`` / ``agent``; swarm message events carry ``seq`` /
+# ``sender`` / ``recipient`` / ``kind``.
+ORCHESTRATION_FLOW_STARTED = EventDef("orchestration.flow.started")
+ORCHESTRATION_FLOW_FINISHED = EventDef("orchestration.flow.finished")
+ORCHESTRATION_STAGE_STARTED = EventDef("orchestration.stage.started")
+ORCHESTRATION_STAGE_FINISHED = EventDef("orchestration.stage.finished")
+ORCHESTRATION_SPAWN_STARTED = EventDef("orchestration.spawn.started")
+ORCHESTRATION_SPAWN_FINISHED = EventDef("orchestration.spawn.finished")
+# Swarm mode: peer-to-peer message delivered through the mailbox.
+ORCHESTRATION_MESSAGE_SENT = EventDef("orchestration.message.sent")
+# Swarm mode: lifecycle events — started/finished/terminated differ from
+# coordinator mode because there's no stage DAG but there is a shutdown
+# negotiation reason we want visible to UIs.
+ORCHESTRATION_SWARM_STARTED = EventDef("orchestration.swarm.started")
+ORCHESTRATION_SWARM_FINISHED = EventDef("orchestration.swarm.finished")
