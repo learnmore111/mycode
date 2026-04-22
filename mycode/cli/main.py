@@ -1760,6 +1760,147 @@ def orchestrate_inspect(flow_name: str, directory: str, vars_: tuple[str, ...], 
     _print_spec_tree(spec)
 
 
+@orchestrate.command("run")
+@click.argument("flow_name")
+@click.option("--directory", "-d", default=".", help="Project directory")
+@click.option(
+    "--vars", "-v", "vars_", multiple=True,
+    help="Variable override: key=value (repeatable)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit run result as JSON")
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Validate + resolve agents but do not execute any LLM calls",
+)
+def orchestrate_run(
+    flow_name: str,
+    directory: str,
+    vars_: tuple[str, ...],
+    as_json: bool,
+    dry_run: bool,
+) -> None:
+    """Execute an orchestration flow (coordinator mode).
+
+    Loads the flow, resolves every ``agent.extends`` through the registry,
+    runs the stage DAG, and prints the last stage's synthesized output.
+    Use ``--dry-run`` to validate + resolve without spending LLM tokens.
+    """
+    import asyncio
+
+    from mycode.orchestration.registry import (
+        get_default_agent_registry,
+        get_default_registry,
+    )
+    from mycode.orchestration.runtime import run_coordinator
+    from mycode.orchestration.topology import resolve_all_agents
+    from mycode.orchestration.topology.loader import OrchestrationLoadError
+    from mycode.orchestration.topology.validator import OrchestrationValidationError
+
+    overrides: dict[str, str] = {}
+    for kv in vars_:
+        if "=" not in kv:
+            raise click.ClickException(f"--vars expects key=value, got {kv!r}")
+        k, v = kv.split("=", 1)
+        overrides[k.strip()] = v
+
+    project_dir = os.path.abspath(directory)
+    flow_registry = get_default_registry(project_dir=project_dir, refresh=True)
+    agent_registry = get_default_agent_registry(project_dir=project_dir, refresh=True)
+
+    try:
+        spec = flow_registry.load(flow_name, vars_override=overrides)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except OrchestrationLoadError as exc:
+        raise click.ClickException(f"Load error: {exc}") from exc
+    except OrchestrationValidationError as exc:
+        msg = "Validation failed:\n  - " + "\n  - ".join(exc.issues)
+        raise click.ClickException(msg) from exc
+
+    if spec.mode not in ("coordinator", "hybrid"):
+        raise click.ClickException(
+            f"'orchestrate run' only supports coordinator|hybrid mode (got {spec.mode!r}). "
+            f"Swarm mode arrives in M6."
+        )
+
+    try:
+        agents = resolve_all_agents(spec.agents, agent_registry)
+    except Exception as exc:
+        raise click.ClickException(f"Agent resolution failed: {exc}") from exc
+
+    if dry_run:
+        click.echo(f"[dry-run] flow={spec.name} mode={spec.mode} stages={len(spec.stages)}")
+        for a in agents.values():
+            click.echo(f"  - agent {a.name!r} resolved (extends={a.extends!r})")
+        for s in spec.stages:
+            click.echo(f"  - stage {s.id!r} (parallel={s.parallel}, runs_on={s.runs_on}, fan_out_from={s.fan_out_from})")
+        return
+
+    try:
+        result = asyncio.run(run_coordinator(spec, agents))
+    except Exception as exc:
+        raise click.ClickException(f"Run failed: {exc}") from exc
+
+    if as_json:
+        import json as _json
+        payload = {
+            "flow": spec.name,
+            "stages": [
+                {
+                    "id": sid,
+                    "coordinator_output": result.context.stages[sid].coordinator_output,
+                    "coordinator_agent": result.context.stages[sid].coordinator_agent,
+                    "is_error": result.context.stages[sid].is_error,
+                    "spawns": [
+                        {
+                            "agent": sp.agent,
+                            "task": sp.task,
+                            "is_error": sp.is_error,
+                            "turns": sp.turns,
+                            "tool_calls": sp.tool_calls,
+                            "output": sp.output,
+                        }
+                        for sp in result.context.stages[sid].spawns
+                    ],
+                }
+                for sid in result.context.stage_order
+            ],
+        }
+        click.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    _print_run_result(spec, result)
+
+
+def _print_run_result(spec, result) -> None:  # noqa: ANN001 — keep CLI local
+    """Pretty-print a coordinator run result as a stage tree."""
+    from rich.console import Console
+    from rich.tree import Tree
+
+    console = Console(highlight=False)
+    root = Tree(f"[bold cyan]{spec.name}[/bold cyan] [dim](coordinator run)[/dim]")
+
+    for sid in result.context.stage_order:
+        stage = result.context.stages[sid]
+        flag = "[red]error[/red]" if stage.is_error else f"[green]{len(stage.ok_spawns())}/{len(stage.spawns)}[/green]"
+        node = root.add(f"[yellow]{sid}[/yellow] {flag}")
+        if stage.coordinator_output:
+            node.add(f"[bold]coordinator[/bold] ({stage.coordinator_agent}):")
+            for line in stage.coordinator_output.splitlines() or ["(empty)"]:
+                node.add(f"  {line}")
+        for sp in stage.spawns:
+            state = "[red]✗[/red]" if sp.is_error else "[green]✓[/green]"
+            spawn_node = node.add(f"{state} {sp.agent}: {sp.task[:80]}")
+            if sp.output:
+                preview = sp.output.strip().splitlines()[:3]
+                for line in preview:
+                    spawn_node.add(f"  {line}")
+                if len(sp.output.strip().splitlines()) > 3:
+                    spawn_node.add("  [dim]... (truncated)[/dim]")
+
+    console.print(root)
+
+
 def _print_spec_tree(spec) -> None:
     """Pretty-print an OrchestrationSpec as a tree."""
     from rich.console import Console

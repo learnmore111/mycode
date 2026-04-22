@@ -215,6 +215,8 @@
 | Orchestration M2 (agent registry + .md frontmatter) | ✅ 完成 |
 | Orchestration M3 (registry ↔ agent loader + subagent tools/max_turns) | ✅ 完成 |
 | Orchestration M4 (flow AgentSpec.extends → registry resolver) | ✅ 完成 |
+| Orchestration M5 (coordinator runtime: DAG + parallel + fan-out + synthesis) | ✅ 完成 |
+| Orchestration M6 (swarm runtime: mailbox-driven peer agents) | ❌ 未开始 |
 | Alembic 基线 revision | ❌ 未开始 |
 | 多模态 end-to-end | 🟡 骨架 |
 | mypy 零错误目标 | 🟡 252 条残留 |
