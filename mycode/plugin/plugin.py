@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +41,13 @@ class PluginManager:
     def __init__(self) -> None:
         self._hooks: dict[str, list[Hook]] = {}
         self._plugins: list[PluginInfo] = []
+        # Per-plugin hook registry so unload() can actually remove hooks
+        # registered by a given plugin (previously unload was a no-op that
+        # only dropped the PluginInfo record).
+        self._plugin_hooks: dict[str, list[tuple[str, Hook]]] = {}
+        # Remember original config so reload() can re-init without the
+        # caller having to resupply it.
+        self._plugin_configs: dict[str, Any] = {}
 
     async def init(self, plugin_specs: list[Any] | None = None) -> None:
         if not plugin_specs:
@@ -47,23 +55,45 @@ class PluginManager:
         for spec in plugin_specs:
             name = spec if isinstance(spec, str) else spec[0]
             config = spec[1] if isinstance(spec, list) and len(spec) > 1 else {}
-            try:
-                mod = importlib.import_module(name)
-                if hasattr(mod, "server"):
-                    hooks = await mod.server(config)
-                    self._register_hooks(hooks)
-                    self._plugins.append(PluginInfo(name=name, status="loaded"))
-                    logger.info("loaded plugin", name=name)
-                else:
-                    logger.warn("plugin has no server export", name=name)
-            except Exception as e:
-                logger.warn("failed to load plugin", name=name, error=str(e))
-                self._plugins.append(PluginInfo(name=name, status="failed", error=str(e)))
+            await self._load_one(name, config)
 
-    def _register_hooks(self, hooks: dict[str, Any]) -> None:
-        for name, fn in hooks.items():
+    async def _load_one(self, name: str, config: Any) -> PluginInfo:
+        # Drop any stale record first so reloads end up with a single,
+        # current entry.
+        self._plugins = [p for p in self._plugins if p.name != name]
+        try:
+            mod = importlib.import_module(name)
+            # importlib caches modules — reload picks up source changes.
+            mod = importlib.reload(mod)
+            if hasattr(mod, "server"):
+                hooks = await mod.server(config)
+                self._register_plugin_hooks(name, hooks)
+                info = PluginInfo(name=name, status="loaded")
+                self._plugins.append(info)
+                self._plugin_configs[name] = config
+                logger.info("loaded plugin", name=name)
+                return info
+            else:
+                logger.warn("plugin has no server export", name=name)
+                info = PluginInfo(name=name, status="failed", error="no server export")
+                self._plugins.append(info)
+                return info
+        except Exception as e:
+            logger.warn("failed to load plugin", name=name, error=str(e))
+            info = PluginInfo(name=name, status="failed", error=str(e))
+            self._plugins.append(info)
+            return info
+
+    def _register_plugin_hooks(self, plugin_name: str, hooks: dict[str, Any]) -> None:
+        tracked = self._plugin_hooks.setdefault(plugin_name, [])
+        for hook_name, fn in hooks.items():
             if callable(fn):
-                self._hooks.setdefault(name, []).append(fn)
+                self._hooks.setdefault(hook_name, []).append(fn)
+                tracked.append((hook_name, fn))
+
+    # Kept for backwards compatibility with any out-of-tree callers.
+    def _register_hooks(self, hooks: dict[str, Any]) -> None:
+        self._register_plugin_hooks("_anonymous", hooks)
 
     def register_hook(self, hook_name: str, fn: Hook) -> Callable[[], None]:
         """Register a single hook. Returns an unregister function."""
@@ -96,11 +126,34 @@ class PluginManager:
 
     def unload(self, plugin_name: str) -> bool:
         """Unload a plugin and remove all its hooks."""
-        found = False
-        self._plugins = [p for p in self._plugins if p.name != plugin_name or not (found := True)]  # noqa: F841
-        if found:
-            logger.info("unloaded plugin", name=plugin_name)
-        return found
+        if plugin_name not in self._plugin_configs and not any(p.name == plugin_name for p in self._plugins):
+            return False
+        # Remove every hook registered by this plugin. Each tuple is
+        # (hook_name, callable); the callable identity is unique per
+        # plugin load so list.remove picks the right one.
+        for hook_name, fn in self._plugin_hooks.pop(plugin_name, []):
+            bucket = self._hooks.get(hook_name)
+            if bucket is None:
+                continue
+            with contextlib.suppress(ValueError):
+                bucket.remove(fn)
+            if not bucket:
+                self._hooks.pop(hook_name, None)
+        self._plugins = [p for p in self._plugins if p.name != plugin_name]
+        self._plugin_configs.pop(plugin_name, None)
+        logger.info("unloaded plugin", name=plugin_name)
+        return True
+
+    async def reload(self, plugin_name: str) -> PluginInfo:
+        """Hot-reload a plugin: unload, re-import, re-register hooks.
+
+        Safe to call at runtime — existing in-flight hook invocations
+        (running inside ``trigger()``) iterate over a snapshot of the
+        hook list so they are not disturbed by the swap.
+        """
+        config = self._plugin_configs.get(plugin_name, {})
+        self.unload(plugin_name)
+        return await self._load_one(plugin_name, config)
 
     def list_plugins(self) -> list[dict[str, Any]]:
         return [{"name": p.name, "status": p.status, "error": p.error} for p in self._plugins]

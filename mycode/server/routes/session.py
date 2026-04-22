@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from mycode.session.prompt import PromptInput, prompt
+from mycode.session.prompt import PromptInput, is_session_busy, prompt
 from mycode.session.session import (
     PausedRunInfo,
     SessionInfo,
@@ -701,3 +701,75 @@ async def session_compaction_events(session_id: str, directory: str = Query(defa
         return get_compaction_events(session_id)
 
     return await _fn()
+
+
+@router.post("/{session_id}/rollback")
+async def session_rollback(
+    session_id: str,
+    request: Request,
+    directory: str = Query(default="."),
+):
+    """Roll a session back to an earlier assistant turn.
+
+    Request body:
+        {"turn": <int>}            # required; turn_number of the turn to keep
+        {"restore_snapshot": bool} # optional, default True — apply the
+                                   # shadow-git snapshot captured at that
+                                   # turn so the workspace matches the
+                                   # transcript.
+
+    Response: ``{"kept": int, "removed": int, "snapshot_ref": str | None,
+                 "restored": bool}``
+    """
+    from mycode.project.instance import provide
+    from mycode.session.message import rollback_to_turn
+
+    body = await request.json() if request.headers.get("content-type") else {}
+    turn_raw = body.get("turn") if isinstance(body, dict) else None
+    restore_snapshot = bool(body.get("restore_snapshot", True)) if isinstance(body, dict) else True
+
+    if not isinstance(turn_raw, int) or turn_raw < 0:
+        raise HTTPException(400, "Body must include integer field `turn` >= 0")
+
+    async def _fn():
+        # Validate the session exists first — cleaner 404 than KeyError.
+        try:
+            get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
+
+        if is_session_busy(session_id):
+            raise HTTPException(409, "Session is currently being processed; abort first")
+
+        try:
+            result = rollback_to_turn(session_id, turn_raw)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        restored = False
+        snap_ref = result.get("snapshot_ref")
+        if restore_snapshot and snap_ref:
+            try:
+                from mycode.snapshot.snapshot import Snapshot
+
+                # project_id is not straightforward here; the Snapshot
+                # class only needs it as a subdir key, and the rollback
+                # client supplies the worktree via `directory`. We reuse
+                # the session_id as the project discriminator so each
+                # session has its own shadow-git scope — this matches
+                # how snapshot.track() is invoked from the orchestrator.
+                snap = Snapshot(project_id=session_id, worktree=directory)
+                restored = bool(await snap.restore(snap_ref))
+            except Exception as exc:
+                logger.warn(
+                    "snapshot restore failed, keeping rolled-back transcript",
+                    session_id=session_id,
+                    snapshot_ref=snap_ref,
+                    error=str(exc),
+                )
+
+        return {**result, "restored": restored}
+
+    return await provide(directory, _fn)

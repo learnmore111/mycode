@@ -24,6 +24,9 @@ class McpServer:
         self._client: Any = None
         self._context_stack: list[Any] = []
         self._reconnect_attempts = 0
+        # Env var name holding the bearer token (if any) — stashed so we
+        # can re-read it on reconnect to pick up rotations without a restart.
+        self._auth_env: str | None = None
 
     async def connect(self) -> None:
         """Connect to the MCP server."""
@@ -78,7 +81,41 @@ class McpServer:
         url = self.config.get("url", "")
         if not url:
             raise ValueError("MCP remote server requires 'url'")
-        headers = self.config.get("headers") or {}
+
+        # Enforce HTTPS for remote MCPs unless the caller has explicitly
+        # opted into insecure mode (for development / stub servers).
+        allow_insecure = bool(self.config.get("allow_insecure", False))
+        if url.lower().startswith("http://") and not allow_insecure:
+            raise ValueError(
+                f"Refusing to connect to non-TLS MCP URL {url!r}. "
+                "Set `allow_insecure: true` in the server config to override."
+            )
+
+        headers = dict(self.config.get("headers") or {})
+
+        # Support sourcing an auth token from the environment so secrets
+        # never have to live in committed config files. The config may
+        # declare either `auth_env` (preferred — we generate Bearer) or
+        # `auth_header_env` (raw header value).
+        auth_env = self.config.get("auth_env")
+        if auth_env and "Authorization" not in headers:
+            token = os.environ.get(auth_env)
+            if not token:
+                raise ValueError(
+                    f"MCP remote server {self.name!r} references env var "
+                    f"{auth_env!r} for auth, but it is not set."
+                )
+            headers["Authorization"] = f"Bearer {token}"
+        header_env = self.config.get("auth_header_env")
+        if header_env and "Authorization" not in headers:
+            raw = os.environ.get(header_env)
+            if raw:
+                headers["Authorization"] = raw
+
+        # Remember which env var to re-read on reconnect so a freshly
+        # rotated token is picked up automatically.
+        self._auth_env = auth_env or header_env
+
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamablehttp_client
@@ -91,7 +128,16 @@ class McpServer:
             session = await session_ctx.__aenter__()
             self._context_stack.append(session_ctx)
 
-            await asyncio.wait_for(session.initialize(), timeout=30)
+            try:
+                await asyncio.wait_for(session.initialize(), timeout=30)
+            except Exception as e:
+                # Surface a 401/403 as a distinct status so the UI can
+                # prompt for re-auth instead of just saying "failed".
+                msg = str(e).lower()
+                if "401" in msg or "403" in msg or "unauthor" in msg or "forbidden" in msg:
+                    self.status = "needs_auth"
+                    logger.warn("MCP remote needs auth", name=self.name, error=str(e))
+                raise
             await self._refresh_tools(session)
             self._client = session
             logger.info("MCP remote connected", name=self.name, tools=len(self.tools))

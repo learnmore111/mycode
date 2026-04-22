@@ -1,9 +1,46 @@
-import type { SSEEvent } from '../types'
+import type { SSEEvent, SSEEventType } from '../types'
 
 export interface StreamCallbacks {
   onEvent: (event: SSEEvent) => void
   onError?: (error: Error) => void
   onDone?: () => void
+  /**
+   * Optional callback fired whenever a malformed SSE frame (bad JSON or
+   * unknown event type) is seen so the UI can surface the fact that
+   * data was dropped instead of silently swallowing it.
+   */
+  onInvalidFrame?: (reason: string, raw: string) => void
+}
+
+/**
+ * Known event types kept in sync with the Python side's `PromptEvent`
+ * taxonomy. Anything outside this set is treated as malformed.
+ */
+const KNOWN_EVENT_TYPES = new Set<SSEEventType>([
+  'started',
+  'text_delta',
+  'tool_start',
+  'tool_running',
+  'tool_done',
+  'error',
+  'compact',
+  'guard_warn',
+  'guard_stop',
+  'context_snapshot',
+  'done',
+])
+
+function validateSSEEvent(
+  eventName: string,
+  payload: unknown,
+): SSEEvent | { invalid: string } {
+  if (!KNOWN_EVENT_TYPES.has(eventName as SSEEventType)) {
+    return { invalid: `unknown event type: ${eventName}` }
+  }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { invalid: `payload must be an object, got ${typeof payload}` }
+  }
+  return { type: eventName as SSEEventType, data: payload as Record<string, unknown> }
 }
 
 function streamRequest(path: string, callbacks: StreamCallbacks, init?: RequestInit): AbortController {
@@ -38,14 +75,20 @@ function streamRequest(path: string, callbacks: StreamCallbacks, init?: RequestI
             currentEvent = line.slice(6).trim()
           } else if (line.startsWith('data:')) {
             const dataStr = line.slice(5).trim()
-            if (currentEvent && dataStr) {
-              try {
-                const data = JSON.parse(dataStr)
-                callbacks.onEvent({ type: currentEvent as SSEEvent['type'], data })
-              } catch {
-                // skip malformed JSON
-              }
+            if (!currentEvent || !dataStr) continue
+            let parsed: unknown
+            try {
+              parsed = JSON.parse(dataStr)
+            } catch (e) {
+              callbacks.onInvalidFrame?.(`JSON parse failed: ${(e as Error).message}`, dataStr)
+              continue
             }
+            const validated = validateSSEEvent(currentEvent, parsed)
+            if ('invalid' in validated) {
+              callbacks.onInvalidFrame?.(validated.invalid, dataStr)
+              continue
+            }
+            callbacks.onEvent(validated)
           } else if (line === '') {
             currentEvent = ''
           }

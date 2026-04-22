@@ -41,12 +41,39 @@ def get_db_path() -> str:
 
 
 def _configure_sqlite(dbapi_conn: Any, _: Any) -> None:
-    """Configure SQLite pragmas for performance."""
+    """Configure SQLite pragmas for performance.
+
+    Tuning targets the agent workload (many small reads from a single DB
+    under moderate write contention from one worker):
+
+    - ``journal_mode = WAL``   — concurrent readers, single writer
+    - ``synchronous = NORMAL`` — crash-safe enough with WAL
+    - ``busy_timeout = 10s``   — tolerate a busy writer; tune via env
+    - ``cache_size = -64 MB``  — negative = KB; ``-65536`` == 64 MB
+    - ``temp_store = MEMORY``  — keep temp btrees off disk
+    - ``mmap_size ≈ 64 MB``    — memory-map the DB for cheap reads
+    - ``foreign_keys = ON``    — enforce FKs for future schema additions
+    """
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode = WAL")
     cursor.execute("PRAGMA synchronous = NORMAL")
-    cursor.execute("PRAGMA busy_timeout = 5000")
-    cursor.execute("PRAGMA cache_size = -64000")
+    # Busy timeout (ms). Overridable for tests / high-contention setups.
+    busy_ms = os.environ.get("MYCODE_SQLITE_BUSY_MS", "10000")
+    try:
+        busy_int = max(1000, int(busy_ms))
+    except ValueError:
+        busy_int = 10000
+    cursor.execute(f"PRAGMA busy_timeout = {busy_int}")
+    cursor.execute("PRAGMA cache_size = -65536")     # 64 MB page cache
+    cursor.execute("PRAGMA temp_store = MEMORY")
+    # 64 MB mmap — safe default; providers with very large DBs can bump
+    # via env without code changes.
+    mmap_bytes = os.environ.get("MYCODE_SQLITE_MMAP_BYTES", str(64 * 1024 * 1024))
+    try:
+        mmap_int = max(0, int(mmap_bytes))
+    except ValueError:
+        mmap_int = 64 * 1024 * 1024
+    cursor.execute(f"PRAGMA mmap_size = {mmap_int}")
     cursor.execute("PRAGMA foreign_keys = ON")
     cursor.close()
 
@@ -188,6 +215,27 @@ def _migrate(engine: Engine) -> None:
         table="session",
         column="visible",
         ddl="ALTER TABLE session ADD COLUMN visible INTEGER NOT NULL DEFAULT 1",
+    )
+
+    _add_column_if_missing(
+        engine, inspector,
+        table="message",
+        column="turn_number",
+        ddl="ALTER TABLE message ADD COLUMN turn_number INTEGER",
+    )
+
+    _add_column_if_missing(
+        engine, inspector,
+        table="message",
+        column="snapshot_ref",
+        ddl="ALTER TABLE message ADD COLUMN snapshot_ref TEXT",
+    )
+
+    _add_index_if_missing(
+        engine, inspector,
+        table="message",
+        index_name="ix_message_session_turn",
+        ddl="CREATE INDEX IF NOT EXISTS ix_message_session_turn ON message(session_id, turn_number)",
     )
 
     _add_index_if_missing(

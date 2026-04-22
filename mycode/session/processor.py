@@ -149,8 +149,18 @@ async def process_stream(
             ctx.assistant_message.cost += event.cost
 
         elif isinstance(event, llmmod.ErrorEvent):
-            logger.error("LLM error", error=event.error)
-            ctx.assistant_message.error = {"message": event.error}
+            logger.error(
+                "LLM error",
+                error=event.error,
+                error_code=event.error_code,
+                retryable=event.retryable,
+            )
+            ctx.assistant_message.error = {
+                "message": event.error,
+                "code": event.error_code,
+                "retryable": event.retryable,
+                "status_code": event.status_code,
+            }
             ctx.should_break = True
             # Any tool calls that were partially streamed before the error
             # must be surfaced as failed so the doom-loop guard & UI see
@@ -173,7 +183,12 @@ async def process_stream(
             # Drop the pending list so the executor phase does not try to
             # run a partially-formed call.
             tool_calls_pending.clear()
-            yield ProcessorEvent(type="error", data={"message": event.error})
+            yield ProcessorEvent(type="error", data={
+                "message": event.error,
+                "code": event.error_code,
+                "retryable": event.retryable,
+                "status_code": event.status_code,
+            })
             break
 
     # Execute tool calls

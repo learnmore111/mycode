@@ -207,19 +207,49 @@ async def prompt(
         tool_registry.register_builtins()
         tools = tool_registry.to_llm_tools()
 
-        # Pre-compute system + tools token estimates for compaction checks and context bar fallback
-        system_tokens_est = compaction.estimate_tokens("\n\n".join(system))
-        tools_tokens_est = compaction.estimate_tokens(json.dumps(tools, ensure_ascii=False)) if tools else 0
+        # Pre-compute system + tools token estimates for compaction checks
+        # and the context bar fallback. The cached variant avoids redoing
+        # a ~80KB JSON-to-bytes encode every turn; the payload changes only
+        # when the agent prompt or tool registry changes.
+        system_tokens_est = compaction.estimate_tokens_cached("\n\n".join(system))
+        tools_tokens_est = (
+            compaction.estimate_tokens_cached(json.dumps(tools, ensure_ascii=False))
+            if tools else 0
+        )
 
-        # Build user message content
+        # Build user message content.
+        #
+        # Backward compatible: if all parts are plain text we keep the
+        # legacy string form. If any part is an image we emit the
+        # OpenAI-compatible content-list used by LLM providers that
+        # accept multimodal input (litellm normalises the shape
+        # downstream for Anthropic/Gemini).
         user_text = ""
+        image_parts: list[dict[str, Any]] = []
         for part in prompt_input.parts:
-            if part.get("type") == "text":
+            ptype = part.get("type")
+            if ptype == "text":
                 user_text += part.get("content", "")
+            elif ptype == "image":
+                url = _normalize_image_url(part)
+                if url:
+                    image_parts.append({"type": "image_url", "image_url": {"url": url}})
+                else:
+                    logger.warn("dropping image part with no usable content", keys=list(part.keys()))
+
+        user_content: Any
+        if image_parts:
+            content_list: list[dict[str, Any]] = []
+            if user_text:
+                content_list.append({"type": "text", "text": user_text})
+            content_list.extend(image_parts)
+            user_content = content_list
+        else:
+            user_content = user_text
 
         # Build conversation messages
         messages: list[dict[str, Any]] = list(history or [])
-        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "user", "content": user_content})
 
         # Proactive pruning: if cache likely expired since last interaction,
         # prune old tool outputs now to reduce re-fill cost on the next LLM call.
@@ -236,6 +266,14 @@ async def prompt(
             session_id, user_msg.id, provider_id, model_id, agent_name,
         )
         assistant_msg.system = assistant_system
+        # Tag this turn so the rollback API can identify truncation points.
+        # ``next_turn_number`` is a DB lookup, not free — but it only runs
+        # once per prompt() call.
+        try:
+            from mycode.session.message import next_turn_number
+            assistant_msg.turn_number = next_turn_number(session_id)  # type: ignore[attr-defined]
+        except Exception:
+            logger.debug("turn_number lookup failed; continuing without tag", session_id=session_id)
 
         yield PromptEvent(type="started", data={
             "session_id": session_id,
@@ -579,6 +617,30 @@ async def prompt(
         await bus.publish(SESSION_ERROR, {"session_id": session_id, "error": {"message": str(e)}})
     finally:
         _release_session(session_id)
+
+
+def _normalize_image_url(part: dict[str, Any]) -> str | None:
+    """Coerce a client-supplied image part into an ``image_url`` URL.
+
+    Accepts three input shapes:
+      1) ``{"type": "image", "url": "https://…"}``              — passthrough
+      2) ``{"type": "image", "content": "data:image/…;base64,…"}`` — passthrough
+      3) ``{"type": "image", "content": "<raw-b64>", "mime": "image/png"}``
+         — wrap as ``data:<mime>;base64,<raw>`` so providers accept it.
+    Returns None if no usable payload is present. We deliberately do not
+    validate the base64 — litellm / the provider will reject bad data
+    with a specific error that is more actionable than ours.
+    """
+    url = part.get("url")
+    if isinstance(url, str) and url:
+        return url
+    content = part.get("content")
+    if not isinstance(content, str) or not content:
+        return None
+    if content.startswith("data:") or content.startswith(("http://", "https://")):
+        return content
+    mime = part.get("mime") or part.get("mime_type") or "image/png"
+    return f"data:{mime};base64,{content}"
 
 
 def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str:

@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar'
 import ChatArea from './components/ChatArea'
 import PermissionModal from './components/PermissionModal'
 import GitDiffViewer from './components/GitDiffViewer'
+import CommandPalette from './components/CommandPalette'
 import { useSession } from './hooks/useSession'
 import { useChat } from './hooks/useChat'
 import { useGit } from './hooks/useGit'
@@ -100,6 +101,25 @@ export default function App() {
     chat.loadHistory()
   }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // --- Command palette (Cmd/Ctrl+K) ---
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toLowerCase().includes('mac')
+      const mod = isMac ? e.metaKey : e.ctrlKey
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+      // Escape always closes the palette if it was open.
+      if (e.key === 'Escape' && paletteOpen) {
+        setPaletteOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [paletteOpen])
+
   return (
     <div className="flex h-screen bg-surface-1 text-ink font-sans">
       <Sidebar
@@ -166,6 +186,13 @@ export default function App() {
         loading={git.diffLoading}
         error={git.diffError}
         onClose={git.closeDiff}
+      />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        sessions={session.sessions}
+        activeId={session.activeId}
+        onSelect={(id) => session.setActiveId(id)}
       />
     </div>
   )
