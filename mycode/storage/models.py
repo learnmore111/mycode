@@ -105,6 +105,13 @@ class MessageTable(Base):
     role = Column(String, nullable=False)  # "user" | "assistant"
     parent_id = Column(String, nullable=True)
     format = Column(Text, nullable=True)  # JSON (format schema)
+    # Turn number within the session — monotonic, assigned on persist.
+    # Used by the rollback API to identify truncation points and by the
+    # snapshot integration to tag filesystem states.
+    turn_number = Column(Integer, nullable=True, index=True)
+    # Shadow-git commit captured right after this turn completed (if any).
+    # Rollback replays the stored patch to restore the filesystem.
+    snapshot_ref = Column(String, nullable=True)
     # Assistant-specific
     model_id = Column(String, nullable=True)
     provider_id = Column(String, nullable=True)
@@ -127,6 +134,7 @@ class MessageTable(Base):
         # Canonical ordering for "give me all messages of this session in
         # turn order" — covers rebuild_history_from_db and session views.
         Index("ix_message_session_created", "session_id", "time_created"),
+        Index("ix_message_session_turn", "session_id", "turn_number"),
     )
 
 

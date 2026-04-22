@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -29,10 +30,10 @@ class SkillTool(CallableTool[SkillParams]):
         "Supports nested directories (e.g. 'gsd/agents/gsd-code-fixer')."
     )
 
-    def is_read_only(self, args=None) -> bool:
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
         return True
 
-    def is_concurrency_safe(self, args=None) -> bool:
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
         return True
 
     async def call(self, params: SkillParams, ctx: ToolContext) -> ToolResult:

@@ -112,11 +112,12 @@ def _tree(directory: str, base: str, max_depth: int = 3, _depth: int = 0, _prefi
 
 def _human_size(size: int) -> str:
     """Convert bytes to human-readable size."""
+    value: float = float(size)
     for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024:
-            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}TB"
+        if value < 1024:
+            return f"{value:.0f}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}TB"
 
 
 tool = ListDirTool()

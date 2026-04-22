@@ -224,6 +224,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         "/history": "Show conversation turns",
         "/debug": "Toggle debug mode (dump LLM input/output to file)",
         "/memory": "Show recent session notes",
+        "/reload-plugin": "Reload a plugin: /reload-plugin <name>",
         "/quit": "Exit",
         "/exit": "Exit",
         "/q": "Exit",
@@ -998,23 +999,41 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
 
     if cmd == "/help":
         from rich.table import Table
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column(style="bold")
-        table.add_column(style="dim")
-        table.add_row("/help", "Show this help")
-        table.add_row("/clear", "Clear conversation history")
-        table.add_row("/model", "List models or switch: /model <provider/model>")
-        table.add_row("/history", "Show conversation turns")
-        table.add_row("/history N", "Show full detail for message #N")
-        table.add_row("/steps", "Show agentic loop step states from last turn")
-        table.add_row("/debug", "Toggle debug mode (dump LLM I/O to .mycode/debug/)")
-        table.add_row("/memory", "Show recent session notes")
-        table.add_row("/quit", "Exit")
-        table.add_row("!<cmd>", "Execute a shell command")
-        table.add_row("", "")
-        table.add_row("Ctrl+J", "Insert newline")
-        table.add_row("Ctrl+D", "Exit")
-        console.print(table)
+
+        def _make_table(title: str, rows: list[tuple[str, str]]) -> Table:
+            t = Table(title=title, title_style="bold cyan", title_justify="left",
+                      show_header=False, box=None, padding=(0, 2))
+            t.add_column(style="bold")
+            t.add_column(style="dim")
+            for name, desc in rows:
+                t.add_row(name, desc)
+            return t
+
+        console.print(_make_table("Chat", [
+            ("/help", "Show this help"),
+            ("/clear", "Clear conversation history"),
+            ("/model", "List models or switch: /model <provider/model>"),
+            ("/memory", "Show recent session notes"),
+            ("/quit", "Exit"),
+            ("!<cmd>", "Execute a shell command (shell escape)"),
+        ]))
+        console.print()
+        console.print(_make_table("Inspect", [
+            ("/history", "Show conversation turns"),
+            ("/history N", "Show full detail for message #N"),
+            ("/steps", "Show agentic loop step states from last turn"),
+        ]))
+        console.print()
+        console.print(_make_table("Debug", [
+            ("/debug", "Toggle LLM I/O dump to .mycode/debug/<session>/"),
+            ("/reload-plugin NAME", "Reload a named plugin without restarting"),
+        ]))
+        console.print()
+        console.print(_make_table("Keyboard", [
+            ("Ctrl+J", "Insert newline"),
+            ("Ctrl+D", "Exit"),
+            ("Ctrl+C", "Abort current response"),
+        ]))
         return ""
 
     if cmd == "/history":
@@ -1159,6 +1178,32 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
 
         if not memories and not (memory.is_enabled and memory.load_recent_sessions(limit=1)):
             console.print("  [dim](no memories found)[/dim]")
+        return ""
+
+    if cmd == "/reload-plugin":
+        if len(parts_cmd) < 2:
+            console.print("  [yellow]Usage: /reload-plugin <module>[/yellow]")
+            return ""
+        plugin_name = parts_cmd[1]
+        try:
+            from mycode.plugin.plugin import PluginManager
+            mgr = PluginManager._default_instance() if hasattr(PluginManager, "_default_instance") else None
+            if mgr is None:
+                # Fall back to direct import-reload for projects that do
+                # not route plugins through a singleton PluginManager.
+                import importlib as _importlib
+                _importlib.reload(_importlib.import_module(plugin_name))
+                console.print(f"  [green]Reloaded module {plugin_name}[/green]")
+                return ""
+            # Schedule the coroutine if we are inside the REPL's event loop.
+            import asyncio as _asyncio
+            info = _asyncio.get_event_loop().run_until_complete(mgr.reload(plugin_name))
+            console.print(
+                f"  [green]Reloaded plugin {plugin_name}: {info.status}"
+                + (f" ({info.error})" if info.error else "") + "[/green]"
+            )
+        except Exception as exc:
+            console.print(f"  [red]Reload failed: {exc}[/red]")
         return ""
 
     console.print(f"  [red]Unknown command: {cmd}. Type /help[/red]")

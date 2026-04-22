@@ -50,6 +50,13 @@ def create_app() -> FastAPI:
     async def api_info():
         return {"name": "mycode", "version": __version__}
 
+    # --- Metrics (in-process snapshot; if opentelemetry is installed the
+    # same data is also exported via OTel).
+    @app.get("/metrics")
+    async def metrics_snapshot():
+        from mycode.util import metrics as metrics_mod
+        return metrics_mod.snapshot()
+
     # --- Agent route (small, kept inline) ---
     @app.get("/agent")
     async def agent_list():

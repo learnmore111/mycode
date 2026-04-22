@@ -105,6 +105,44 @@ def estimate_tokens(text: str) -> int:
     return base_estimate + base_estimate // 7
 
 
+# Content-addressable token-estimate cache.
+#
+# System prompts and tool schemas change only when the agent/model combination
+# changes, yet ``prompt()`` currently re-estimates them on every turn. The
+# estimate itself is cheap, but it allocates a UTF-8 byte buffer the size of
+# the full tools JSON (often 30-80KB) every iteration. Caching by content
+# fingerprint means we pay that cost once per unique prompt/tool payload.
+import hashlib as _hashlib  # noqa: E402 — keep module import order readable
+
+_ESTIMATE_CACHE: dict[str, int] = {}
+_ESTIMATE_CACHE_MAX = 128
+
+
+def _fingerprint(text: str) -> str:
+    return _hashlib.blake2b(text.encode("utf-8", errors="replace"), digest_size=16).hexdigest()
+
+
+def estimate_tokens_cached(text: str) -> int:
+    """Cached variant of :func:`estimate_tokens`.
+
+    Safe to call on hot paths (every turn in ``prompt()``). The cache is
+    keyed on a short blake2 digest of the input, not the string itself,
+    so repeated callers do not retain references to large payloads.
+    """
+    if not text:
+        return 0
+    fp = _fingerprint(text)
+    cached = _ESTIMATE_CACHE.get(fp)
+    if cached is not None:
+        return cached
+    value = estimate_tokens(text)
+    if len(_ESTIMATE_CACHE) >= _ESTIMATE_CACHE_MAX:
+        # Evict an arbitrary entry — this cache has no recency signal.
+        _ESTIMATE_CACHE.pop(next(iter(_ESTIMATE_CACHE)), None)
+    _ESTIMATE_CACHE[fp] = value
+    return value
+
+
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """Estimate total tokens across all messages."""
     total = 0

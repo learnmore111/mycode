@@ -14,6 +14,7 @@ import litellm
 
 from mycode.provider.provider import litellm_model_name
 from mycode.util import log as logmod
+from mycode.util import metrics
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -87,6 +88,69 @@ class FinishEvent:
 class ErrorEvent:
     type: str = "error"
     error: str = ""
+    # Classified code so callers (processor, UI, retry logic) can make
+    # decisions without matching on the error string. Values follow the
+    # familiar HTTP-ish taxonomy:
+    #   "rate_limit"       — 429 / throttled, safe to retry with backoff
+    #   "auth"             — invalid/expired credentials, DO NOT retry
+    #   "bad_request"      — invalid params, prompt too long, etc.
+    #   "context_overflow" — prompt exceeded model context window
+    #   "content_filter"   — provider refused on content policy grounds
+    #   "not_found"        — model / endpoint missing
+    #   "timeout"          — request timed out
+    #   "connection"       — transient network error, retryable
+    #   "server"           — 5xx upstream, retryable
+    #   "unknown"          — everything else
+    error_code: str = "unknown"
+    retryable: bool = False
+    status_code: int | None = None
+
+
+def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
+    """Map a litellm / generic exception to (error_code, retryable, status)."""
+    # Timeouts first — both asyncio.TimeoutError and litellm wrap one.
+    if isinstance(exc, TimeoutError | asyncio.TimeoutError):
+        return "timeout", True, None
+
+    # litellm may not import cleanly on every platform; attribute probe is
+    # safer than isinstance against classes we might fail to resolve.
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+
+    mapping: dict[str, tuple[str, bool]] = {
+        "RateLimitError": ("rate_limit", True),
+        "RouterRateLimitError": ("rate_limit", True),
+        "RouterRateLimitErrorBasic": ("rate_limit", True),
+        "AuthenticationError": ("auth", False),
+        "PermissionDeniedError": ("auth", False),
+        "BadRequestError": ("bad_request", False),
+        "InvalidRequestError": ("bad_request", False),
+        "UnprocessableEntityError": ("bad_request", False),
+        "UnsupportedParamsError": ("bad_request", False),
+        "JSONSchemaValidationError": ("bad_request", False),
+        "ContextWindowExceededError": ("context_overflow", False),
+        "ContentPolicyViolationError": ("content_filter", False),
+        "NotFoundError": ("not_found", False),
+        "APIConnectionError": ("connection", True),
+        "BadGatewayError": ("server", True),
+        "InternalServerError": ("server", True),
+        "ServiceUnavailableError": ("server", True),
+        "APIError": ("server", True),
+    }
+    code, retryable = mapping.get(name, ("unknown", False))
+    # Fall back to status_code hints when the class name is unfamiliar.
+    if code == "unknown" and isinstance(status, int):
+        if status == 429:
+            return "rate_limit", True, status
+        if status in (401, 403):
+            return "auth", False, status
+        if status == 404:
+            return "not_found", False, status
+        if 500 <= status < 600:
+            return "server", True, status
+        if 400 <= status < 500:
+            return "bad_request", False, status
+    return code, retryable, status if isinstance(status, int) else None
 
 
 # Union type for stream events
@@ -237,6 +301,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         # Stream ended — emit FinishEvent with complete usage data
         if pending_finish_reason:
             cost = _calc_cost(model_name, accumulated_usage)
+            metrics.counter("llm_request_total", model=model_name, outcome="ok")
             yield FinishEvent(
                 reason=_map_finish_reason(pending_finish_reason),
                 usage=accumulated_usage,
@@ -248,7 +313,17 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         # Ensure we don't swallow the cancel by adding new yields below.
         raise
     except Exception as e:
-        logger.error("stream error", error=str(e), model=model_name)
+        code, retryable, status = _classify_exception(e)
+        metrics.counter("llm_request_total", model=model_name, outcome="error", code=code)
+        logger.error(
+            "stream error",
+            error=str(e),
+            error_type=type(e).__name__,
+            error_code=code,
+            status_code=status,
+            retryable=retryable,
+            model=model_name,
+        )
         # Surface any in-flight tool calls as best-effort deltas BEFORE the
         # error event. Without this, the processor layer would never see
         # the tool call that was mid-assembly when the provider died, so
@@ -262,7 +337,12 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                     args=entry.get("args", ""),
                 )
         tool_calls_in_progress.clear()
-        yield ErrorEvent(error=str(e))
+        yield ErrorEvent(
+            error=str(e),
+            error_code=code,
+            retryable=retryable,
+            status_code=status,
+        )
         # Ensure a FinishEvent is always emitted so consumers don't hang
         if not pending_finish_reason:
             cost = _calc_cost(model_name, accumulated_usage)

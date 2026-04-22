@@ -122,8 +122,8 @@ async def _discover_providers() -> dict[str, ProviderInfo]:
                         url=provider_info.get("api", pdata.get("api", "")),
                         npm=provider_info.get("npm", pdata.get("npm", "@ai-sdk/openai-compatible")),
                     ),
-                    name=mdata.get("name", mid),
-                    family=mdata.get("family", ""),
+                    name=str(mdata.get("name", mid)),
+                    family=str(mdata.get("family", "")),
                     capabilities=ModelCapabilities(
                         temperature=mdata.get("temperature", False),
                         reasoning=mdata.get("reasoning", False),
@@ -207,7 +207,7 @@ async def _discover_providers() -> dict[str, ProviderInfo]:
                         providers[provider_id].key = cfg_key
                         providers[provider_id].source = "config"
                 if pcfg.name:
-                    providers[provider_id].name = pcfg.name
+                    providers[provider_id].name = str(pcfg.name)
             else:
                 key = pcfg.options.get("apiKey") if pcfg.options else None
                 providers[provider_id] = ProviderInfo(

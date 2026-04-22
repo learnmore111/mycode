@@ -363,6 +363,11 @@ def _build_message_row(msg: MessageInfo):
         role=msg.role,
         time_created=msg.time_created,
     )
+    # Turn number + snapshot ref are optional metadata the rollback API
+    # relies on. They may be attached to the MessageInfo via ``setattr``
+    # from the orchestrator; falling back to None is safe for legacy callers.
+    row.turn_number = getattr(msg, "turn_number", None)
+    row.snapshot_ref = getattr(msg, "snapshot_ref", None)
     if isinstance(msg, AssistantMessage):
         row.parent_id = msg.parent_id
         row.model_id = msg.model_id
@@ -409,6 +414,107 @@ def persist_turn(session_id: str, msg: MessageInfo, parts: list[Part]) -> None:
             session_row.time_updated = int(time.time() * 1000)
 
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def next_turn_number(session_id: str) -> int:
+    """Return the next turn number for a session.
+
+    Turn numbers increment by 1 per assistant response. If the session has
+    no prior assistant messages the first turn is ``1``.
+    """
+    from mycode.storage.database import get_session as get_db_session
+    from mycode.storage.models import MessageTable
+
+    db = get_db_session()
+    try:
+        row = (
+            db.query(MessageTable.turn_number)
+            .filter(
+                MessageTable.session_id == session_id,
+                MessageTable.role == "assistant",
+                MessageTable.turn_number.isnot(None),
+            )
+            .order_by(MessageTable.turn_number.desc())
+            .first()
+        )
+        if row and row[0]:
+            return int(row[0]) + 1
+        return 1
+    finally:
+        db.close()
+
+
+def rollback_to_turn(session_id: str, turn_number: int) -> dict[str, Any]:
+    """Delete all messages (and their parts) with ``turn_number > turn``.
+
+    Also returns the snapshot ref, if any, recorded at the kept turn so
+    callers can restore the filesystem alongside the transcript.
+
+    Returns ``{"kept": <count>, "removed": <count>, "snapshot_ref": str | None}``.
+    Raises ``KeyError`` if the requested turn does not exist in the session.
+    """
+    from mycode.storage.database import get_session as get_db_session
+    from mycode.storage.models import MessageTable, PartTable
+
+    if turn_number < 0:
+        raise ValueError(f"turn_number must be >= 0, got {turn_number}")
+
+    db = get_db_session()
+    try:
+        target = (
+            db.query(MessageTable)
+            .filter(
+                MessageTable.session_id == session_id,
+                MessageTable.role == "assistant",
+                MessageTable.turn_number == turn_number,
+            )
+            .one_or_none()
+        )
+        if target is None and turn_number != 0:
+            raise KeyError(f"No assistant turn {turn_number} in session {session_id}")
+
+        # Collect message IDs strictly after the target turn so we can
+        # cascade-delete their parts. ``turn_number is None`` for user
+        # messages — we drop those whose time_created is after the kept
+        # assistant turn. When rolling back to turn 0 the kept time is
+        # the session creation (everything user-level is purged).
+        kept_time = target.time_created if target else 0
+
+        to_delete_ids = [
+            row.id
+            for row in db.query(MessageTable.id, MessageTable.time_created, MessageTable.turn_number)
+            .filter(MessageTable.session_id == session_id)
+            .all()
+            if (
+                (row.turn_number is not None and row.turn_number > turn_number)
+                or (row.turn_number is None and row.time_created > kept_time)
+            )
+        ]
+
+        removed = 0
+        if to_delete_ids:
+            db.query(PartTable).filter(PartTable.message_id.in_(to_delete_ids)).delete(
+                synchronize_session=False,
+            )
+            removed = (
+                db.query(MessageTable)
+                .filter(MessageTable.id.in_(to_delete_ids))
+                .delete(synchronize_session=False)
+            )
+
+        kept = (
+            db.query(MessageTable)
+            .filter(MessageTable.session_id == session_id)
+            .count()
+        )
+        db.commit()
+        snapshot_ref = target.snapshot_ref if target else None
+        return {"kept": kept, "removed": removed, "snapshot_ref": snapshot_ref}
     except Exception:
         db.rollback()
         raise
