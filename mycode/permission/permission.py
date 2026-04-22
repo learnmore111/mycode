@@ -249,7 +249,7 @@ def from_config(permission_config: dict[str, Any]) -> Ruleset:
             ruleset.append(Rule(permission=key, pattern="*", action=value))  # type: ignore[arg-type]
         elif isinstance(value, dict):
             for pattern, action in value.items():
-                ruleset.append(Rule(permission=key, pattern=pattern, action=action))  # type: ignore[arg-type]
+                ruleset.append(Rule(permission=key, pattern=pattern, action=action))
     return ruleset
 
 

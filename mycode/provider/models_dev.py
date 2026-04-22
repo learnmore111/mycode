@@ -34,7 +34,7 @@ def _load_cache() -> dict[str, Any] | None:
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         if time.time() - data.get("_ts", 0) < CACHE_TTL:
-            return data.get("providers", {})
+            return dict(data.get("providers", {}))
     except Exception:
         pass
     return None

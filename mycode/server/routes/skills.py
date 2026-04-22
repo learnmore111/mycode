@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -17,7 +18,7 @@ class _CreateSkill(BaseModel):
 
 
 @router.get("")
-async def list_skills():
+async def list_skills() -> Any:
     """List all available skills with descriptions."""
     from mycode.tool.skill import _get_search_dirs, list_skills_with_descriptions
 
@@ -32,7 +33,7 @@ async def list_skills():
 
 
 @router.post("")
-async def create_skill(body: _CreateSkill):
+async def create_skill(body: _CreateSkill) -> Any:
     """Create or overwrite a skill file."""
     from mycode.project.instance import current_or_none
     from mycode.tool.base import atomic_write
@@ -62,7 +63,7 @@ async def create_skill(body: _CreateSkill):
 
 
 @router.get("/{name}")
-async def get_skill(name: str):
+async def get_skill(name: str) -> Any:
     """Read a skill file content."""
     from mycode.tool.skill import _get_search_dirs
 
@@ -78,7 +79,7 @@ async def get_skill(name: str):
 
 
 @router.delete("/{name}")
-async def delete_skill(name: str):
+async def delete_skill(name: str) -> Any:
     """Delete a skill file."""
     from mycode.tool.skill import _get_search_dirs
 

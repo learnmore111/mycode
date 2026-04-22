@@ -349,7 +349,7 @@ class AgentRegistry:
         out: list[AgentSourceEntry] = []
         for name, info in _build_agents().items():
             info_copy = copy.copy(info)
-            info_copy.source = "builtin"  # type: ignore[assignment]
+            info_copy.source = "builtin"
             out.append(AgentSourceEntry(name=name, info=info_copy, source="builtin"))
         return out
 
@@ -365,7 +365,7 @@ class AgentRegistry:
         )
         if self.project_dir:
             proj_root = self.project_dir / ".mycode" / "agents"
-            order = (*order, ("project", self._discover_file_agents(proj_root, source="project")))
+            order = (*order, ("project", self._discover_file_agents(proj_root, source="project")))  # type: ignore[assignment]
 
         for _src, items in order:
             for e in items:

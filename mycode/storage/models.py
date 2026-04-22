@@ -1,41 +1,41 @@
-"""SQLAlchemy table definitions."""
+"""SQLAlchemy table definitions (SQLAlchemy 2.0 Mapped style).
+
+Using ``Mapped[T]`` + ``mapped_column()`` so mypy infers column
+attribute types correctly without extra stubs.
+"""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from sqlalchemy import Column, Float, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import Index, String, Text, UniqueConstraint
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
 
 
-class _JSONType(String):
-    """Custom column type that serializes/deserializes JSON."""
-
-    def __init__(self) -> None:
-        super().__init__()
+# ---------------------------------------------------------------------------
+# Project
+# ---------------------------------------------------------------------------
 
 
 class ProjectTable(Base):
     __tablename__ = "project"
 
-    id = Column(String, primary_key=True)
-    worktree = Column(String, nullable=False)
-    vcs = Column(String, nullable=True)  # "git" or null
-    name = Column(String, nullable=True)
-    icon_url = Column(String, nullable=True)
-    icon_color = Column(String, nullable=True)
-    time_created = Column(Integer, nullable=False)
-    time_updated = Column(Integer, nullable=False)
-    time_initialized = Column(Integer, nullable=True)
-    # JSON-serialized list of sandbox directories
-    _sandboxes = Column("sandboxes", Text, nullable=False, default="[]")
-    # JSON-serialized commands object
-    _commands = Column("commands", Text, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    worktree: Mapped[str] = mapped_column(String, nullable=False)
+    vcs: Mapped[str | None] = mapped_column(String, nullable=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    icon_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    icon_color: Mapped[str | None] = mapped_column(String, nullable=True)
+    time_created: Mapped[int] = mapped_column(nullable=False)
+    time_updated: Mapped[int] = mapped_column(nullable=False)
+    time_initialized: Mapped[int | None] = mapped_column(nullable=True)
+    _sandboxes: Mapped[str] = mapped_column("sandboxes", Text, nullable=False, default="[]")
+    _commands: Mapped[str | None] = mapped_column("commands", Text, nullable=True)
 
     @property
     def sandboxes(self) -> list[str]:
@@ -60,108 +60,110 @@ class ProjectTable(Base):
         self._commands = json.dumps(value) if value else None
 
 
+# ---------------------------------------------------------------------------
+# Session
+# ---------------------------------------------------------------------------
+
+
 class SessionTable(Base):
     __tablename__ = "session"
 
-    id = Column(String, primary_key=True)
-    project_id = Column(String, nullable=False, index=True)
-    workspace_id = Column(String, nullable=True)
-    parent_id = Column(String, nullable=True)
-    slug = Column(String, nullable=False)
-    directory = Column(String, nullable=False)
-    title = Column(String, nullable=False)
-    version = Column(String, nullable=False)
-    share_url = Column(String, nullable=True)
-    revert = Column(Text, nullable=True)  # JSON
-    permission = Column(Text, nullable=True)  # JSON
-    summary_additions = Column(Integer, nullable=True)
-    summary_deletions = Column(Integer, nullable=True)
-    summary_files = Column(Integer, nullable=True)
-    summary_diffs = Column(Text, nullable=True)  # JSON
-    time_created = Column(Integer, nullable=False)
-    time_updated = Column(Integer, nullable=False, index=True)
-    time_compacting = Column(Integer, nullable=True)
-    time_archived = Column(Integer, nullable=True)
-    visible = Column(Integer, nullable=False, server_default="1", default=1)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    parent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    slug: Mapped[str] = mapped_column(String, nullable=False)
+    directory: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    share_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    revert: Mapped[str | None] = mapped_column(Text, nullable=True)
+    permission: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_additions: Mapped[int | None] = mapped_column(nullable=True)
+    summary_deletions: Mapped[int | None] = mapped_column(nullable=True)
+    summary_files: Mapped[int | None] = mapped_column(nullable=True)
+    summary_diffs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    time_created: Mapped[int] = mapped_column(nullable=False)
+    time_updated: Mapped[int] = mapped_column(nullable=False, index=True)
+    time_compacting: Mapped[int | None] = mapped_column(nullable=True)
+    time_archived: Mapped[int | None] = mapped_column(nullable=True)
+    visible: Mapped[int] = mapped_column(nullable=False, server_default="1", default=1)
+
+
+# ---------------------------------------------------------------------------
+# Session Pause
+# ---------------------------------------------------------------------------
 
 
 class SessionPauseTable(Base):
     __tablename__ = "session_pause"
 
-    session_id = Column(String, primary_key=True)
-    last_user_text = Column(Text, nullable=False)
-    partial_text = Column(Text, nullable=True)
-    model = Column(String, nullable=True)
-    agent = Column(String, nullable=True)
-    time_paused = Column(Integer, nullable=False)
-    time_updated = Column(Integer, nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    last_user_text: Mapped[str] = mapped_column(Text, nullable=False)
+    partial_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    time_paused: Mapped[int] = mapped_column(nullable=False)
+    time_updated: Mapped[int] = mapped_column(nullable=False, index=True)
+
+
+# ---------------------------------------------------------------------------
+# Message
+# ---------------------------------------------------------------------------
 
 
 class MessageTable(Base):
     __tablename__ = "message"
 
-    id = Column(String, primary_key=True)
-    session_id = Column(String, nullable=False, index=True)
-    role = Column(String, nullable=False)  # "user" | "assistant"
-    parent_id = Column(String, nullable=True)
-    format = Column(Text, nullable=True)  # JSON (format schema)
-    # Turn number within the session — monotonic, assigned on persist.
-    # Used by the rollback API to identify truncation points and by the
-    # snapshot integration to tag filesystem states.
-    turn_number = Column(Integer, nullable=True, index=True)
-    # Shadow-git commit captured right after this turn completed (if any).
-    # Rollback replays the stored patch to restore the filesystem.
-    snapshot_ref = Column(String, nullable=True)
-    # Assistant-specific
-    model_id = Column(String, nullable=True)
-    provider_id = Column(String, nullable=True)
-    agent = Column(String, nullable=True)
-    variant = Column(String, nullable=True)
-    system = Column(Text, nullable=True)  # JSON array of system prompts
-    error = Column(Text, nullable=True)  # JSON error object
-    # Tokens / Cost
-    tokens_input = Column(Integer, nullable=True)
-    tokens_output = Column(Integer, nullable=True)
-    tokens_reasoning = Column(Integer, nullable=True)
-    tokens_cache_read = Column(Integer, nullable=True)
-    tokens_cache_write = Column(Integer, nullable=True)
-    cost = Column(Float, nullable=True)
-    # Time
-    time_created = Column(Integer, nullable=False)
-    time_completed = Column(Integer, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    format: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turn_number: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    snapshot_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    variant: Mapped[str | None] = mapped_column(String, nullable=True)
+    system: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tokens_input: Mapped[int | None] = mapped_column(nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(nullable=True)
+    tokens_reasoning: Mapped[int | None] = mapped_column(nullable=True)
+    tokens_cache_read: Mapped[int | None] = mapped_column(nullable=True)
+    tokens_cache_write: Mapped[int | None] = mapped_column(nullable=True)
+    cost: Mapped[float | None] = mapped_column(nullable=True)
+    time_created: Mapped[int] = mapped_column(nullable=False)
+    time_completed: Mapped[int | None] = mapped_column(nullable=True)
 
     __table_args__ = (
-        # Canonical ordering for "give me all messages of this session in
-        # turn order" — covers rebuild_history_from_db and session views.
         Index("ix_message_session_created", "session_id", "time_created"),
         Index("ix_message_session_turn", "session_id", "turn_number"),
     )
 
 
+# ---------------------------------------------------------------------------
+# Part
+# ---------------------------------------------------------------------------
+
+
 class PartTable(Base):
     __tablename__ = "part"
 
-    id = Column(String, primary_key=True)
-    message_id = Column(String, nullable=False, index=True)
-    session_id = Column(String, nullable=False, index=True)
-    type = Column(String, nullable=False)  # "text" | "tool" | "reasoning" | "file" | "step"
-    # Content fields (type-dependent)
-    content = Column(Text, nullable=True)  # text content / tool output / reasoning text
-    # Tool-specific
-    tool = Column(String, nullable=True)
-    tool_call_id = Column(String, nullable=True)
-    _state = Column("state", Text, nullable=True)  # JSON (tool state)
-    # Time
-    time_created = Column(Integer, nullable=False)
-    time_completed = Column(Integer, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    message_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    _state: Mapped[str | None] = mapped_column("state", Text, nullable=True)
+    time_created: Mapped[int] = mapped_column(nullable=False)
+    time_completed: Mapped[int | None] = mapped_column(nullable=True)
 
     __table_args__ = (
-        # Dedupe tool calls at the DB level: each (session, tool_call_id)
-        # must map to at most one part. Nulls are allowed (for non-tool
-        # parts) and SQLite treats multiple NULLs as distinct, so this
-        # constraint only bites actual duplicate tool-call inserts.
         UniqueConstraint("session_id", "tool_call_id", name="uq_part_session_tool_call"),
-        # Fast lookup for "all parts belonging to a message in order".
         Index("ix_part_message_created", "message_id", "time_created"),
     )
 
@@ -177,11 +179,16 @@ class PartTable(Base):
         self._state = json.dumps(value) if value else None
 
 
+# ---------------------------------------------------------------------------
+# Permission
+# ---------------------------------------------------------------------------
+
+
 class PermissionTable(Base):
     __tablename__ = "permission"
 
-    project_id = Column(String, primary_key=True)
-    _data = Column("data", Text, nullable=False, default="[]")  # JSON array of rules
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    _data: Mapped[str] = mapped_column("data", Text, nullable=False, default="[]")
 
     @property
     def data(self) -> list[dict[str, Any]]:
@@ -195,28 +202,29 @@ class PermissionTable(Base):
         self._data = json.dumps(value)
 
 
+# ---------------------------------------------------------------------------
+# Compaction Event
+# ---------------------------------------------------------------------------
+
+
 class CompactionEventTable(Base):
     """Tracks context compaction events and metrics."""
+
     __tablename__ = "compaction_event"
 
-    id = Column(String, primary_key=True)
-    session_id = Column(String, nullable=False, index=True)
-    iteration = Column(Integer, nullable=False)
-    # Compaction metrics
-    old_message_count = Column(Integer, nullable=False)
-    old_message_tokens = Column(Integer, nullable=False)
-    summary_length = Column(Integer, nullable=False)
-    removed_turn_count = Column(Integer, nullable=False)
-    # The old messages that were removed (JSON array)
-    _old_messages = Column("old_messages", Text, nullable=False)
-    # The generated summary
-    summary = Column(Text, nullable=False)
-    # Time
-    time_created = Column(Integer, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    iteration: Mapped[int] = mapped_column(nullable=False)
+    old_message_count: Mapped[int] = mapped_column(nullable=False)
+    old_message_tokens: Mapped[int] = mapped_column(nullable=False)
+    summary_length: Mapped[int] = mapped_column(nullable=False)
+    removed_turn_count: Mapped[int] = mapped_column(nullable=False)
+    _old_messages: Mapped[str] = mapped_column("old_messages", Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    time_created: Mapped[int] = mapped_column(nullable=False)
 
     @property
     def old_messages(self) -> list[dict[str, Any]]:
-        """Deserialize old messages from JSON."""
         try:
             return json.loads(self._old_messages) if self._old_messages else []
         except (json.JSONDecodeError, TypeError):
@@ -224,5 +232,4 @@ class CompactionEventTable(Base):
 
     @old_messages.setter
     def old_messages(self, value: list[dict[str, Any]]) -> None:
-        """Serialize old messages to JSON."""
         self._old_messages = json.dumps(value)

@@ -13,6 +13,7 @@ Limitations:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -33,14 +34,14 @@ _EXCLUDED_TOOLS = frozenset({"batch", "task", "todo", "question"})
 class BatchCallItem(BaseModel):
     """A single tool call within a batch."""
     tool: str = Field(description="The name of the tool to call")
-    args: dict = Field(default_factory=dict, description="Arguments to pass to the tool")
+    args: dict[str, Any] = Field(default_factory=dict, description="Arguments to pass to the tool")
 
 
 class BatchParams(BaseModel):
     """Parameters for the batch tool."""
     description: str = Field(default="batch execution", description="A brief description of what this batch accomplishes")
     calls: list[BatchCallItem] = Field(description="Array of tool calls to execute in parallel", max_length=MAX_BATCH_SIZE)
-    agent_ruleset: list[dict] = Field(default_factory=list, description="Internal: agent permission ruleset (injected by processor)")
+    agent_ruleset: list[dict[str, Any]] = Field(default_factory=list, description="Internal: agent permission ruleset (injected by processor)")
 
 
 class BatchTool(CallableTool[BatchParams]):
@@ -53,15 +54,15 @@ class BatchTool(CallableTool[BatchParams]):
         "Maximum 25 calls per batch. Only built-in tools are supported (no nested batch or task)."
     )
 
-    def is_read_only(self, args: dict | None = None) -> bool:
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
         """Batch may contain mutating tools, so it's not read-only."""
         return False
 
-    def is_destructive(self, args: dict | None = None) -> bool:
+    def is_destructive(self, args: dict[str, Any] | None = None) -> bool:
         """Batch may contain destructive tools."""
         return False
 
-    def is_concurrency_safe(self, args: dict | None = None) -> bool:
+    def is_concurrency_safe(self, args: dict[str, Any] | None = None) -> bool:
         """Batch is not safe to run concurrently with other tools."""
         return False
 

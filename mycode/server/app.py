@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,30 +59,30 @@ def create_app() -> FastAPI:
 
     # --- Health ---
     @app.get("/health")
-    async def health():
+    async def health() -> dict[str, Any]:
         return {"status": "ok", "version": __version__}
 
     @app.get("/api/info")
-    async def api_info():
+    async def api_info() -> dict[str, Any]:
         return {"name": "mycode", "version": __version__}
 
     # --- Metrics (in-process snapshot; if opentelemetry is installed the
     # same data is also exported via OTel).
     @app.get("/metrics")
-    async def metrics_snapshot():
+    async def metrics_snapshot() -> dict[str, Any]:
         from mycode.util import metrics as metrics_mod
         return metrics_mod.snapshot()
 
     # --- Agent route (small, kept inline) ---
     @app.get("/agent")
-    async def agent_list():
+    async def agent_list() -> list[dict[str, Any]]:
         from mycode.agent import agent as agentmod
         agents = await agentmod.list_agents()
         return [{"name": a.name, "description": a.description, "mode": a.mode, "hidden": a.hidden} for a in agents]
 
     # --- Log route (with input validation) ---
     @app.post("/log")
-    async def log_write(request: Request):
+    async def log_write(request: Request) -> bool:
         from mycode.util import log as logmod
         body = await request.json()
         service = str(body.get("service", "app"))[:_MAX_LOG_SERVICE_LEN]
@@ -132,9 +133,9 @@ def create_app() -> FastAPI:
         _index_html = _web_dist / "index.html"
 
         @app.get("/{path:path}")
-        async def spa_fallback(path: str):
+        async def spa_fallback(path: str) -> FileResponse:
             # Serve actual files from dist if they exist (e.g. favicon, manifest)
-            file_path = _web_dist / path  # type: ignore[operator]
+            file_path = _web_dist / path
             if file_path.is_file() and ".." not in path:
                 return FileResponse(str(file_path))
             return FileResponse(str(_index_html))

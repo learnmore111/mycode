@@ -326,7 +326,7 @@ def save_parts(parts: list[Part]) -> None:
         db.close()
 
 
-def _build_part_row(part: Part):
+def _build_part_row(part: Part) -> Any:
     """Build a PartTable row from a Part object."""
     from mycode.storage.models import PartTable
 
@@ -353,7 +353,7 @@ def _build_part_row(part: Part):
     return row
 
 
-def _build_message_row(msg: MessageInfo):
+def _build_message_row(msg: MessageInfo) -> Any:
     """Build a MessageTable row from a MessageInfo object."""
     from mycode.storage.models import MessageTable
 
@@ -580,7 +580,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
         )
 
         # Group parts by message_id
-        parts_by_msg: dict[str, list] = {}
+        parts_by_msg: dict[str, list[Any]] = {}
         for p in parts_rows:
             parts_by_msg.setdefault(p.message_id, []).append(p)
 

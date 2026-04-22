@@ -35,7 +35,7 @@ import asyncio
 import contextlib
 import json
 import os
-import platform
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mycode.orchestration.runtime.mailbox import Envelope
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 
 if not _IS_WINDOWS:
     import fcntl
@@ -57,21 +57,20 @@ if not _IS_WINDOWS:
 
 def _lock_exclusive(fd: int) -> None:
     """Acquire an exclusive advisory lock on ``fd``.  Blocks until held."""
-    if _IS_WINDOWS:  # pragma: no cover - CI runs Linux / macOS
-        import msvcrt  # type: ignore[import-not-found]
+    if sys.platform == "win32":  # pragma: no cover
+        import msvcrt
 
-        # Lock 1 byte at current position; adequate for serialising appends.
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
     else:
         fcntl.flock(fd, fcntl.LOCK_EX)
 
 
 def _unlock(fd: int) -> None:
-    if _IS_WINDOWS:  # pragma: no cover
-        import msvcrt  # type: ignore[import-not-found]
+    if sys.platform == "win32":  # pragma: no cover
+        import msvcrt
 
         with contextlib.suppress(OSError):
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
     else:
         fcntl.flock(fd, fcntl.LOCK_UN)
 

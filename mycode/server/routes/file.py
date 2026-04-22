@@ -6,6 +6,7 @@ import hashlib
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -15,14 +16,14 @@ from mycode.project.instance import InstanceContext, ProjectInfo, set_context
 router = APIRouter(prefix="/file", tags=["file"])
 
 
-def _ensure_ctx(directory: str):
+def _ensure_ctx(directory: str) -> Any:
     project = ProjectInfo(id="global", worktree=directory)
     ctx = InstanceContext(directory=directory, worktree=directory, project=project)
     return ctx, set_context(ctx)
 
 
 @router.get("")
-async def file_read(path: str = Query(...), directory: str = Query(default=".")):
+async def file_read(path: str = Query(...), directory: str = Query(default=".")) -> Any:
     _ctx, token = _ensure_ctx(directory)
     try:
         return await filemod.read(path)
@@ -31,7 +32,7 @@ async def file_read(path: str = Query(...), directory: str = Query(default="."))
 
 
 @router.get("/list")
-async def file_list(path: str = Query(default=None), directory: str = Query(default=".")):
+async def file_list(path: str = Query(default=None), directory: str = Query(default=".")) -> Any:
     _ctx, token = _ensure_ctx(directory)
     try:
         return await filemod.list_dir(path)
@@ -40,7 +41,7 @@ async def file_list(path: str = Query(default=None), directory: str = Query(defa
 
 
 @router.get("/search")
-async def file_search(query: str = Query(...), limit: int = Query(default=50), directory: str = Query(default=".")):
+async def file_search(query: str = Query(...), limit: int = Query(default=50), directory: str = Query(default=".")) -> Any:
     _ctx, token = _ensure_ctx(directory)
     try:
         return await filemod.search(query, limit=limit)
@@ -61,7 +62,7 @@ async def upload_attachment(
     request: Request,
     directory: str = Query(default="."),
     session_id: str = Query(default="_shared"),
-):
+) -> Any:
     """Persist an attachment and return a file:// URL the frontend can
     pass back via ``message.parts[i].content`` as an image/pdf/audio part.
 

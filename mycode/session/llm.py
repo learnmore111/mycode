@@ -26,7 +26,7 @@ logger = logmod.create(service="llm")
 
 # Suppress litellm's verbose logging
 litellm.suppress_debug_info = True
-litellm.set_verbose = False
+litellm.set_verbose = False  # type: ignore[attr-defined]
 _logging.getLogger("LiteLLM").setLevel(_logging.WARNING)
 _logging.getLogger("litellm").setLevel(_logging.WARNING)
 _logging.getLogger("httpx").setLevel(_logging.WARNING)

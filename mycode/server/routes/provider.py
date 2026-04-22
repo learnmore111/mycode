@@ -1,6 +1,8 @@
 """Provider API routes."""
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 
 from mycode.provider import provider as providermod
@@ -9,7 +11,7 @@ router = APIRouter(prefix="/provider", tags=["provider"])
 
 
 @router.get("")
-async def provider_list():
+async def provider_list() -> Any:
     providers = await providermod.list_providers()
     return {pid: {"id": p.id, "name": p.name, "source": p.source,
                    "models": {mid: {"id": m.id, "name": m.name} for mid, m in p.models.items()}}
@@ -17,7 +19,7 @@ async def provider_list():
 
 
 @router.get("/{provider_id}")
-async def provider_get(provider_id: str):
+async def provider_get(provider_id: str) -> Any:
     p = await providermod.get_provider(provider_id)
     if not p:
         raise HTTPException(404, f"Provider not found: {provider_id}")

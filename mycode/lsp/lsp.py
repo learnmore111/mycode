@@ -112,7 +112,7 @@ class LspManager:
                     logger.debug("didChange failed, ignoring", server=sid, error=str(exc))
 
     def status(self) -> list[dict[str, str]]:
-        return [{"id": c.server_id, "root": c.root, "status": c.status} for c in self._clients]
+        return [{"id": c.server_id, "root": c.root, "status": getattr(c, "status", "unknown")} for c in self._clients]
 
     async def diagnostics(self) -> dict[str, list[dict[str, Any]]]:
         """Collect diagnostics from all running LSP servers."""

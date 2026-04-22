@@ -225,10 +225,10 @@ async def _diff_for_file(worktree: str, file_info: dict[str, Any]) -> tuple[str,
 
 
 @router.get("/status")
-async def git_status(directory: str = Query(default=".")):
+async def git_status(directory: str = Query(default=".")) -> Any:
     project = await from_directory(directory)
 
-    async def _fn():
+    async def _fn() -> Any:
         if project.vcs != "git":
             return {
                 "available": False,
@@ -284,10 +284,10 @@ async def git_status(directory: str = Query(default=".")):
 
 
 @router.get("/diff")
-async def git_diff(path: str = Query(...), directory: str = Query(default=".")):
+async def git_diff(path: str = Query(...), directory: str = Query(default=".")) -> Any:
     project = await from_directory(directory)
 
-    async def _fn():
+    async def _fn() -> Any:
         if project.vcs != "git":
             raise HTTPException(404, "当前目录不是 Git 仓库")
         if not _is_within_worktree(project.worktree, path):
@@ -336,11 +336,11 @@ class _FileAction(BaseModel):
 
 
 @router.post("/stage")
-async def git_stage(body: _FileAction):
+async def git_stage(body: _FileAction) -> Any:
     """Stage a file (git add)."""
     project = await from_directory(body.directory)
 
-    async def _fn():
+    async def _fn() -> Any:
         if project.vcs != "git":
             raise HTTPException(400, "当前目录不是 Git 仓库")
         if not _is_within_worktree(project.worktree, body.path):
@@ -355,11 +355,11 @@ async def git_stage(body: _FileAction):
 
 
 @router.post("/revert")
-async def git_revert(body: _FileAction):
+async def git_revert(body: _FileAction) -> Any:
     """Revert a file: discard changes (git checkout for tracked, rm for untracked)."""
     project = await from_directory(body.directory)
 
-    async def _fn():
+    async def _fn() -> Any:
         if project.vcs != "git":
             raise HTTPException(400, "当前目录不是 Git 仓库")
         if not _is_within_worktree(project.worktree, body.path):

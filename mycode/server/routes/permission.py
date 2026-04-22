@@ -93,7 +93,7 @@ async def permission_rules_clear(request: Request) -> dict[str, Any]:
 
 
 @router.post("/{request_id}")
-async def permission_reply(request_id: str, request: Request):
+async def permission_reply(request_id: str, request: Request) -> Any:
     """Reply to a pending permission request.
 
     Body: { "reply": "allow" | "always" | "reject", "message"?: string }
@@ -113,5 +113,5 @@ async def permission_reply(request_id: str, request: Request):
     reply_map = {"allow": "once", "once": "once", "always": "always", "reject": "reject"}
     reply = reply_map.get(raw_reply, "once")
 
-    await _manager.reply(request_id=request_id, reply=reply, message=message)
+    await _manager.reply(request_id=request_id, reply=reply, message=message)  # type: ignore[arg-type]
     return {"ok": True}

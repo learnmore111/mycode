@@ -308,9 +308,9 @@ class CallableTool(ToolInfo, Generic[Params]):  # noqa: UP046
         """Validate raw arguments dict and return a typed Params instance."""
         params_cls = self._resolve_params_cls()
         try:
-            return params_cls.model_validate(args)
+            return params_cls.model_validate(args)  # type: ignore[return-value]
         except ValidationError as e:
-            raise ToolValidateError(self.id, e.errors()) from e
+            raise ToolValidateError(self.id, e.errors()) from e  # type: ignore[arg-type]
 
     @abstractmethod
     async def call(self, params: Params, ctx: ToolContext) -> ToolResult:

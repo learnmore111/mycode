@@ -12,7 +12,7 @@ router = APIRouter(prefix="/project", tags=["project"])
 
 
 @router.get("")
-async def project_get(directory: str = Query(default=".")):
+async def project_get(directory: str = Query(default=".")) -> Any:
     """Get project info for a directory."""
     try:
         project = await from_directory(directory)

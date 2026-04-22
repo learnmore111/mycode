@@ -158,7 +158,7 @@ class Snapshot:
         )
         return text.strip() if code == 0 else ""
 
-    async def patch(self, tree_hash: str) -> dict:
+    async def patch(self, tree_hash: str) -> dict[str, Any]:
         await self.init()
         if not self._initialized:
             return {"hash": tree_hash, "files": []}

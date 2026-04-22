@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Query
 from sse_starlette.sse import EventSourceResponse
@@ -20,7 +21,7 @@ def set_bus(bus: Bus) -> None:
 
 
 @router.get("")
-async def event_stream(event_type: str = Query(default="*")):
+async def event_stream(event_type: str = Query(default="*")) -> Any:
     """Subscribe to server events via SSE.
 
     Query params:
@@ -28,7 +29,7 @@ async def event_stream(event_type: str = Query(default="*")):
     """
     bus = _bus if _bus else Bus()
 
-    async def generator():
+    async def generator() -> Any:
         if event_type == "*":
             async for event in bus.subscribe_all():
                 yield {

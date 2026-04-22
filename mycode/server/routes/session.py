@@ -311,7 +311,7 @@ def _stream_session_prompt(
 
     bus = Bus()
 
-    async def event_generator():
+    async def event_generator() -> Any:
         import asyncio as _aio
 
         from mycode.session.message import rebuild_history_from_db
@@ -346,7 +346,7 @@ def _stream_session_prompt(
             abort_event.set()
             raise
         except Exception:
-            logger.exception("SSE stream failed", session_id=session_id)
+            logger.error("SSE stream failed", session_id=session_id)
             raise
         finally:
             # Defensive cleanup — every resource released even if earlier
@@ -355,47 +355,47 @@ def _stream_session_prompt(
             try:
                 token.reset()
             except Exception:
-                logger.exception("context reset failed", session_id=session_id)
+                logger.error("context reset failed", session_id=session_id)
             try:
                 await bus.close()
             except Exception:
-                logger.exception("bus close failed", session_id=session_id)
+                logger.error("bus close failed", session_id=session_id)
             try:
                 clear_abort_signal(session_id)
             except Exception:
-                logger.exception("abort signal clear failed", session_id=session_id)
+                logger.error("abort signal clear failed", session_id=session_id)
 
     return EventSourceResponse(event_generator())
 
 
 @router.get("")
-async def session_list(directory: str = Query(default="."), limit: int = Query(default=100)):
+async def session_list(directory: str = Query(default="."), limit: int = Query(default=100)) -> Any:
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         return [_session_json(s) for s in list_sessions(limit=limit)]
 
     return await provide(directory, _fn)
 
 
 @router.get("/deleted")
-async def session_list_deleted(directory: str = Query(default="."), limit: int = Query(default=100)):
+async def session_list_deleted(directory: str = Query(default="."), limit: int = Query(default=100)) -> Any:
     """List soft-deleted sessions."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         return [_session_json(s) for s in list_deleted(limit=limit)]
 
     return await provide(directory, _fn)
 
 
 @router.post("")
-async def session_create(request: Request, directory: str = Query(default=".")):
+async def session_create(request: Request, directory: str = Query(default=".")) -> Any:
     from mycode.project.instance import provide
 
     body = await request.json() if request.headers.get("content-type") else {}
 
-    async def _fn():
+    async def _fn() -> Any:
         s = create_session(title=body.get("title"))
         return _session_json(s)
 
@@ -403,10 +403,10 @@ async def session_create(request: Request, directory: str = Query(default=".")):
 
 
 @router.get("/{session_id}")
-async def session_get(session_id: str, directory: str = Query(default=".")):
+async def session_get(session_id: str, directory: str = Query(default=".")) -> Any:
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             return _session_json(get_session(session_id))
         except KeyError as exc:
@@ -416,10 +416,10 @@ async def session_get(session_id: str, directory: str = Query(default=".")):
 
 
 @router.delete("/{session_id}")
-async def session_delete(session_id: str, directory: str = Query(default=".")):
+async def session_delete(session_id: str, directory: str = Query(default=".")) -> Any:
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         remove(session_id)
         return {"ok": True}
 
@@ -427,11 +427,11 @@ async def session_delete(session_id: str, directory: str = Query(default=".")):
 
 
 @router.post("/{session_id}/restore")
-async def session_restore(session_id: str, directory: str = Query(default=".")):
+async def session_restore(session_id: str, directory: str = Query(default=".")) -> Any:
     """Restore a soft-deleted session."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             restore(session_id)
             return {"ok": True}
@@ -442,12 +442,12 @@ async def session_restore(session_id: str, directory: str = Query(default=".")):
 
 
 @router.put("/{session_id}/title")
-async def session_set_title(session_id: str, request: Request, directory: str = Query(default=".")):
+async def session_set_title(session_id: str, request: Request, directory: str = Query(default=".")) -> Any:
     from mycode.project.instance import provide
 
     body = await request.json()
 
-    async def _fn():
+    async def _fn() -> Any:
         set_title(session_id, body.get("title", ""))
         return {"ok": True}
 
@@ -455,11 +455,11 @@ async def session_set_title(session_id: str, request: Request, directory: str = 
 
 
 @router.get("/{session_id}/context")
-async def session_context(session_id: str, directory: str = Query(default=".")):
+async def session_context(session_id: str, directory: str = Query(default=".")) -> Any:
     """Rebuild the current context snapshot for an existing session."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             get_session(session_id)
         except KeyError as exc:
@@ -470,13 +470,13 @@ async def session_context(session_id: str, directory: str = Query(default=".")):
 
 
 @router.get("/{session_id}/messages")
-async def session_messages(session_id: str, directory: str = Query(default=".")):
+async def session_messages(session_id: str, directory: str = Query(default=".")) -> Any:
     """Get all messages and their parts for a session."""
     from mycode.project.instance import provide
     from mycode.storage.database import session_scope
     from mycode.storage.models import MessageTable, PartTable
 
-    async def _fn():
+    async def _fn() -> Any:
         with session_scope() as db:
             messages = (
                 db.query(MessageTable)
@@ -553,11 +553,11 @@ async def session_changes(
     session_id: str,
     directory: str = Query(default="."),
     limit: int = Query(default=6, ge=1, le=50),
-):
+) -> Any:
     """Return the most recent code changes for a session."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             get_session(session_id)
         except KeyError as exc:
@@ -568,11 +568,11 @@ async def session_changes(
 
 
 @router.get("/{session_id}/pause")
-async def session_pause_get(session_id: str, directory: str = Query(default=".")):
+async def session_pause_get(session_id: str, directory: str = Query(default=".")) -> Any:
     """Get the persisted paused state for a session, if any."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             get_session(session_id)
         except KeyError as exc:
@@ -585,13 +585,13 @@ async def session_pause_get(session_id: str, directory: str = Query(default=".")
 
 
 @router.post("/{session_id}/pause")
-async def session_pause_set(session_id: str, request: Request, directory: str = Query(default=".")):
+async def session_pause_set(session_id: str, request: Request, directory: str = Query(default=".")) -> Any:
     """Persist pause metadata for a session and abort the current run if needed."""
     from mycode.project.instance import provide
 
     body = await request.json() if request.headers.get("content-type") else {}
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             get_session(session_id)
         except KeyError as exc:
@@ -632,11 +632,11 @@ async def session_pause_set(session_id: str, request: Request, directory: str = 
 
 
 @router.delete("/{session_id}/pause")
-async def session_pause_clear(session_id: str, directory: str = Query(default=".")):
+async def session_pause_clear(session_id: str, directory: str = Query(default=".")) -> Any:
     """Clear the persisted paused state for a session."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             get_session(session_id)
         except KeyError as exc:
@@ -648,7 +648,7 @@ async def session_pause_clear(session_id: str, directory: str = Query(default=".
 
 
 @router.post("/{session_id}/message")
-async def session_message(session_id: str, request: Request, directory: str = Query(default=".")):
+async def session_message(session_id: str, request: Request, directory: str = Query(default=".")) -> Any:
     body = await request.json()
     parts = body.get("parts", [])
     model = body.get("model")
@@ -658,11 +658,11 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
 
 
 @router.post("/{session_id}/resume")
-async def session_resume(session_id: str, directory: str = Query(default=".")):
+async def session_resume(session_id: str, directory: str = Query(default=".")) -> Any:
     """Resume a previously paused session by replaying the stored continuation prompt."""
     from mycode.project.instance import provide
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             get_session(session_id)
         except KeyError as exc:
@@ -686,7 +686,7 @@ async def session_resume(session_id: str, directory: str = Query(default=".")):
 
 
 @router.post("/{session_id}/abort")
-async def session_abort(session_id: str):
+async def session_abort(session_id: str) -> Any:
     """Signal an in-progress session to stop after the current tool finishes."""
     signal = get_abort_signal(session_id)
     if signal:
@@ -696,14 +696,14 @@ async def session_abort(session_id: str):
 
 
 @router.get("/{session_id}/compaction-events")
-async def session_compaction_events(session_id: str, directory: str = Query(default=".")):
+async def session_compaction_events(session_id: str, directory: str = Query(default=".")) -> Any:
     """Get all compaction events for a session.
 
     Returns a list of compaction events with metrics and summaries of old messages.
     This allows users to see what was compressed during the session.
     """
 
-    async def _fn():
+    async def _fn() -> Any:
         from mycode.session.message import get_compaction_events
 
         return get_compaction_events(session_id)
@@ -716,7 +716,7 @@ async def session_rollback(
     session_id: str,
     request: Request,
     directory: str = Query(default="."),
-):
+) -> Any:
     """Roll a session back to an earlier assistant turn.
 
     Request body:
@@ -739,7 +739,7 @@ async def session_rollback(
     if not isinstance(turn_raw, int) or turn_raw < 0:
         raise HTTPException(400, "Body must include integer field `turn` >= 0")
 
-    async def _fn():
+    async def _fn() -> Any:
         # Validate the session exists first — cleaner 404 than KeyError.
         try:
             get_session(session_id)
@@ -784,7 +784,7 @@ async def session_rollback(
 
 
 @router.get("/{session_id}/export")
-async def session_export(session_id: str, directory: str = Query(default=".")):
+async def session_export(session_id: str, directory: str = Query(default=".")) -> Any:
     """Export a session as a JSON archive (``SessionArchive`` v1).
 
     The response is the archive dict — the client can JSON.stringify it
@@ -793,7 +793,7 @@ async def session_export(session_id: str, directory: str = Query(default=".")):
     from mycode.project.instance import provide
     from mycode.session.archive import export_session
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             return export_session(session_id)
         except KeyError as exc:
@@ -803,7 +803,7 @@ async def session_export(session_id: str, directory: str = Query(default=".")):
 
 
 @router.post("/import")
-async def session_import(request: Request, directory: str = Query(default=".")):
+async def session_import(request: Request, directory: str = Query(default=".")) -> Any:
     """Import a session archive. Body must be the full archive dict."""
     from mycode.project.instance import provide
     from mycode.session.archive import import_session
@@ -814,7 +814,7 @@ async def session_import(request: Request, directory: str = Query(default=".")):
     new_id = bool(body.pop("_new_id", True))
     prefix = str(body.pop("_title_prefix", "") or "")
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             info = import_session(body, new_id=new_id, title_prefix=prefix)
         except ValueError as exc:
@@ -829,7 +829,7 @@ async def session_fork(
     session_id: str,
     request: Request,
     directory: str = Query(default="."),
-):
+) -> Any:
     """Fork a session from a specific assistant turn.
 
     Body: ``{"turn": <int>, "title": <str?>}``. Returns the new session.
@@ -844,7 +844,7 @@ async def session_fork(
     if not isinstance(turn, int) or turn < 1:
         raise HTTPException(400, "Body must include integer field `turn` >= 1")
 
-    async def _fn():
+    async def _fn() -> Any:
         try:
             info = fork_session(session_id, turn, title=title if isinstance(title, str) else None)
         except KeyError as exc:
