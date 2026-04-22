@@ -53,7 +53,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -65,6 +64,8 @@ from mycode.orchestration.runtime.spawn import DEFAULT_MAX_TURNS
 from mycode.tool.base import CallableTool, ToolContext, ToolError, ToolOk, ToolResult
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mycode.agent.agent import AgentInfo
     from mycode.orchestration.topology.schema import OrchestrationSpec
 

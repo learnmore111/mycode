@@ -24,7 +24,6 @@ Strategy
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -252,13 +251,18 @@ class ScriptedRunner:
         # the real runner's short-circuit).
         saw_shutdown = False
 
+        def _resolve(target: str) -> str:
+            # Mirror the real send_message tool: "main" → lead.
+            return sctx.lead_name if target == "main" else target
+
         # Let other peers get scheduled first on the initial tick so
         # lead-produced messages can reach teammates before teammates
         # bail out on empty inboxes.  A single ``await asyncio.sleep(0)``
         # is enough.
         await asyncio.sleep(0)
 
-        for turn in range(sctx.max_turns):
+        for _turn in range(sctx.max_turns):
+            turn = _turn
             if sctx.should_stop():
                 break
 
@@ -283,7 +287,7 @@ class ScriptedRunner:
             if action.kind == "send":
                 await sctx.system.send(
                     sender=name,
-                    recipient=action.recipient,
+                    recipient=_resolve(action.recipient),
                     content=action.content,
                 )
                 tool_calls += 1
@@ -296,14 +300,14 @@ class ScriptedRunner:
             elif action.kind == "shutdown_request":
                 await sctx.system.shutdown_request(
                     sender=name,
-                    recipient=action.recipient,
+                    recipient=_resolve(action.recipient),
                     reason=action.content,
                 )
                 tool_calls += 1
             elif action.kind == "shutdown_response":
                 await sctx.system.shutdown_response(
                     sender=name,
-                    recipient=action.recipient,
+                    recipient=_resolve(action.recipient),
                     approve=action.approve,
                     note=action.content,
                 )
@@ -357,10 +361,14 @@ async def test_run_swarm_happy_path_with_scripted_runner():
     spec = _swarm_spec(["lead", "sec", "perf"], lead="lead")
 
     runner = ScriptedRunner(scripts={
-        # Lead delegates twice, then shuts everyone down, then reports.
+        # Lead delegates twice, idles a few turns to let replies land,
+        # then shuts everyone down, then reports.
         "lead": [
             Action("send", recipient="sec", content="check auth.py for SQL injection"),
             Action("send", recipient="perf", content="scan for N+1 queries"),
+            Action("idle"),
+            Action("idle"),
+            Action("idle"),
             Action("shutdown_request", recipient="sec", content="wrap"),
             Action("shutdown_request", recipient="perf", content="wrap"),
             Action("done", content="Final report: 2 findings."),
@@ -464,7 +472,8 @@ async def test_run_swarm_walltime_deadline_terminates_run(monkeypatch):
 
         async def __call__(self, sctx: SwarmAgentContext) -> SpawnOutput:
             turn = 0
-            for turn in range(sctx.max_turns):
+            for _turn in range(sctx.max_turns):
+                turn = _turn
                 if sctx.should_stop():
                     break
                 await sctx.system.inboxes[sctx.sender_name].drain()
@@ -506,16 +515,24 @@ async def test_run_swarm_pair_review_flow_end_to_end(tmp_path):
         "reviewer-lead": [
             Action("send", recipient="security-reviewer", content="focus on auth"),
             Action("send", recipient="perf-reviewer", content="focus on DB"),
+            Action("idle"),
+            Action("idle"),
             Action("shutdown_request", recipient="security-reviewer", content=""),
             Action("shutdown_request", recipient="perf-reviewer", content=""),
             Action("done", content="unified review ready"),
         ],
         "security-reviewer": [
             Action("send", recipient="main", content="secrets look clean"),
+            Action("idle"),
+            Action("idle"),
+            Action("idle"),
             Action("done", content="sec ok"),
         ],
         "perf-reviewer": [
             Action("send", recipient="main", content="no N+1 detected"),
+            Action("idle"),
+            Action("idle"),
+            Action("idle"),
             Action("done", content="perf ok"),
         ],
     })
@@ -600,15 +617,10 @@ async def test_run_swarm_transcript_orders_shutdown_after_messages():
 
 
 def test_swarm_types_reexported_at_package_root():
-    from mycode.orchestration import (
-        Envelope as _E,
-        LiteLLMSwarmRunner as _R,
-        MailboxSystem as _M,
-        SwarmResult as _S,
-        run_swarm as _run,
-    )
+    from mycode import orchestration as orchmod
 
-    assert all(
-        callable(x) or isinstance(x, type)
-        for x in (_E, _R, _M, _S, _run)
-    )
+    assert orchmod.Envelope is Envelope
+    assert orchmod.MailboxSystem is MailboxSystem
+    assert orchmod.SwarmResult is SwarmResult
+    assert orchmod.run_swarm is run_swarm
+    assert callable(orchmod.LiteLLMSwarmRunner)
