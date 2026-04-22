@@ -192,6 +192,30 @@ def create_tool_part(session_id: str, message_id: str, tool: str, call_id: str) 
         tool=tool, tool_call_id=call_id, time_created=int(time.time() * 1000),
     )
 
+def create_file_part(
+    session_id: str,
+    message_id: str,
+    *,
+    mime_type: str,
+    content: str,
+    filename: str = "",
+) -> FilePart:
+    """Create a :class:`FilePart` for an image / pdf / audio attachment.
+
+    ``content`` is the base64-encoded payload (or a ``data:`` URI).
+    ``mime_type`` is e.g. ``image/png``, ``application/pdf``, ``audio/wav``.
+    ``filename`` is optional and stored in the DB ``tool`` column.
+    """
+    return FilePart(
+        id=ids.part_id(),
+        session_id=session_id,
+        message_id=message_id,
+        mime_type=mime_type,
+        content=content,
+        filename=filename,
+        time_created=int(time.time() * 1000),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Message normalization pipeline
@@ -299,7 +323,8 @@ def save_part(part: Part) -> None:
         row.content = part.content
     elif isinstance(part, FilePart):
         row.content = part.content
-        row.tool = part.filename  # store filename in tool column for convenience
+        row.tool = part.filename  # store filename in tool column
+        row.tool_call_id = part.mime_type  # store mime_type in tool_call_id column
 
     db = get_db_session()
     try:
@@ -350,6 +375,7 @@ def _build_part_row(part: Part) -> Any:
     elif isinstance(part, FilePart):
         row.content = part.content
         row.tool = part.filename
+        row.tool_call_id = part.mime_type
     return row
 
 
@@ -597,7 +623,26 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
 
             if msg.role == "user":
                 text_content = "".join(p.content or "" for p in text_parts)
-                if text_content:
+                file_parts = [p for p in msg_parts if p.type == "file"]
+                if file_parts:
+                    # Multimodal user message — rebuild OpenAI content-list
+                    content_list: list[dict[str, Any]] = []
+                    if text_content:
+                        content_list.append({"type": "text", "text": text_content})
+                    for fp in file_parts:
+                        mime = fp.tool_call_id or ""  # mime_type stored here
+                        raw = fp.content or ""
+                        url = raw if raw.startswith(("data:", "http://", "https://")) else f"data:{mime};base64,{raw}"
+                        if mime.startswith("image/"):
+                            content_list.append({"type": "image_url", "image_url": {"url": url}})
+                        elif mime.startswith("audio/"):
+                            content_list.append({"type": "input_audio", "input_audio": {"data": url}})
+                        else:
+                            # pdf / generic file
+                            content_list.append({"type": "file", "file": {"file_data": url}})
+                    if content_list:
+                        result.append({"role": "user", "content": content_list})
+                elif text_content:
                     result.append({"role": "user", "content": text_content})
 
             elif msg.role == "assistant":

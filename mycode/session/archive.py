@@ -17,8 +17,9 @@ Design choices:
 
 - **JSON not JSONL.** Single blob is easier to sign / encrypt / diff;
   messages are small enough that a typical session stays under a few MB.
-- **No binary attachments yet.** If/when multimodal support lands we'll
-  add an ``attachments`` array with base64 payloads.
+- **No binary attachments yet.** Multimodal file parts (images, PDFs,
+  audio) are included as base64 payloads in the ``content`` field of
+  ``type=file`` parts — no special extraction needed.
 - **No snapshot-git content.** Shadow git commits are referenced by hash
   (``message.snapshot_ref``) but we do not bundle the blob tree itself;
   users who want full reproducibility should pair the archive with the

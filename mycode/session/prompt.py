@@ -29,6 +29,7 @@ from mycode.session.message import (
     Part,
     ToolPart,
     create_assistant_message,
+    create_file_part,
     create_text_part,
     create_user_message,
     get_last_assistant_time,
@@ -623,9 +624,26 @@ async def prompt(
 
         # Persist after yielding done (user sees result immediately)
 
-        # Save user message + text part, then assistant turn
+        # Save user message + text part + attachment file parts, then assistant turn
         user_text_part = create_text_part(session_id, user_msg.id)
         user_text_part.content = user_text
+
+        # Create FileParts for each attachment so they survive rebuild_history
+        user_file_parts: list[Part] = []
+        for part in prompt_input.parts:
+            ptype = part.get("type")
+            if ptype in ("image", "pdf", "file", "audio"):
+                mime = part.get("mime") or part.get("mime_type") or ""
+                content_val = part.get("content") or part.get("url") or ""
+                fname = part.get("filename") or part.get("name") or ""
+                fp = create_file_part(
+                    session_id,
+                    user_msg.id,
+                    mime_type=mime,
+                    content=content_val,
+                    filename=fname,
+                )
+                user_file_parts.append(fp)
 
         # Prepare system-reminder user messages for persistence
         reminder_persist: list[tuple[Any, Any]] = []
@@ -638,6 +656,8 @@ async def prompt(
         def _persist_all() -> None:
             save_message(user_msg)
             save_part(user_text_part)
+            for fp in user_file_parts:
+                save_part(fp)
             for r_msg, r_part in reminder_persist:
                 save_message(r_msg)
                 save_part(r_part)
