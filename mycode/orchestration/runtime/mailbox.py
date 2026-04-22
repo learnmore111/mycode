@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Awaitable, Callable
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,27 @@ EnvelopeKind = Literal[
     "shutdown_request",
     "shutdown_response",
 ]
+
+#: Backend preference accepted by :meth:`MailboxSystem.for_backend`.  Kept
+#: here (not in the topology schema module) so runtime code can import a
+#: single source of truth without pulling pydantic into the mailbox layer.
+BackendKind = Literal["auto", "inprocess", "file", "tmux", "iterm"]
+
+
+def _unique_owners(owners: list[str]) -> list[str]:
+    """Return ``owners`` with order preserved, raising on duplicates.
+
+    Mailbox routing is keyed on the owner name, so an accidental duplicate
+    would silently shadow a peer.  We fail loudly instead.
+    """
+    seen: set[str] = set()
+    unique: list[str] = []
+    for o in owners:
+        if o in seen:
+            raise ValueError(f"duplicate owner: {o!r}")
+        seen.add(o)
+        unique.append(o)
+    return unique
 
 
 @dataclass
@@ -189,6 +211,11 @@ class MailboxSystem:
     inboxes: dict[str, Mailbox] = field(default_factory=dict)
     event_log: list[Envelope] = field(default_factory=list)
     _counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    # Optional cross-process seq counter.  When set, ``next_seq`` reads
+    # from this instead of the per-process ``_counter`` so file- /
+    # terminal-backed swarms spanning multiple processes still produce
+    # a globally unique ordering on :attr:`Envelope.seq`.
+    _seq_fn: Callable[[], int] | None = None
     # Async callback invoked after every envelope the system routes.
     # Used by the orchestration event emitter to publish
     # ``orchestration.message.sent`` onto the global bus without making
@@ -201,20 +228,87 @@ class MailboxSystem:
         """Build a :class:`MailboxSystem` with one :class:`InprocessMailbox`
         per owner.  Owner order is preserved (used for broadcast
         iteration stability)."""
-        seen: set[str] = set()
-        unique: list[str] = []
-        for o in owners:
-            if o in seen:
-                raise ValueError(f"duplicate owner: {o!r}")
-            seen.add(o)
-            unique.append(o)
+        unique = _unique_owners(owners)
         return cls(
             owners=unique,
             inboxes={o: InprocessMailbox(o) for o in unique},
             event_log=[],
         )
 
+    @classmethod
+    def for_backend(
+        cls,
+        prefer: BackendKind,
+        owners: list[str],
+        *,
+        root_dir: str | os.PathLike[str] | None = None,
+        tmux_targets: dict[str, str] | None = None,
+        iterm_targets: dict[str, str] | None = None,
+    ) -> MailboxSystem:
+        """Build a :class:`MailboxSystem` using the requested backend.
+
+        The ``auto`` choice always maps to ``inprocess`` — it exists
+        as a spec-level hint that the runtime is free to pick whatever
+        is cheapest.  ``file`` / ``tmux`` / ``iterm`` all require a
+        ``root_dir`` (a fresh directory is created if one is not
+        supplied); they also share a cross-process :class:`FileSeqCounter`
+        so envelopes from separate interpreters still get a strict
+        total order on :attr:`Envelope.seq`.
+
+        ``tmux_targets`` / ``iterm_targets`` map ``owner → target id``
+        and are only consulted by the matching backend; missing entries
+        simply fall back to file-only for that owner.
+        """
+        unique = _unique_owners(owners)
+
+        if prefer in ("auto", "inprocess"):
+            return cls(
+                owners=unique,
+                inboxes={o: InprocessMailbox(o) for o in unique},
+                event_log=[],
+            )
+
+        # All remaining backends share a filesystem root + seq counter.
+        from mycode.orchestration.runtime.mailbox_file import (
+            FileMailbox,
+            FileSeqCounter,
+        )
+
+        if root_dir is None:
+            import tempfile
+
+            root_dir = tempfile.mkdtemp(prefix="mycode-swarm-")
+
+        counter = FileSeqCounter(root_dir)
+
+        inboxes: dict[str, Mailbox]
+        if prefer == "file":
+            inboxes = {o: FileMailbox(o, root_dir) for o in unique}
+        elif prefer == "tmux":
+            from mycode.orchestration.runtime.mailbox_terminal import TmuxMailbox
+
+            inboxes = {
+                o: TmuxMailbox(o, root_dir, targets=tmux_targets) for o in unique
+            }
+        elif prefer == "iterm":
+            from mycode.orchestration.runtime.mailbox_terminal import ItermMailbox
+
+            inboxes = {
+                o: ItermMailbox(o, root_dir, targets=iterm_targets) for o in unique
+            }
+        else:  # pragma: no cover - exhausted by Literal
+            raise ValueError(f"unknown mailbox backend: {prefer!r}")
+
+        return cls(
+            owners=unique,
+            inboxes=inboxes,
+            event_log=[],
+            _seq_fn=counter.next,
+        )
+
     def next_seq(self) -> int:
+        if self._seq_fn is not None:
+            return self._seq_fn()
         return next(self._counter)
 
     def has(self, owner: str) -> bool:
@@ -331,6 +425,7 @@ class MailboxSystem:
 
 
 __all__ = [
+    "BackendKind",
     "Envelope",
     "EnvelopeKind",
     "InprocessMailbox",

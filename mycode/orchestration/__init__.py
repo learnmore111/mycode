@@ -16,16 +16,21 @@ Milestones:
 - M4 ✅ flow ``AgentSpec.extends`` → registry resolver.
 - M5 ✅ coordinator runtime (DAG + parallel + fan-out + synthesis).
 - M6 ✅ swarm runtime (mailbox-driven peer agents, inprocess backend).
+- M6.5 ✅ file / tmux / iterm mailbox backends for cross-process peers.
 - M7 ✅ event bus integration + HTTP routes + SSE stream per run.
 """
 
 from mycode.orchestration.runtime import (
     AgentRunner,
+    BackendKind,
     BusOrchestrationEmitter,
     Coordinator,
     CoordinatorError,
     CoordinatorResult,
     Envelope,
+    FileMailbox,
+    InprocessMailbox,
+    ItermMailbox,
     LiteLLMAgentRunner,
     LiteLLMSwarmRunner,
     MailboxSystem,
@@ -39,6 +44,7 @@ from mycode.orchestration.runtime import (
     SwarmAgentRunner,
     SwarmError,
     SwarmResult,
+    TmuxMailbox,
     run_coordinator,
     run_swarm,
 )
@@ -52,11 +58,15 @@ from mycode.orchestration.topology.schema import (
 __all__ = [
     "AgentRunner",
     "AgentSpec",
+    "BackendKind",
     "BusOrchestrationEmitter",
     "Coordinator",
     "CoordinatorError",
     "CoordinatorResult",
     "Envelope",
+    "FileMailbox",
+    "InprocessMailbox",
+    "ItermMailbox",
     "LiteLLMAgentRunner",
     "LiteLLMSwarmRunner",
     "MailboxSystem",
@@ -73,6 +83,7 @@ __all__ = [
     "SwarmAgentRunner",
     "SwarmError",
     "SwarmResult",
+    "TmuxMailbox",
     "run_coordinator",
     "run_swarm",
 ]
