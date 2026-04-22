@@ -14,8 +14,8 @@ Milestones:
 - M2 ✅ agent registry (.md frontmatter + extends chain).
 - M3 ✅ registry overlay on ``agentmod.get`` + subagent tools/max_turns.
 - M4 ✅ flow ``AgentSpec.extends`` → registry resolver.
-- M5 ✅ coordinator runtime (this module's ``runtime`` package).
-- M6 🚧 swarm runtime (mailbox-driven peer agents).
+- M5 ✅ coordinator runtime (DAG + parallel + fan-out + synthesis).
+- M6 ✅ swarm runtime (mailbox-driven peer agents, inprocess backend).
 """
 
 from mycode.orchestration.runtime import (
@@ -23,12 +23,20 @@ from mycode.orchestration.runtime import (
     Coordinator,
     CoordinatorError,
     CoordinatorResult,
+    Envelope,
     LiteLLMAgentRunner,
+    LiteLLMSwarmRunner,
+    MailboxSystem,
     RunContext,
     SpawnOutput,
     SpawnRequest,
     StageOutput,
+    SwarmAgentContext,
+    SwarmAgentRunner,
+    SwarmError,
+    SwarmResult,
     run_coordinator,
+    run_swarm,
 )
 from mycode.orchestration.topology.schema import (
     AgentSpec,
@@ -43,7 +51,10 @@ __all__ = [
     "Coordinator",
     "CoordinatorError",
     "CoordinatorResult",
+    "Envelope",
     "LiteLLMAgentRunner",
+    "LiteLLMSwarmRunner",
+    "MailboxSystem",
     "OrchestrationSpec",
     "RunContext",
     "SpawnOutput",
@@ -51,5 +62,10 @@ __all__ = [
     "SpawnSpec",
     "StageOutput",
     "StageSpec",
+    "SwarmAgentContext",
+    "SwarmAgentRunner",
+    "SwarmError",
+    "SwarmResult",
     "run_coordinator",
+    "run_swarm",
 ]

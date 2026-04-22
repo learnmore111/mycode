@@ -1772,18 +1772,40 @@ def orchestrate_inspect(flow_name: str, directory: str, vars_: tuple[str, ...], 
     "--dry-run", is_flag=True,
     help="Validate + resolve agents but do not execute any LLM calls",
 )
+@click.option(
+    "--task", "-t", "task_text", default=None,
+    help="Swarm mode only: the initial user task delivered to the lead.",
+)
+@click.option(
+    "--max-turns", "max_turns", type=int, default=8, show_default=True,
+    help="Swarm mode only: per-peer turn budget.",
+)
+@click.option(
+    "--walltime", "walltime_seconds", type=float, default=300.0, show_default=True,
+    help="Swarm mode only: global wall-clock deadline in seconds.",
+)
 def orchestrate_run(
     flow_name: str,
     directory: str,
     vars_: tuple[str, ...],
     as_json: bool,
     dry_run: bool,
+    task_text: str | None,
+    max_turns: int,
+    walltime_seconds: float,
 ) -> None:
-    """Execute an orchestration flow (coordinator mode).
+    """Execute an orchestration flow.
 
-    Loads the flow, resolves every ``agent.extends`` through the registry,
-    runs the stage DAG, and prints the last stage's synthesized output.
-    Use ``--dry-run`` to validate + resolve without spending LLM tokens.
+    Works for both modes:
+
+    - **coordinator / hybrid**: walks the stage DAG and prints the last
+      stage's synthesised output.
+    - **swarm**: requires ``--task`` (or stdin); seeds the lead's inbox
+      and drives every peer via the mailbox backend until quiescence or
+      ``--walltime``.
+
+    Use ``--dry-run`` to validate + resolve agents without spending LLM
+    tokens — useful for smoke-testing YAML authoring in either mode.
     """
     import asyncio
 
@@ -1791,7 +1813,7 @@ def orchestrate_run(
         get_default_agent_registry,
         get_default_registry,
     )
-    from mycode.orchestration.runtime import run_coordinator
+    from mycode.orchestration.runtime import run_coordinator, run_swarm
     from mycode.orchestration.topology import resolve_all_agents
     from mycode.orchestration.topology.loader import OrchestrationLoadError
     from mycode.orchestration.topology.validator import OrchestrationValidationError
@@ -1817,24 +1839,82 @@ def orchestrate_run(
         msg = "Validation failed:\n  - " + "\n  - ".join(exc.issues)
         raise click.ClickException(msg) from exc
 
-    if spec.mode not in ("coordinator", "hybrid"):
-        raise click.ClickException(
-            f"'orchestrate run' only supports coordinator|hybrid mode (got {spec.mode!r}). "
-            f"Swarm mode arrives in M6."
-        )
-
     try:
         agents = resolve_all_agents(spec.agents, agent_registry)
     except Exception as exc:
         raise click.ClickException(f"Agent resolution failed: {exc}") from exc
 
     if dry_run:
-        click.echo(f"[dry-run] flow={spec.name} mode={spec.mode} stages={len(spec.stages)}")
+        click.echo(f"[dry-run] flow={spec.name} mode={spec.mode}")
         for a in agents.values():
             click.echo(f"  - agent {a.name!r} resolved (extends={a.extends!r})")
-        for s in spec.stages:
-            click.echo(f"  - stage {s.id!r} (parallel={s.parallel}, runs_on={s.runs_on}, fan_out_from={s.fan_out_from})")
+        if spec.mode == "swarm":
+            click.echo(f"  - lead: {spec.lead!r}")
+        else:
+            for s in spec.stages:
+                click.echo(
+                    f"  - stage {s.id!r} (parallel={s.parallel}, "
+                    f"runs_on={s.runs_on}, fan_out_from={s.fan_out_from})"
+                )
         return
+
+    # ── swarm branch ───────────────────────────────────────────────────
+    if spec.mode == "swarm":
+        if not task_text:
+            raise click.ClickException(
+                "swarm mode requires --task / -t (the initial user task for the lead)"
+            )
+        try:
+            swarm_result = asyncio.run(run_swarm(
+                spec, agents,
+                user_task=task_text,
+                max_turns=max_turns,
+                walltime_seconds=walltime_seconds,
+            ))
+        except Exception as exc:
+            raise click.ClickException(f"Swarm run failed: {exc}") from exc
+
+        if as_json:
+            import json as _json
+            payload = {
+                "flow": spec.name,
+                "mode": "swarm",
+                "lead": swarm_result.lead,
+                "terminated_reason": swarm_result.terminated_reason,
+                "lead_output": swarm_result.lead_output,
+                "peers": {
+                    name: {
+                        "agent": out.agent,
+                        "is_error": out.is_error,
+                        "turns": out.turns,
+                        "tool_calls": out.tool_calls,
+                        "output": out.output,
+                    }
+                    for name, out in swarm_result.peers.items()
+                },
+                "transcript": [
+                    {
+                        "seq": env.seq,
+                        "kind": env.kind,
+                        "sender": env.sender,
+                        "recipient": env.recipient,
+                        "summary": env.summary,
+                        "content": env.content,
+                    }
+                    for env in swarm_result.transcript
+                ],
+            }
+            click.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        _print_swarm_result(spec, swarm_result)
+        return
+
+    # ── coordinator / hybrid branch ────────────────────────────────────
+    if spec.mode not in ("coordinator", "hybrid"):
+        raise click.ClickException(
+            f"'orchestrate run' does not support mode={spec.mode!r}"
+        )
 
     try:
         result = asyncio.run(run_coordinator(spec, agents))
@@ -1897,6 +1977,46 @@ def _print_run_result(spec, result) -> None:  # noqa: ANN001 — keep CLI local
                     spawn_node.add(f"  {line}")
                 if len(sp.output.strip().splitlines()) > 3:
                     spawn_node.add("  [dim]... (truncated)[/dim]")
+
+    console.print(root)
+
+
+def _print_swarm_result(spec, result) -> None:  # noqa: ANN001 — keep CLI local
+    """Pretty-print a swarm run: transcript + per-peer summary."""
+    from rich.console import Console
+    from rich.tree import Tree
+
+    console = Console(highlight=False)
+    root = Tree(
+        f"[bold cyan]{spec.name}[/bold cyan] "
+        f"[dim](swarm run, terminated={result.terminated_reason})[/dim]"
+    )
+
+    # Transcript first (chronological)
+    tnode = root.add(f"[bold]transcript[/bold] ({len(result.transcript)} events)")
+    for env in result.transcript:
+        if env.recipient == "*":
+            continue  # the per-recipient copies below already cover it
+        summary = f" — {env.summary}" if env.summary else ""
+        body_preview = env.content.strip().splitlines()
+        head = f"[dim]#{env.seq}[/dim] [yellow]{env.kind}[/yellow] {env.sender} → {env.recipient}{summary}"
+        leaf = tnode.add(head)
+        for line in body_preview[:2]:
+            leaf.add(f"  {line}")
+        if len(body_preview) > 2:
+            leaf.add("  [dim]... (truncated)[/dim]")
+
+    # Per-peer
+    pnode = root.add("[bold]peers[/bold]")
+    for name, out in result.peers.items():
+        state = "[red]✗[/red]" if out.is_error else "[green]✓[/green]"
+        peer_leaf = pnode.add(
+            f"{state} [yellow]{name}[/yellow] "
+            f"(turns={out.turns}, tool_calls={out.tool_calls})"
+        )
+        if out.output:
+            for line in out.output.strip().splitlines()[:3]:
+                peer_leaf.add(f"  {line}")
 
     console.print(root)
 
