@@ -79,7 +79,7 @@ class SubAgentParams(BaseModel):
                     pass
             # Single task string → wrap in list
             return [v]
-        return v
+        return list(v) if isinstance(v, list) else v
 
     max_concurrency: int = Field(default=5, ge=1, le=MAX_PARALLEL, description="(parallel mode) Max concurrent sub-agents")
     # Delegate/isolated mode

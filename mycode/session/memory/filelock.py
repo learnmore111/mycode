@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
-import platform
+import sys
 from pathlib import Path
 from typing import Any
 
 from mycode.util import log as logmod
+
+_IS_WINDOWS = sys.platform == "win32"
+
+if not _IS_WINDOWS:
+    import fcntl
 
 logger = logmod.create(service="session.memory.filelock")
 
@@ -62,7 +66,6 @@ class FileLock:
         self.timeout_seconds = timeout_seconds
         self._file_handle: Any = None
         self._is_locked = False
-        self._platform = platform.system()
         self._fallback_lock: asyncio.Lock | None = None  # Set lazily from module-level pool
 
     async def acquire(self) -> None:
@@ -76,7 +79,7 @@ class FileLock:
             IOError: If file operations fail
         """
         try:
-            if self._platform == "Windows":
+            if _IS_WINDOWS:  # pragma: no cover
                 await self._acquire_windows()
             else:
                 await self._acquire_unix()
@@ -127,7 +130,7 @@ class FileLock:
         while True:
             try:
                 await loop.run_in_executor(
-                    None, msvcrt.locking, self._file_handle.fileno(), msvcrt.LK_NBLCK, 1
+                    None, msvcrt.locking, self._file_handle.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
                 )
                 break
             except OSError:
@@ -155,12 +158,12 @@ class FileLock:
             if self._file_handle:
                 loop = asyncio.get_event_loop()
 
-                if self._platform == "Windows":
+                if _IS_WINDOWS:  # pragma: no cover
                     import msvcrt
                     # Unlock the file
                     with contextlib.suppress(OSError):
                         await loop.run_in_executor(
-                            None, msvcrt.locking, self._file_handle.fileno(), msvcrt.LK_UNLCK, 1
+                            None, msvcrt.locking, self._file_handle.fileno(), msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
                         )
                 else:
                     # fcntl unlock
@@ -210,7 +213,7 @@ class FileLockManager:
     consistent locking behavior across concurrent operations.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize lock manager."""
         self._locks: dict[str, FileLock] = {}
         self._manager_lock = asyncio.Lock()

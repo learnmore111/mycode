@@ -33,7 +33,7 @@ def _html_to_markdown(raw: str) -> str:
     for level in range(1, 7):
         text = re.sub(
             rf"<h{level}[^>]*>(.*?)</h{level}>",
-            lambda m, lv=level: f"\n\n{'#' * lv} {_strip_tags(m.group(1)).strip()}\n",
+            lambda m, lv=level: f"\n\n{'#' * lv} {_strip_tags(m.group(1)).strip()}\n",  # type: ignore[misc]
             text, flags=re.DOTALL | re.IGNORECASE,
         )
 

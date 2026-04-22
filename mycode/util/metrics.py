@@ -26,7 +26,10 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _lock = threading.Lock()
 _counters: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
@@ -143,7 +146,7 @@ def _maybe_init_tracer() -> None:
         return
     _otel_tracer_attempted = True
     try:
-        from opentelemetry import trace  # type: ignore
+        from opentelemetry import trace
 
         _otel_tracer = trace.get_tracer("mycode")
     except Exception:
@@ -151,7 +154,7 @@ def _maybe_init_tracer() -> None:
 
 
 @contextlib.contextmanager
-def span(name: str, **attributes: Any):
+def span(name: str, **attributes: Any) -> Iterator[None]:
     """Start a trace span named ``name`` for the wrapped block.
 
     Always records block duration as ``<name>_ms`` histogram so teams

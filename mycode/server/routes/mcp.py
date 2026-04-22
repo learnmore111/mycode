@@ -38,7 +38,7 @@ async def mcp_status() -> dict[str, Any]:
 
 
 @router.post("")
-async def mcp_add(body: _AddMcpServer):
+async def mcp_add(body: _AddMcpServer) -> Any:
     """Add a new MCP server to config and connect."""
     from mycode.config import config as configmod
 
@@ -77,7 +77,7 @@ async def mcp_add(body: _AddMcpServer):
 
 
 @router.delete("/{name}")
-async def mcp_remove(name: str):
+async def mcp_remove(name: str) -> Any:
     """Remove an MCP server from config and disconnect."""
     from mycode.config import config as configmod
 
@@ -97,7 +97,7 @@ async def mcp_remove(name: str):
 
 
 @router.post("/{name}/connect")
-async def mcp_connect(name: str):
+async def mcp_connect(name: str) -> Any:
     """Connect to an MCP server."""
     if not _manager:
         raise HTTPException(503, "MCP manager not initialized")
@@ -106,7 +106,7 @@ async def mcp_connect(name: str):
 
 
 @router.post("/{name}/disconnect")
-async def mcp_disconnect(name: str):
+async def mcp_disconnect(name: str) -> Any:
     """Disconnect from an MCP server."""
     if not _manager:
         raise HTTPException(503, "MCP manager not initialized")

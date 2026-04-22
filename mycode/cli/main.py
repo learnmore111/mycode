@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from mycode import __version__
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from prompt_toolkit.document import Document
 
 
@@ -232,7 +234,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     class _SlashCompleter(Completer):
         """Fuzzy-match slash commands like /help, /clear. Also complete model names after /model."""
-        def get_completions(self, document: Document, complete_event):
+        def get_completions(self, document: Document, complete_event: Any) -> Iterable[Completion]:
             text = document.text_before_cursor.lstrip()
             if not text.startswith("/"):
                 return
@@ -263,7 +265,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             "mkdir", "rm", "cp", "mv", "touch", "git", "python", "pip", "uv",
             "which", "env", "export", "source", "make", "curl", "wget", "tree",
         ]
-        def get_completions(self, document: Document, complete_event):
+        def get_completions(self, document: Document, complete_event: Any) -> Iterable[Completion]:
             text = document.text_before_cursor.lstrip()
             if not text.startswith("!"):
                 return
@@ -305,7 +307,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     class _FileMentionCompleter(Completer):
         """Complete file paths after @ mention."""
-        def get_completions(self, document: Document, complete_event):
+        def get_completions(self, document: Document, complete_event: Any) -> Iterable[Completion]:
             text = document.text_before_cursor
             idx = text.rfind("@")
             if idx == -1:
@@ -346,7 +348,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     completer = merge_completers([_SlashCompleter(), _ShellCompleter(), _FileMentionCompleter()])
 
     # --- Prompt setup ---
-    def _bottom_toolbar():
+    def _bottom_toolbar() -> Any:
         """Subtle bottom status bar."""
         cwd_display = shell_cwd[0]
         home = os.path.expanduser("~")
@@ -363,7 +365,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         "prompt": "",
     })
     history = InMemoryHistory()
-    ps = PromptSession(
+    ps: PromptSession[str] = PromptSession(
         history=history,
         style=pt_style,
         completer=completer,
@@ -385,10 +387,10 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
     session_info = None
     bus = Bus()
-    conversation_history: list[dict] = []
+    conversation_history: list[dict[str, Any]] = []
     total_tokens_used = 0
     context_limit = 0
-    last_checkpoint: dict = {}
+    last_checkpoint: dict[str, Any] = {}
     session_start_time = datetime.now()  # Track when session started
 
     # Initialize session memory
@@ -554,7 +556,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
             # --- Stream AI response ---
             console.print()
             full_text = ""
-            done_data: dict = {}
+            done_data: dict[str, Any] = {}
             start_time = time.monotonic()
             _text_buf = ""
             _in_text = False
@@ -569,7 +571,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 _text_buf = ""
                 _in_text = False
 
-            def _tool_label(tool_name: str, tool_input: dict | None = None) -> str:
+            def _tool_label(tool_name: str, tool_input: dict[str, Any] | None = None) -> str:
                 """Generate Generate tool label: verb + target."""
                 ti = tool_input or {}
                 # Map tool IDs to human-friendly verbs + extract key arg
@@ -851,7 +853,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 async def _bg_record(
                     _q: str = _text,
                     _a: str = _full_text,
-                    _msgs: list = _history,
+                    _msgs: list[dict[str, Any]] = _history,
                 ) -> None:
                     with contextlib.suppress(Exception):
                         await session_memory.record_turn(
@@ -906,7 +908,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
     await provide(directory, _run_loop, project)
 
 
-def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> None:
+def _print_context_bar(console: Any, used: int, limit: int, bar_width: int = 30) -> None:
     """Print a context window usage bar."""
     from rich.text import Text
 
@@ -945,7 +947,7 @@ def _print_context_bar(console, used: int, limit: int, bar_width: int = 30) -> N
     console.print(bar)
 
 
-async def _run_shell(console, command: str, cwd: str) -> None:
+async def _run_shell(console: Any, command: str, cwd: str) -> None:
     """Execute a shell command directly and print output."""
     import asyncio as _aio
     import shutil
@@ -977,7 +979,7 @@ async def _run_shell(console, command: str, cwd: str) -> None:
     console.print()
 
 
-def _handle_command(text: str, history: list, console=None, project_path: str | None = None, **extra) -> str | None:
+def _handle_command(text: str, history: list[dict[str, Any]], console: Any = None, project_path: str | None = None, **extra: Any) -> str | None:
     """Handle slash commands. Returns 'quit', 'clear', or None.
 
     extra may contain:
@@ -1210,7 +1212,7 @@ def _handle_command(text: str, history: list, console=None, project_path: str | 
     return ""
 
 
-def _print_message_detail(console, idx: int, msg: dict, role: str) -> None:
+def _print_message_detail(console: Any, idx: int, msg: dict[str, Any], role: str) -> None:
     """Print full detail for a single conversation message."""
     from rich.markdown import Markdown
     from rich.panel import Panel
@@ -1309,7 +1311,7 @@ async def _headless(directory: str, model: str | None, agent: str | None, messag
     async def _run() -> None:
         session = create_session(title=message[:60])
         session_start_time = datetime.now()
-        conversation_history: list[dict] = []
+        conversation_history: list[dict[str, Any]] = []
 
         # Initialize session memory with session ID
         if session_memory.is_enabled:
@@ -1707,7 +1709,7 @@ def orchestrate_list(directory: str) -> None:
         return
 
     # Group by source
-    by_source: dict[str, list] = {"builtin": [], "global": [], "project": []}
+    by_source: dict[str, list[Any]] = {"builtin": [], "global": [], "project": []}
     for f in flows:
         by_source.setdefault(f.source, []).append(f)
 
@@ -1952,7 +1954,7 @@ def orchestrate_run(
     _print_run_result(spec, result)
 
 
-def _print_run_result(spec, result) -> None:  # noqa: ANN001 — keep CLI local
+def _print_run_result(spec: Any, result: Any) -> None:
     """Pretty-print a coordinator run result as a stage tree."""
     from rich.console import Console
     from rich.tree import Tree
@@ -1981,7 +1983,7 @@ def _print_run_result(spec, result) -> None:  # noqa: ANN001 — keep CLI local
     console.print(root)
 
 
-def _print_swarm_result(spec, result) -> None:  # noqa: ANN001 — keep CLI local
+def _print_swarm_result(spec: Any, result: Any) -> None:
     """Pretty-print a swarm run: transcript + per-peer summary."""
     from rich.console import Console
     from rich.tree import Tree
@@ -2021,7 +2023,7 @@ def _print_swarm_result(spec, result) -> None:  # noqa: ANN001 — keep CLI loca
     console.print(root)
 
 
-def _print_spec_tree(spec) -> None:
+def _print_spec_tree(spec: Any) -> None:
     """Pretty-print an OrchestrationSpec as a tree."""
     from rich.console import Console
     from rich.tree import Tree
@@ -2102,7 +2104,7 @@ def agent_list(directory: str, show_all: bool) -> None:
         click.echo("No agents found.")
         return
 
-    by_source: dict[str, list] = {}
+    by_source: dict[str, list[Any]] = {}
     for e in entries:
         by_source.setdefault(e.source, []).append(e)
 

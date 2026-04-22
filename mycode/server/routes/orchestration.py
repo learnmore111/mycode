@@ -77,7 +77,7 @@ def _require_bus() -> Bus:
 
 
 @router.get("/flow")
-async def list_flows(directory: str | None = Query(default=None)):
+async def list_flows(directory: str | None = Query(default=None)) -> Any:
     """List flows discovered in builtin + global + project scope."""
     project_dir = os.path.abspath(directory) if directory else None
     reg = get_default_registry(project_dir=project_dir, refresh=True)
@@ -88,7 +88,7 @@ async def list_flows(directory: str | None = Query(default=None)):
 
 
 @router.get("/flow/{name}")
-async def get_flow(name: str, directory: str | None = Query(default=None)):
+async def get_flow(name: str, directory: str | None = Query(default=None)) -> Any:
     """Resolve a flow by name and return the parsed spec as JSON."""
     project_dir = os.path.abspath(directory) if directory else None
     reg = get_default_registry(project_dir=project_dir, refresh=True)
@@ -124,7 +124,7 @@ async def get_flow(name: str, directory: str | None = Query(default=None)):
 
 
 @router.get("/agent")
-async def list_agents(directory: str | None = Query(default=None)):
+async def list_agents(directory: str | None = Query(default=None)) -> Any:
     """List agents discovered in builtin + global + project scope."""
     project_dir = os.path.abspath(directory) if directory else None
     reg = get_default_agent_registry(project_dir=project_dir, refresh=True)
@@ -139,8 +139,8 @@ async def list_agents(directory: str | None = Query(default=None)):
             "name": info.name,
             "source": entry.source,
             "description": info.description,
-            "extends": info.extends,
-            "tools": info.tools,
+            "extends": info.extends or "",
+            "tools": ",".join(info.tools) if info.tools else "",
             "mode": info.mode,
         })
     return entries
@@ -161,7 +161,7 @@ class _RunBody(BaseModel):
 
 
 @router.post("/run")
-async def start_run(body: _RunBody):
+async def start_run(body: _RunBody) -> Any:
     """Kick off an orchestration run in the background.
 
     Returns immediately with the ``run_id`` so the client can switch to
@@ -213,7 +213,7 @@ async def start_run(body: _RunBody):
 
 
 @router.get("/run")
-async def list_runs():
+async def list_runs() -> Any:
     """List currently-tracked runs (in-memory; cleared on finish)."""
     return [
         {"run_id": rid, "done": task.done(), "cancelled": task.cancelled()}
@@ -238,7 +238,7 @@ _ORCHESTRATION_TYPES = frozenset({
 
 
 @router.get("/events")
-async def orchestration_events(run_id: str | None = Query(default=None)):
+async def orchestration_events(run_id: str | None = Query(default=None)) -> Any:
     """SSE stream of orchestration lifecycle events.
 
     Query params:
@@ -246,7 +246,7 @@ async def orchestration_events(run_id: str | None = Query(default=None)):
     """
     bus = _require_bus()
 
-    async def generator():
+    async def generator() -> Any:
         # Using subscribe_all + local filter is cheaper than registering
         # 9 typed subscriptions.  The bus copies event payloads anyway so
         # the cost is just the extra membership test per event.

@@ -118,9 +118,9 @@ async def _discover_providers() -> dict[str, ProviderInfo]:
                     id=mid,
                     providerID=pid,
                     api=ModelApi(
-                        id=mdata.get("id", mid),
-                        url=provider_info.get("api", pdata.get("api", "")),
-                        npm=provider_info.get("npm", pdata.get("npm", "@ai-sdk/openai-compatible")),
+                        id=str(mdata.get("id", mid)),
+                        url=str(provider_info.get("api", pdata.get("api", ""))),
+                        npm=str(provider_info.get("npm", pdata.get("npm", "@ai-sdk/openai-compatible"))),
                     ),
                     name=str(mdata.get("name", mid)),
                     family=str(mdata.get("family", "")),
@@ -209,14 +209,14 @@ async def _discover_providers() -> dict[str, ProviderInfo]:
                 if pcfg.name:
                     providers[provider_id].name = str(pcfg.name)
             else:
-                key = pcfg.options.get("apiKey") if pcfg.options else None
+                api_key: str = pcfg.options.get("apiKey", "") if pcfg.options else ""
                 providers[provider_id] = ProviderInfo(
                     id=provider_id,
                     name=pcfg.name or provider_id,
                     source="config",
                     env=pcfg.env or [],
                     options=pcfg.options or {},
-                    key=key,
+                    key=api_key,
                 )
 
             # Add configured models

@@ -119,26 +119,26 @@ async def process_stream(
             })
 
         elif isinstance(event, llmmod.ToolCallArgsPartial):
-            tp = ctx.toolcalls.get(event.tool_call_id)
-            if tp:
-                raw = tp.state.get("_raw_args", "") + event.args_delta
-                tp.state["_raw_args"] = raw
+            tp_partial = ctx.toolcalls.get(event.tool_call_id)
+            if tp_partial:
+                raw = tp_partial.state.get("_raw_args", "") + event.args_delta
+                tp_partial.state["_raw_args"] = raw
 
         elif isinstance(event, llmmod.ToolCallDelta):
-            tp = ctx.toolcalls.get(event.tool_call_id)
-            if tp:
+            tp_delta = ctx.toolcalls.get(event.tool_call_id)
+            if tp_delta:
                 try:
                     parsed = json.loads(event.args) if event.args else {}
                     if not isinstance(parsed, dict):
-                        logger.warn("tool args parsed to non-dict", tool=tp.tool, type=type(parsed).__name__)
-                        tp.state["input"] = {}
+                        logger.warn("tool args parsed to non-dict", tool=tp_delta.tool, type=type(parsed).__name__)
+                        tp_delta.state["input"] = {}
                     else:
-                        tp.state["input"] = parsed
+                        tp_delta.state["input"] = parsed
                 except json.JSONDecodeError as e:
-                    logger.error("malformed tool arguments", tool=tp.tool, error=str(e))
-                    tp.state["input"] = {}
-                    tp.state["_parse_error"] = str(e)
-                tool_calls_pending.append(tp)
+                    logger.error("malformed tool arguments", tool=tp_delta.tool, error=str(e))
+                    tp_delta.state["input"] = {}
+                    tp_delta.state["_parse_error"] = str(e)
+                tool_calls_pending.append(tp_delta)
 
         elif isinstance(event, llmmod.FinishEvent):
             ctx.assistant_message.tokens_input += event.usage.get("input_tokens", 0)

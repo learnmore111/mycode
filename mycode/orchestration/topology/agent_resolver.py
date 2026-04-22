@@ -89,7 +89,7 @@ def _spec_to_child_info(spec: AgentSpec) -> AgentInfo:
         tools=list(spec.tools) if spec.tools is not None else None,
         extends=spec.extends,
         max_turns=spec.max_turns,
-        isolation=spec.isolation if spec.isolation in ("none", "worktree", "container") else "none",
+        isolation=spec.isolation if spec.isolation in ("none", "worktree", "container") else "none",  # type: ignore[arg-type]
         omit_claudemd=spec.omit_claudemd,
         source="project",  # flow specs are treated as project-layer overrides
     )
@@ -194,7 +194,7 @@ def resolve_agent_spec(
         merged = _merge_agents(parent, child, child_explicit=explicit)
         # Preserve the child's identity metadata.
         merged.name = spec.name
-        merged.source = "project"  # type: ignore[assignment]
+        merged.source = "project"
         merged.source_path = None
         merged.extends = parent_name  # remember the declared link
 

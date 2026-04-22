@@ -306,7 +306,7 @@ def build_memory_index_content(entries: list[MemoryEntry]) -> str:
         typed = [e for e in entries if e.memory_type == mem_type]
         if not typed:
             continue
-        type_desc = MEMORY_TYPE_DESCRIPTIONS.get(mem_type, mem_type)  # type: ignore[arg-type]
+        type_desc = MEMORY_TYPE_DESCRIPTIONS.get(mem_type, mem_type)
         lines.append(f"## {mem_type.title()} ({type_desc})")
         lines.append("")
         for entry in typed:

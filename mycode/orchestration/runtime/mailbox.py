@@ -210,7 +210,7 @@ class MailboxSystem:
     owners: list[str] = field(default_factory=list)
     inboxes: dict[str, Mailbox] = field(default_factory=dict)
     event_log: list[Envelope] = field(default_factory=list)
-    _counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    _counter: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
     # Optional cross-process seq counter.  When set, ``next_seq`` reads
     # from this instead of the per-process ``_counter`` so file- /
     # terminal-backed swarms spanning multiple processes still produce

@@ -131,7 +131,7 @@ class SessionMemory:
 
     @property
     def is_enabled(self) -> bool:
-        return self._config.get("enabled", False)
+        return bool(self._config.get("enabled", False))
 
     # ------------------------------------------------------------------
     # File I/O
@@ -337,8 +337,8 @@ class SessionMemory:
             logger.error("LLM update failed", error=str(e))
             self._pending_turns = []
 
-    async def _call_llm_combined(self, all_turns: list[dict], recent_turns: list[dict],
-                                  messages: list[dict] | None, start_time: datetime | None) -> dict | None:
+    async def _call_llm_combined(self, all_turns: list[dict[str, Any]], recent_turns: list[dict[str, Any]],
+                                  messages: list[dict[str, Any]] | None, start_time: datetime | None) -> dict[str, Any] | None:
         model_config = self._config.get("model")
         if not model_config:
             return self._fallback_combined(all_turns, recent_turns, start_time)
@@ -404,7 +404,7 @@ class SessionMemory:
     # Prompt building
     # ------------------------------------------------------------------
 
-    def _build_combined_prompt(self, all_turns: list[dict], recent_turns: list[dict],
+    def _build_combined_prompt(self, all_turns: list[dict[str, Any]], recent_turns: list[dict[str, Any]],
                                 start_time: datetime | None) -> str:
         turns_text = ""
         for t in all_turns:
@@ -471,7 +471,7 @@ TURN_<number>: <refined summary>
 
 Rules: be concise, technical facts only, no filler, no code blocks."""
 
-    def _parse_llm_response(self, raw: str, recent_turns: list[dict]) -> dict:
+    def _parse_llm_response(self, raw: str, recent_turns: list[dict[str, Any]]) -> dict[str, Any]:
         lines = raw.split("\n")
         summary_lines = []
         refined: dict[int, str] = {}
@@ -493,8 +493,8 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
                 summary_lines.append(line)
         return {"summary": "\n".join(summary_lines).strip(), "refined_turns": refined}
 
-    def _fallback_combined(self, all_turns: list[dict], recent_turns: list[dict],
-                            start_time: datetime | None) -> dict:
+    def _fallback_combined(self, all_turns: list[dict[str, Any]], recent_turns: list[dict[str, Any]],
+                            start_time: datetime | None) -> dict[str, Any]:
         now = datetime.now()
         dur = max(int((now - (start_time or now)).total_seconds() / 60), 1)
         files_mod = self._extract_files(all_turns, "write")
@@ -651,7 +651,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
         return ""
 
     @staticmethod
-    def _extract_files(turns: list[dict], mode: str) -> list[str]:
+    def _extract_files(turns: list[dict[str, Any]], mode: str) -> list[str]:
         write_tools = {"edit", "write", "write_file", "replace_in_file", "write_to_file"}
         read_tools = {"read", "read_file", "glob", "grep", "search_content", "codebase_search"}
         target = write_tools if mode == "write" else read_tools
@@ -663,8 +663,8 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
         return sorted(files)
 
     @staticmethod
-    def _count_tools(turns: list[dict]) -> dict[str, int]:
-        counter: Counter = Counter()
+    def _count_tools(turns: list[dict[str, Any]]) -> dict[str, int]:
+        counter: Counter[str] = Counter()
         for t in turns:
             for tc in t.get("tools", []):
                 counter[tc.get("tool", "unknown")] += 1

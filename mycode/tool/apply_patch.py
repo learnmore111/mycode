@@ -295,7 +295,7 @@ class ApplyPatchTool(CallableTool[ApplyPatchParams]):
         # partial failure (e.g. permission error on the 4th file).
         applied: list[tuple[str, str, str | None]] = []
         try:
-            for action, absolute, original, new in plan:
+            for action, absolute, original, new in plan:  # type: ignore[assignment]
                 if action == "Add" or action == "Update":
                     assert new is not None
                     atomic_write(absolute, new)
@@ -305,7 +305,7 @@ class ApplyPatchTool(CallableTool[ApplyPatchParams]):
                     applied.append((action, absolute, original))
         except Exception as exc:
             # Roll back.
-            for action, absolute, original in reversed(applied):
+            for action, absolute, original in reversed(applied):  # type: ignore[assignment]
                 try:
                     if action == "Add":
                         if os.path.exists(absolute):

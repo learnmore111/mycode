@@ -37,6 +37,8 @@ from mycode.util.log import create as create_logger
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from alembic.config import Config
+
 _log = create_logger(service="storage.alembic")
 
 #: Environment variable that gates the Alembic startup path.  Accepts
@@ -57,7 +59,7 @@ def is_alembic_enabled(env: dict[str, str] | None = None) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _alembic_config(db_path: str | Path, ini_path: str | Path) -> object:
+def _alembic_config(db_path: str | Path, ini_path: str | Path) -> Config:
     """Build an :class:`alembic.config.Config` pointing at ``db_path``.
 
     Deferred import: the only places that call this already paid the

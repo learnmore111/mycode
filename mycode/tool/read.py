@@ -64,10 +64,10 @@ def _detect_encoding(raw: bytes) -> str:
     except ImportError:
         pass
     try:
-        import chardet
+        import chardet  # type: ignore[import-not-found]
         det = chardet.detect(raw[:8192])
         if det and det.get("encoding"):
-            return det["encoding"]
+            return str(det["encoding"])
     except ImportError:
         pass
     return "utf-8"

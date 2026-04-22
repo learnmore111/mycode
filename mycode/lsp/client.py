@@ -31,7 +31,7 @@ class LspJsonRpcClient:
         self.diagnostics: dict[str, list[dict[str, Any]]] = {}
         self._initialized = False
 
-    async def start(self) -> None:
+    async def start(self) -> Any:
         """Initialize the LSP server connection."""
         self._reader_task = asyncio.create_task(self._read_loop())
         # Send initialize

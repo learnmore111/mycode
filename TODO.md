@@ -221,7 +221,7 @@
 | Orchestration M6.5 (file / tmux / iterm mailbox backends) | ✅ 完成 |
 | Alembic 基线 revision | ✅ 完成 |
 | 多模态 end-to-end | 🟡 骨架 |
-| mypy 零错误目标 | 🟡 252 条残留 |
+| mypy 零错误目标 | ✅ 完成 (286→0) |
 | 会话导出 / 分叉 / fork | ❌ 未开始 |
 | OTel tracing | 🟡 仅 metrics |
 | apply_patch / LSP didChange | ❌ 未开始 |

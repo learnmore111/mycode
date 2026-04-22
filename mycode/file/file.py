@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
+from typing import Any
 
 from mycode.file import ripgrep
 from mycode.project.instance import current_or_none
@@ -13,7 +14,7 @@ MIME = {"png":"image/png","jpg":"image/jpeg","jpeg":"image/jpeg","gif":"image/gi
     "webp":"image/webp","svg":"image/svg+xml","bmp":"image/bmp"}
 
 
-async def read(file_path: str) -> dict:
+async def read(file_path: str) -> dict[str, Any]:
     inst = current_or_none()
     base = inst.directory if inst else os.getcwd()
     full = os.path.join(base, file_path) if not os.path.isabs(file_path) else file_path
@@ -46,7 +47,7 @@ async def search(query: str, *, limit: int = 100, file_type: str = "all") -> lis
     return [r[0] for r in results]
 
 
-async def list_dir(dir_path: str | None = None) -> list[dict]:
+async def list_dir(dir_path: str | None = None) -> list[dict[str, Any]]:
     inst = current_or_none()
     base = inst.directory if inst else os.getcwd()
     resolved = os.path.join(base, dir_path) if dir_path else base
