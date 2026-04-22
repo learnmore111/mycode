@@ -127,6 +127,52 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         else:
             return ToolError(f"Unknown mode: {params.mode}")
 
+    @staticmethod
+    def _apply_agent_max_turns(
+        agent: Any,
+        user_value: int | None,
+        mode: str,
+    ) -> int:
+        """Resolve final max_turns for a sub-agent run.
+
+        Precedence (first non-None wins), capped to mode's upper bound:
+          1. ``user_value`` — argument supplied by the LLM in the tool call
+          2. ``agent.max_turns`` — author-declared ceiling on the agent itself
+          3. mode default from ``_TURNS_CONFIG``
+        """
+        default, cap = _TURNS_CONFIG.get(mode, (12, 30))
+        agent_turns = getattr(agent, "max_turns", None)
+        picked = user_value if user_value is not None else agent_turns
+        if picked is None:
+            picked = default
+        return max(1, min(int(picked), cap))
+
+    @staticmethod
+    def _filter_tools_for_agent(
+        agent: Any,
+        tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply ``agent.tools`` allow-list on top of ``_EXCLUDED_TOOLS``.
+
+        - Always drops tools in ``_EXCLUDED_TOOLS`` (recursion / interactive
+          prompts are forbidden for sub-agents).
+        - When ``agent.tools`` is a non-empty list, further restricts the
+          tool set to names appearing in that list.  A ``None`` value means
+          "no allow-list — inherit parent policy".
+        """
+        allow = getattr(agent, "tools", None)
+        allow_set = set(allow) if allow else None
+
+        out: list[dict[str, Any]] = []
+        for t in tools:
+            name = t["function"]["name"]
+            if name in _EXCLUDED_TOOLS:
+                continue
+            if allow_set is not None and name not in allow_set:
+                continue
+            out.append(t)
+        return out
+
     # ─── Delegate Mode ────────────────────────────────────────────────────────
 
     async def _run_delegate(self, params: SubAgentParams, ctx: ToolContext) -> ToolResult:
@@ -135,11 +181,13 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         if not agent:
             return ToolError(f"Agent '{params.agent}' not found")
 
+        max_turns = self._apply_agent_max_turns(agent, params.max_turns, "delegate")
+
         return await self._execute_agent_loop(
             description=params.description,
             context=params.context,
             agent=agent,
-            max_turns=params.max_turns,
+            max_turns=max_turns,
             ctx=ctx,
         )
 
@@ -179,9 +227,11 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         # own deep copy to prevent accidental cross-contamination.
         import copy as _copy
 
-        shared_tools = [t for t in tool_registry.to_llm_tools() if t["function"]["name"] not in _EXCLUDED_TOOLS]
+        shared_tools = self._filter_tools_for_agent(agent, tool_registry.to_llm_tools())
 
         semaphore = asyncio.Semaphore(params.max_concurrency)
+
+        max_turns = self._apply_agent_max_turns(agent, params.max_turns, "parallel")
 
         async def _run_one(idx: int, task_desc: str) -> tuple[int, str, bool]:
             async with semaphore:
@@ -203,7 +253,7 @@ class SubAgentTool(CallableTool[SubAgentParams]):
                     description=task_desc,
                     context=params.context,
                     agent=agent,
-                    max_turns=params.max_turns,
+                    max_turns=max_turns,
                     ctx=sub_ctx,
                     _model=model,
                     _tools=per_agent_tools,
@@ -276,11 +326,13 @@ class SubAgentTool(CallableTool[SubAgentParams]):
                 f"The base project is at: {project_dir}"
             )
 
+            max_turns = self._apply_agent_max_turns(agent, params.max_turns, "isolated")
+
             result = await self._execute_agent_loop(
                 description=isolated_desc,
                 context=params.context,
                 agent=agent,
-                max_turns=params.max_turns,
+                max_turns=max_turns,
                 ctx=ctx,
                 working_dir=worktree.path,
             )
@@ -388,7 +440,7 @@ class SubAgentTool(CallableTool[SubAgentParams]):
 
         tools = _tools
         if tools is None:
-            tools = [t for t in tool_registry.to_llm_tools() if t["function"]["name"] not in _EXCLUDED_TOOLS]
+            tools = self._filter_tools_for_agent(agent, tool_registry.to_llm_tools())
 
         builder = ToolResultBuilder(max_chars=50_000)
         total_tool_calls = 0
