@@ -84,6 +84,9 @@ export default function CommandPalette({
       <div
         className="w-full max-w-xl rounded-lg border border-gray-700 bg-gray-900 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
       >
         <div className="border-b border-gray-800 px-3 py-2">
           <input
@@ -95,9 +98,16 @@ export default function CommandPalette({
             placeholder="Jump to session…  (↑ ↓ to move, Enter to open, Esc to close)"
             className="w-full bg-transparent text-sm text-gray-100 placeholder-gray-500 outline-none"
             aria-label="Search sessions"
+            aria-autocomplete="list"
+            aria-controls="command-palette-results"
           />
         </div>
-        <ul role="listbox" aria-label="Session results" className="max-h-80 overflow-y-auto py-1">
+        <ul
+          id="command-palette-results"
+          role="listbox"
+          aria-label="Session results"
+          className="max-h-80 overflow-y-auto py-1"
+        >
           {results.length === 0 && (
             <li className="px-3 py-2 text-sm text-gray-500">No sessions match.</li>
           )}

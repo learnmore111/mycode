@@ -310,9 +310,7 @@ class ApplyPatchTool(CallableTool[ApplyPatchParams]):
                     if action == "Add":
                         if os.path.exists(absolute):
                             os.unlink(absolute)
-                    elif action == "Update" and original is not None:
-                        atomic_write(absolute, original)
-                    elif action == "Delete" and original is not None:
+                    elif action == "Update" and original is not None or action == "Delete" and original is not None:
                         atomic_write(absolute, original)
                 except Exception:  # noqa: BLE001 — best-effort rollback
                     pass

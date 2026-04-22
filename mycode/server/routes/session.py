@@ -326,7 +326,13 @@ def _stream_session_prompt(
                 clear_paused_run(session_id)
 
             history = rebuild_history_from_db(session_id)
-            inp = PromptInput(session_id=session_id, parts=parts, model=model, agent=agent)
+            inp = PromptInput(
+                session_id=session_id,
+                parts=parts,
+                model=model,
+                agent=agent,
+                abort_event=abort_event,
+            )
             async for event in prompt(inp, bus, history=history):
                 yield {"event": event.type, "data": json.dumps(event.data)}
         except _aio.CancelledError:
@@ -520,6 +526,8 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
                     "sessionId": m.session_id,
                     "role": m.role,
                     "parentId": m.parent_id,
+                    "turnNumber": m.turn_number,
+                    "snapshotRef": m.snapshot_ref,
                     "modelId": m.model_id,
                     "providerId": m.provider_id,
                     "agent": m.agent,

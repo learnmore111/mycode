@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # (name, regex, severity) — severity ∈ {"critical", "high", "low"}.
 _PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (

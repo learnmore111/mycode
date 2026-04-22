@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import ChatArea from './components/ChatArea'
 import PermissionModal from './components/PermissionModal'
@@ -103,6 +103,14 @@ export default function App() {
 
   // --- Command palette (Cmd/Ctrl+K) ---
   const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // Memoized set of git-tracked changed paths — passed to ChangesPanel so
+  // it can mark stale entries (files touched by tools that are no longer
+  // in the git status output) instead of silently firing 404 requests.
+  const gitChangedPaths = useMemo(
+    () => new Set((git.status?.files ?? []).map((f) => f.path)),
+    [git.status?.files],
+  )
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -177,6 +185,15 @@ export default function App() {
         onReturnToLastSession={session.returnToLastSession}
         onSelectGitFile={git.openDiff}
         onRefreshGit={git.refresh}
+        gitChangedPaths={gitChangedPaths}
+        onRollback={async (turn, options) => {
+          const result = await chat.rollbackToTurn(turn, options)
+          // Always refresh git status after rollback — the workspace may have
+          // been rolled back to an earlier snapshot so the changed-file list
+          // in the sidebar will be stale otherwise.
+          git.refresh()
+          return result
+        }}
       />
       {permission.pending.length > 0 && (
         <PermissionModal request={permission.pending[0]} onReply={permission.reply} />

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { FileCode2, GitBranch, Minus, Plus, RefreshCcw, X } from 'lucide-react'
+import { FileCode2, GitBranch, Minus, Plus, RefreshCcw, Trash2, X } from 'lucide-react'
 import type { GitDiffDetail } from '../types'
 
 interface Props {
@@ -70,7 +70,7 @@ export default function GitDiffViewer({ diff, loading, error, onClose }: Props) 
           </div>
         ) : error ? (
           <div className="p-5">
-            <div className="rounded-xl border border-status-error/15 bg-status-error-light px-4 py-3 text-sm text-status-error">
+            <div className="rounded-xl border border-status-error/15 bg-status-error-light px-4 py-3 text-sm text-status-error whitespace-pre-line">
               {error}
             </div>
           </div>
@@ -110,7 +110,21 @@ export default function GitDiffViewer({ diff, loading, error, onClose }: Props) 
             </div>
 
             <div className="flex-1 overflow-auto bg-[#0f1720] text-slate-100">
-              {lines.length > 0 ? (
+              {diff.status === 'deleted' && lines.length === 0 ? (
+                <div className="h-full flex items-center justify-center px-6">
+                  <div className="max-w-md w-full rounded-2xl border border-status-error/20 bg-status-error-light px-5 py-6 text-center space-y-3">
+                    <div className="mx-auto w-10 h-10 rounded-xl bg-status-error/10 flex items-center justify-center">
+                      <Trash2 size={18} className="text-status-error" />
+                    </div>
+                    <div className="text-sm font-semibold text-status-error">文件已删除</div>
+                    <div className="text-xs text-status-error/80 font-mono break-all">{diff.path}</div>
+                    <div className="text-xs text-ink-secondary">
+                      该文件从未在 Git 中记录过内容变化，因此没有可展示的 diff。<br />
+                      如果这是预期的删除，可在下方改动面板中「暂存」或「回退」。
+                    </div>
+                  </div>
+                </div>
+              ) : lines.length > 0 ? (
                 <div className="min-w-max py-4">
                   {lines.map((line, index) => (
                     <div

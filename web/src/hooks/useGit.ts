@@ -39,13 +39,22 @@ export function useGit(directory?: string) {
       setSelectedPath(path)
       setDiffLoading(true)
       setDiffError(null)
+      setDiff(null)
       try {
         const detail = await getGitDiff(path, directory)
         setDiff(detail)
       } catch (err) {
         console.error('Failed to load git diff', err)
         setDiff(null)
-        setDiffError(err instanceof Error ? err.message : '加载 diff 失败')
+        // Distinguish the "file not in git changes" case so the viewer can
+        // render a clearer empty-state (file may have been deleted from the
+        // working tree without being tracked by git).
+        const message = err instanceof Error ? err.message : '加载 diff 失败'
+        if (/404/.test(message)) {
+          setDiffError(`文件未在 Git 改动列表中：${path}\n该文件可能已被删除且从未被 Git 跟踪，或改动已被回退。`)
+        } else {
+          setDiffError(message)
+        }
       } finally {
         setDiffLoading(false)
       }

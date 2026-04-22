@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import time
 from typing import Any
 
 _lock = threading.Lock()
@@ -122,3 +123,61 @@ def reset() -> None:
     with _lock:
         _counters.clear()
         _histograms.clear()
+
+
+# --- Tracing ---------------------------------------------------------------
+#
+# Same philosophy as counters: zero hard dep, zero-cost when no exporter is
+# configured. We expose a single ``span()`` context manager that starts an
+# OpenTelemetry span if ``opentelemetry-api`` is installed, otherwise records
+# a duration into the histogram bucket named ``<name>_ms`` so ``snapshot()``
+# still shows how much time was spent where.
+
+_otel_tracer: Any = None
+_otel_tracer_attempted = False
+
+
+def _maybe_init_tracer() -> None:
+    global _otel_tracer, _otel_tracer_attempted
+    if _otel_tracer_attempted:
+        return
+    _otel_tracer_attempted = True
+    try:
+        from opentelemetry import trace  # type: ignore
+
+        _otel_tracer = trace.get_tracer("mycode")
+    except Exception:
+        _otel_tracer = None
+
+
+@contextlib.contextmanager
+def span(name: str, **attributes: Any):
+    """Start a trace span named ``name`` for the wrapped block.
+
+    Always records block duration as ``<name>_ms`` histogram so teams
+    without OTel still see per-call latency in ``/metrics``. With OTel
+    installed the block also emits a real span tagged with ``attributes``
+    so it lines up with exported traces in Honeycomb / Tempo / Jaeger.
+    """
+    _maybe_init_tracer()
+    start = time.perf_counter()
+    if _otel_tracer is None:
+        try:
+            yield
+        finally:
+            observe(f"{name}_ms", (time.perf_counter() - start) * 1000)
+        return
+
+    with _otel_tracer.start_as_current_span(name) as otel_span:
+        try:
+            for k, v in attributes.items():
+                with contextlib.suppress(Exception):
+                    otel_span.set_attribute(k, v)
+            yield
+        except BaseException as exc:
+            with contextlib.suppress(Exception):
+                otel_span.record_exception(exc)
+                otel_span.set_attribute("error", True)
+            raise
+        finally:
+            observe(f"{name}_ms", (time.perf_counter() - start) * 1000)

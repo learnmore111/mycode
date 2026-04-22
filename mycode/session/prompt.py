@@ -124,6 +124,10 @@ class PromptInput:
     message_id: str | None = None
     variant: str | None = None
     system: str | None = None
+    # Optional abort signal. When set, both the agentic loop and the
+    # underlying llm.stream() watch it and bail out within one chunk
+    # rather than waiting for the current LLM response to finish.
+    abort_event: _aio.Event | None = None
 
 @dataclass
 class PromptEvent:
@@ -220,29 +224,58 @@ async def prompt(
         # Build user message content.
         #
         # Backward compatible: if all parts are plain text we keep the
-        # legacy string form. If any part is an image we emit the
-        # OpenAI-compatible content-list used by LLM providers that
-        # accept multimodal input (litellm normalises the shape
+        # legacy string form. If any part is an image / pdf / audio we
+        # emit the OpenAI-compatible content-list used by LLM providers
+        # that accept multimodal input (litellm normalises the shape
         # downstream for Anthropic/Gemini).
         user_text = ""
-        image_parts: list[dict[str, Any]] = []
+        attachment_parts: list[dict[str, Any]] = []
         for part in prompt_input.parts:
             ptype = part.get("type")
             if ptype == "text":
                 user_text += part.get("content", "")
             elif ptype == "image":
+                if not getattr(model.capabilities.input, "image", False):
+                    yield PromptEvent(type="error", data={
+                        "message": f"Model {model_id} does not accept image input; drop the attachment or switch model.",
+                        "code": "bad_request",
+                        "retryable": False,
+                    })
+                    return
                 url = _normalize_image_url(part)
                 if url:
-                    image_parts.append({"type": "image_url", "image_url": {"url": url}})
+                    attachment_parts.append({"type": "image_url", "image_url": {"url": url}})
                 else:
                     logger.warn("dropping image part with no usable content", keys=list(part.keys()))
+            elif ptype in ("pdf", "file"):
+                if not getattr(model.capabilities.input, "pdf", False):
+                    yield PromptEvent(type="error", data={
+                        "message": f"Model {model_id} does not accept PDF input.",
+                        "code": "bad_request",
+                        "retryable": False,
+                    })
+                    return
+                url = _normalize_image_url(part)  # same URL/base64 handling
+                if url:
+                    attachment_parts.append({"type": "file", "file": {"file_data": url}})
+            elif ptype == "audio":
+                if not getattr(model.capabilities.input, "audio", False):
+                    yield PromptEvent(type="error", data={
+                        "message": f"Model {model_id} does not accept audio input.",
+                        "code": "bad_request",
+                        "retryable": False,
+                    })
+                    return
+                url = _normalize_image_url(part)
+                if url:
+                    attachment_parts.append({"type": "input_audio", "input_audio": {"data": url}})
 
         user_content: Any
-        if image_parts:
+        if attachment_parts:
             content_list: list[dict[str, Any]] = []
             if user_text:
                 content_list.append({"type": "text", "text": user_text})
-            content_list.extend(image_parts)
+            content_list.extend(attachment_parts)
             user_content = content_list
         else:
             user_content = user_text
@@ -418,6 +451,7 @@ async def prompt(
                 top_p=agent.top_p,
                 api_key=await providermod.get_api_key(provider_id),
                 api_base=model.api.url or None,
+                abort_event=prompt_input.abort_event,
             )
 
             # === Snapshot cumulative tokens BEFORE this iteration ===
