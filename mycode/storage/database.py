@@ -104,13 +104,44 @@ def get_engine() -> Engine:
         # Register SQLite pragmas
         event.listen(_engine, "connect", _configure_sqlite)
 
-        # Create all tables
-        Base.metadata.create_all(_engine)
-
-        # Lightweight migrations for columns added after initial schema
-        _migrate(_engine)
+        # Bring the schema up.  Two code paths share this step:
+        #
+        # 1. Legacy path (default): ``create_all`` + in-code ``_migrate``
+        #    runs idempotent ALTER TABLEs for columns added over time.
+        #    Zero config, zero extra dependencies at startup.
+        # 2. Alembic path (opt-in via ``MYCODE_ALEMBIC=1``): defer all
+        #    DDL to :func:`apply_migrations`, which handles fresh
+        #    installs, legacy databases (stamp baseline then upgrade),
+        #    and already-Alembic-managed databases uniformly.  We fall
+        #    back to the legacy path on failure so a broken alembic
+        #    install never blocks the agent from starting.
+        _init_schema(_engine, db_path)
 
         return _engine
+
+
+def _init_schema(engine: Engine, db_path: str) -> None:
+    """Apply the schema using Alembic when enabled, else legacy path."""
+    from mycode.storage.alembic_runner import apply_migrations, is_alembic_enabled
+
+    if is_alembic_enabled() and db_path != ":memory:":
+        # Alembic on :memory: makes no sense — the DB disappears when
+        # the engine is disposed, so stamping is busywork.  Tests that
+        # want in-memory behaviour get the legacy path automatically.
+        try:
+            action = apply_migrations(db_path)
+            logger.info("alembic applied", action=action, path=db_path)
+            return
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warn(
+                "alembic failed, falling back to create_all + _migrate",
+                error=str(exc),
+            )
+
+    # Legacy / fallback path — exactly what the project shipped with
+    # before Alembic was introduced.
+    Base.metadata.create_all(engine)
+    _migrate(engine)
 
 
 def get_session_factory() -> sessionmaker[Session]:

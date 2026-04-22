@@ -2251,3 +2251,97 @@ def agent_add(
     ]
     target.write_text("\n".join(lines), encoding="utf-8")
     click.echo(f"Created {target}")
+
+
+# --- Database / Alembic commands ---
+
+
+@cli.group()
+def db() -> None:
+    """Database schema management (Alembic)."""
+
+
+@db.command("current")
+def db_current() -> None:
+    """Print the current Alembic revision applied to the database."""
+    from alembic import command
+    from alembic.config import Config
+
+    from mycode.storage.database import get_db_path
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{get_db_path()}")
+    command.current(cfg, verbose=False)
+
+
+@db.command("upgrade")
+@click.argument("revision", default="head")
+def db_upgrade(revision: str) -> None:
+    """Upgrade database schema to REVISION (default: head).
+
+    Accepts any Alembic revision identifier, including ``head``,
+    ``+1``, or an explicit revision id like ``0001_baseline``.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    from mycode.storage.database import get_db_path
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{get_db_path()}")
+    command.upgrade(cfg, revision)
+    click.echo(f"Upgraded to {revision}")
+
+
+@db.command("downgrade")
+@click.argument("revision")
+def db_downgrade(revision: str) -> None:
+    """Downgrade database schema to REVISION.
+
+    ``base`` drops everything managed by Alembic; ``-1`` steps back one
+    revision.  **Destructive** — take a backup first.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    from mycode.storage.database import get_db_path
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{get_db_path()}")
+    command.downgrade(cfg, revision)
+    click.echo(f"Downgraded to {revision}")
+
+
+@db.command("stamp")
+@click.argument("revision", required=False)
+def db_stamp(revision: str | None) -> None:
+    """Record REVISION as applied without running DDL.
+
+    Use this on an existing legacy database to hand authority to
+    Alembic.  Defaults to the project baseline (``0001_baseline``).
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    from mycode.storage.alembic_runner import BASELINE_REVISION
+    from mycode.storage.database import get_db_path
+
+    target = revision or BASELINE_REVISION
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{get_db_path()}")
+    command.stamp(cfg, target)
+    click.echo(f"Stamped {target}")
+
+
+@db.command("history")
+def db_history() -> None:
+    """List all Alembic revisions in order."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    # History is a metadata-only command; it does not need a real URL
+    # but Alembic still expects one to be set.
+    cfg.set_main_option("sqlalchemy.url", "sqlite:///:memory:")
+    command.history(cfg, verbose=False)
+
