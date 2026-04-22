@@ -219,7 +219,7 @@
 | Orchestration M6 (swarm runtime: mailbox-driven peer agents, inprocess backend) | ✅ 完成 |
 | Orchestration M7 (event bus integration + HTTP routes + SSE streaming) | ✅ 完成 |
 | Orchestration M6.5 (file / tmux / iterm mailbox backends) | ✅ 完成 |
-| Alembic 基线 revision | ❌ 未开始 |
+| Alembic 基线 revision | ✅ 完成 |
 | 多模态 end-to-end | 🟡 骨架 |
 | mypy 零错误目标 | 🟡 252 条残留 |
 | 会话导出 / 分叉 / fork | ❌ 未开始 |
