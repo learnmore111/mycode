@@ -46,6 +46,23 @@ class AgentInfo:
     options: dict[str, Any] = field(default_factory=dict)
     steps: int | None = None
 
+    # --- M2 extensions: orchestration & composition ---
+    # Role tag used by orchestration ("coordinator" / "worker" / "reviewer" / ...).
+    role: str | None = None
+    # Tool allow-list (None = inherit from permission/role defaults).
+    tools: list[str] | None = None
+    # Parent agent name for inheritance (resolved at registry load time).
+    extends: str | None = None
+    # Per-agent loop cap (overrides global/processor defaults when set).
+    max_turns: int | None = None
+    # Execution isolation hint: "none" / "worktree" / "container".
+    isolation: Literal["none", "worktree", "container"] = "none"
+    # If True, the agent will not receive the project CLAUDE.md / CODEBUDDY.md context.
+    omit_claudemd: bool = False
+    # Origin tracking — where this agent came from (for CLI/debug only).
+    source: Literal["builtin", "config", "global", "project"] = "builtin"
+    source_path: str | None = None
+
 
 def _default_permission() -> list[dict[str, Any]]:
     """Default permission ruleset (allow everything, ask for sensitive)."""

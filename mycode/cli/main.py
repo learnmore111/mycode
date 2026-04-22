@@ -1816,3 +1816,177 @@ def _print_spec_tree(spec) -> None:
         root.add(f"[bold]backend[/bold]: prefer={spec.backend.prefer}")
 
     console.print(root)
+
+
+# --- Agent commands ---
+
+@cli.group()
+def agent() -> None:
+    """Manage custom agent definitions (builtin + global + project)."""
+
+
+@agent.command("list")
+@click.option("--directory", "-d", default=".", help="Project directory")
+@click.option("--all", "show_all", is_flag=True, help="Include hidden/internal agents")
+def agent_list(directory: str, show_all: bool) -> None:
+    """List all discovered agents grouped by source."""
+    from mycode.orchestration.registry import get_default_agent_registry
+
+    registry = get_default_agent_registry(project_dir=os.path.abspath(directory), refresh=True)
+    entries = registry.list_entries()
+    if not show_all:
+        entries = [e for e in entries if not e.info.hidden]
+
+    if not entries:
+        click.echo("No agents found.")
+        return
+
+    by_source: dict[str, list] = {}
+    for e in entries:
+        by_source.setdefault(e.source, []).append(e)
+
+    for source in ("builtin", "config", "global", "project"):
+        bucket = by_source.get(source) or []
+        if not bucket:
+            continue
+        click.echo(f"\n[{source}]")
+        for e in bucket:
+            info = e.info
+            role = f" role={info.role}" if info.role else ""
+            mode = f" mode={info.mode}"
+            extends = f" extends={info.extends}" if info.extends else ""
+            path = f"  ({e.source_path})" if e.source_path else ""
+            desc = f" — {info.description}" if info.description else ""
+            click.echo(f"  {e.name:<24}{mode}{role}{extends}{desc}{path}")
+
+
+@agent.command("show")
+@click.argument("name")
+@click.option("--directory", "-d", default=".", help="Project directory")
+@click.option("--resolved/--raw", default=True, help="Apply extends chain (default) vs. raw frontmatter")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON")
+def agent_show(name: str, directory: str, resolved: bool, as_json: bool) -> None:
+    """Show details of a single agent, including resolved prompt + permissions."""
+    from dataclasses import asdict
+
+    from mycode.orchestration.registry import get_default_agent_registry
+    from mycode.orchestration.registry.agent_registry import AgentLoadError
+
+    registry = get_default_agent_registry(project_dir=os.path.abspath(directory), refresh=True)
+    try:
+        if resolved:
+            info = registry.resolve(name)
+            entry_source: str = getattr(info, "source", "builtin") or "builtin"
+            source_path = getattr(info, "source_path", None)
+        else:
+            entries = {e.name: e for e in registry.list_entries()}
+            if name not in entries:
+                raise KeyError(name)
+            info = entries[name].info
+            entry_source = entries[name].source
+            source_path = entries[name].source_path
+    except KeyError:
+        raise click.ClickException(f"agent not found: {name}") from None
+    except AgentLoadError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json as _json
+        payload = asdict(info)
+        payload["_meta"] = {"source": entry_source, "source_path": source_path}
+        click.echo(_json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+        return
+
+    from rich.console import Console
+    from rich.tree import Tree
+
+    console = Console(highlight=False)
+    tree = Tree(f"[bold cyan]{info.name}[/bold cyan] [dim]({info.mode})[/dim]")
+    if info.description:
+        tree.add(f"[dim]{info.description}[/dim]")
+    tree.add(f"source: {entry_source}" + (f"  {source_path}" if source_path else ""))
+    if info.role:
+        tree.add(f"role: [magenta]{info.role}[/magenta]")
+    if info.extends:
+        tree.add(f"extends: {info.extends}")
+    if info.tools:
+        tree.add(f"tools: {', '.join(info.tools)}")
+    if info.max_turns:
+        tree.add(f"max_turns: {info.max_turns}")
+    if info.isolation and info.isolation != "none":
+        tree.add(f"isolation: {info.isolation}")
+    if info.omit_claudemd:
+        tree.add("omit_claudemd: true")
+    if info.model:
+        tree.add(f"model: {info.model.get('providerID')}/{info.model.get('modelID')}")
+    if info.temperature is not None:
+        tree.add(f"temperature: {info.temperature}")
+    if info.color:
+        tree.add(f"color: {info.color}")
+    if info.permission:
+        perm_node = tree.add(f"[bold]permission[/bold] ({len(info.permission)} rules)")
+        for rule in info.permission[:12]:
+            perm_node.add(repr(rule))
+        if len(info.permission) > 12:
+            perm_node.add(f"... {len(info.permission) - 12} more")
+    if info.prompt:
+        preview = info.prompt.strip().splitlines()[:6]
+        prompt_node = tree.add(f"[bold]prompt[/bold] ({len(info.prompt)} chars)")
+        for line in preview:
+            prompt_node.add(line[:120])
+        if info.prompt.count("\n") > 6:
+            prompt_node.add("...")
+
+    console.print(tree)
+
+
+@agent.command("add")
+@click.argument("name")
+@click.option("--directory", "-d", default=".", help="Project directory")
+@click.option("--scope", type=click.Choice(["project", "global"]), default="project",
+              help="Where to create the agent file")
+@click.option("--extends", "extends_", default=None, help="Parent agent name")
+@click.option("--role", default=None, help="Orchestration role tag")
+@click.option("--mode", type=click.Choice(["primary", "subagent", "all"]), default="all")
+@click.option("--description", default="", help="Short description")
+@click.option("--force", is_flag=True, help="Overwrite if file exists")
+def agent_add(
+    name: str,
+    directory: str,
+    scope: str,
+    extends_: str | None,
+    role: str | None,
+    mode: str,
+    description: str,
+    force: bool,
+) -> None:
+    """Create a new agent definition Markdown scaffold under .mycode/agents/."""
+    import pathlib
+
+    if scope == "project":
+        base = pathlib.Path(os.path.abspath(directory)) / ".mycode" / "agents"
+    else:
+        base = pathlib.Path.home() / ".mycode" / "agents"
+    base.mkdir(parents=True, exist_ok=True)
+    target = base / f"{name}.md"
+    if target.exists() and not force:
+        raise click.ClickException(f"{target} already exists; use --force to overwrite")
+
+    lines = ["---", f"description: {description or name + ' agent'}", f"mode: {mode}"]
+    if role:
+        lines.append(f"role: {role}")
+    if extends_:
+        lines.append(f"extends: {extends_}")
+    lines += [
+        "# tools: [read, grep, glob]",
+        "# max_turns: 20",
+        "# isolation: none",
+        "---",
+        "",
+        f"You are the **{name}** agent.",
+        "",
+        "Describe the agent's job, input assumptions, and expected output format here.",
+        "",
+    ]
+    target.write_text("\n".join(lines), encoding="utf-8")
+    click.echo(f"Created {target}")
