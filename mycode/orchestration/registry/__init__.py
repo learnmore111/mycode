@@ -9,6 +9,14 @@ Three-level override (later wins):
 Agent registry follows the same layering under ``agents/`` directories.
 """
 
+from mycode.orchestration.registry.agent_registry import (
+    AgentLoadError,
+    AgentRegistry,
+    AgentSourceEntry,
+)
+from mycode.orchestration.registry.agent_registry import (
+    get_default_registry as get_default_agent_registry,
+)
 from mycode.orchestration.registry.flow_registry import (
     FlowInfo,
     FlowRegistry,
@@ -16,7 +24,11 @@ from mycode.orchestration.registry.flow_registry import (
 )
 
 __all__ = [
+    "AgentLoadError",
+    "AgentRegistry",
+    "AgentSourceEntry",
     "FlowInfo",
     "FlowRegistry",
+    "get_default_agent_registry",
     "get_default_registry",
 ]
