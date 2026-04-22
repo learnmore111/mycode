@@ -30,3 +30,19 @@ export async function createSkill(name: string, content: string, scope: string =
     body: JSON.stringify({ name, content, scope }),
   })
 }
+
+export async function uploadSkill(file: File, name?: string, scope: string = 'project'): Promise<void> {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (name) formData.append('name', name)
+  formData.append('scope', scope)
+
+  const res = await fetch('/skill/upload', {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`API ${res.status}: ${text}`)
+  }
+}

@@ -108,7 +108,6 @@ def create_app() -> FastAPI:
     app.include_router(permission.router)
     app.include_router(mcp.router)
     app.include_router(skills.router)
-    app.include_router(skills.router)
     app.include_router(event.router)
     app.include_router(project.router)
     app.include_router(orchestration.router)

@@ -17,6 +17,7 @@ export default defineConfig({
       '/git': 'http://localhost:4096',
       '/skill': 'http://localhost:4096',
       '/mcp': 'http://localhost:4096',
+      '/orchestration': 'http://localhost:4096',
     },
   },
   build: {
