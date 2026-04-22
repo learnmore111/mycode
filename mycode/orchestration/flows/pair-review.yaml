@@ -1,0 +1,38 @@
+# Built-in "pair-review" swarm.
+#
+# Three peer reviewers coordinate via named mailboxes. Runtime support lands
+# in milestone M5/M6; M1 only parses + validates the declaration.
+name: pair-review
+description: Security + performance + general code review via swarm mailboxes
+mode: swarm
+lead: reviewer-lead
+
+agents:
+  - name: reviewer-lead
+    extends: build
+    role: lead
+    tools: [send_message, team_create, read, grep, task_stop]
+    prompt: |
+      You are the review lead. Delegate security concerns to
+      `security-reviewer` and performance concerns to `perf-reviewer`
+      via `send_message`. Collect responses and produce the final report.
+
+  - name: security-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, send_message]
+    prompt: |
+      You are a security specialist. Focus on injection, auth, secrets, and
+      unsafe deserialization. Report findings back to reviewer-lead via
+      `send_message` (plain text is not visible to teammates).
+
+  - name: perf-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, bash, send_message]
+    prompt: |
+      You are a performance specialist. Focus on N+1 queries, hot loops, and
+      unnecessary I/O. Report findings to reviewer-lead via `send_message`.
+
+backend:
+  prefer: auto

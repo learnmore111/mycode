@@ -1,0 +1,51 @@
+# Built-in "research" orchestration.
+#
+# Multi-explorer parallel investigation + coordinator synthesis.
+# Usage:
+#   mycode orchestrate inspect research
+#   mycode orchestrate run research --vars q1="..." --vars q2="..."
+#
+# Agents reference built-in registry agents via "extends:".
+name: research
+description: Parallel research with coordinator synthesis
+mode: coordinator
+
+vars:
+  q1: "Describe the module layout"
+  q2: "List all TODOs in the codebase"
+
+agents:
+  - name: coordinator
+    role: coordinator
+    description: Synthesizes findings from explorer workers
+    tools: [task, send_message, task_stop]
+    prompt: |
+      You are the coordinator. You do NOT execute research tools directly.
+      Use `task` to dispatch explorer workers, then synthesize their findings
+      into a cohesive report. Never write "based on your findings" — be
+      specific and cite each worker's output.
+
+  - name: explorer
+    extends: explore
+    role: worker
+
+stages:
+  - id: research
+    description: Parallel exploration
+    parallel: true
+    max_concurrency: 4
+    spawn:
+      - agent: explorer
+        task: "{{ vars.q1 }}"
+      - agent: explorer
+        task: "{{ vars.q2 }}"
+
+  - id: synthesize
+    description: Coordinator synthesizes the parallel findings
+    runs_on: coordinator
+    depends_on: [research]
+    inputs: [research.*]
+    prompt: |
+      Synthesize the explorer findings into a single well-structured
+      markdown report. Preserve distinct perspectives; do not collapse
+      contradictory observations.
