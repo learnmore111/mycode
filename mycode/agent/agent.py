@@ -193,7 +193,17 @@ def _load_agents() -> dict[str, AgentInfo]:
 
 
 def _build_all_agents() -> dict[str, AgentInfo]:
-    """Internal: build agents from defaults + config (called under lock)."""
+    """Internal: build agents from defaults + config + registry (called under lock).
+
+    Layering (later wins on name conflict):
+      1. Built-in agents (from ``_build_agents``)
+      2. ``agent:`` mapping in mycode.json / project config
+      3. Markdown agents in ``~/.mycode/agents/*.md`` (global)
+      4. Markdown agents in ``<project>/.mycode/agents/*.md`` (project)
+
+    Steps 3 and 4 are delegated to :class:`mycode.orchestration.registry.AgentRegistry`
+    which also applies the ``extends`` chain.
+    """
     agents = _build_agents()
     cfg = configmod.get()
 
@@ -227,6 +237,38 @@ def _build_all_agents() -> dict[str, AgentInfo]:
             agent.hidden = acfg.hidden
         if acfg.steps is not None:
             agent.steps = acfg.steps
+
+    # --- Registry overlay (global + project Markdown agents) ---
+    # Import lazily to avoid a circular import at module load
+    # (orchestration.registry imports agent.agent).
+    try:
+        from mycode.orchestration.registry.agent_registry import AgentRegistry
+        from mycode.project.instance import current_or_none
+
+        inst = current_or_none()
+        project_dir = inst.directory if inst else None
+        registry = AgentRegistry(project_dir=project_dir)
+
+        for entry in registry.list_entries():
+            # builtin/config layers are already reflected above; only overlay
+            # file-based agents here so they can use extends against
+            # already-materialized builtin/config agents.
+            if entry.source not in ("global", "project"):
+                continue
+            try:
+                resolved = registry.resolve(entry.name)
+            except Exception as exc:
+                logger.warn(
+                    "agent registry resolve failed",
+                    name=entry.name,
+                    source=entry.source,
+                    error=str(exc),
+                )
+                continue
+            agents[entry.name] = resolved
+    except Exception as exc:
+        # A broken registry must never block primary agent loading.
+        logger.warn("agent registry overlay skipped", error=str(exc))
 
     return agents
 
