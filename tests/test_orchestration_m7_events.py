@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 
@@ -34,13 +34,15 @@ from mycode.orchestration.runtime import (
     run_swarm,
 )
 from mycode.orchestration.runtime.events import _preview
-from mycode.orchestration.runtime.swarm import SwarmAgentContext
 from mycode.orchestration.topology.schema import (
     AgentSpec,
     OrchestrationSpec,
     SpawnSpec,
     StageSpec,
 )
+
+if TYPE_CHECKING:
+    from mycode.orchestration.runtime.swarm import SwarmAgentContext
 
 
 # --- Shared fakes ----------------------------------------------------------
@@ -243,7 +245,7 @@ async def test_coordinator_emits_nested_lifecycle_events():
     spawn_starts = [i for i, t in enumerate(types) if t == "orchestration.spawn.started"]
     assert len(stage_starts) == 2
     assert len(spawn_starts) == 2
-    for ss, sp in zip(stage_starts, spawn_starts):
+    for ss, sp in zip(stage_starts, spawn_starts, strict=True):
         assert ss < sp
 
     # The first flow.started must carry mode + agents list.
