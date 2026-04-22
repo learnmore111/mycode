@@ -854,5 +854,3 @@ async def session_fork(
         return _session_json(info)
 
     return await provide(directory, _fn)
-
-    return await provide(directory, _fn)

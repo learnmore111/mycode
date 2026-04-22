@@ -48,13 +48,13 @@
 ---
 
 ### 4. Alembic 之外的「session 导出 / 备份」
-**状态**: 没有导出接口,唯一方式是直接拷贝 `~/.local/share/mycode/mycode.db`。
+**状态**: ✅ 已完成。`mycode/session/archive.py` 实现完整的 export/import 往返；格式为 `mycode-session-archive` v1 JSON。
 
-**待办**:
-- [ ] `GET /session/{id}/export` 返回 JSONL 归档(messages + parts + snapshot_refs)。
-- [ ] `POST /session/import` 接受 JSONL,校验完整性后重建。
-- [ ] CLI 镜像命令:`mycode session export <id> > out.jsonl` / `mycode session import out.jsonl`。
-- [ ] 文档说明如何合并快照 git 仓库。
+**已实现**:
+- [x] `GET /session/{id}/export` 返回 JSON 归档（messages + parts + compaction_events）。
+- [x] `POST /session/import` 接受 JSON 归档,校验完整性后重建。
+- [x] CLI 镜像命令:`mycode session export <id> [-o file]` / `mycode session import file.json`。
+- [ ] 文档说明如何合并快照 git 仓库（snapshot_ref 仅引用 hash,blob 不含在归档中）。
 
 ---
 
@@ -74,13 +74,13 @@
 ---
 
 ### 6. 对话分叉(fork)
-**状态**: 已实现线性回滚,但用户有时想从某一轮分叉成新对话来对比两种方案,不想覆盖原历史。
+**状态**: ✅ 已完成。`fork_session()` 基于 export→prune→import 模式实现，`parent_id` 记录谱系。
 
-**待办**:
-- [ ] `POST /session/{id}/fork?turn=N`:创建新 session,拷贝前 N 轮 messages + parts 到新 session_id。
-- [ ] `SessionTable.parent_id` + `fork_point_turn` 字段存谱系。
-- [ ] Web 侧 MessageBubble 上右键菜单加"从这里分叉"。
-- [ ] CLI `mycode session fork <id> -t N`。
+**已实现**:
+- [x] `POST /session/{id}/fork` body `{turn: N}`: 创建新 session,拷贝前 N 轮 messages + parts。
+- [x] `SessionTable.parent_id` 字段存谱系（fork 源 session ID）。
+- [ ] Web 侧 MessageBubble 上右键菜单加"从这里分叉"（前端待实现）。
+- [x] CLI `mycode session fork <id> -t N`。
 
 ---
 
@@ -211,7 +211,7 @@
 | Alembic 基线 revision | ✅ 完成 |
 | 多模态 end-to-end | ✅ 完成 (后端) |
 | mypy 零错误目标 | ✅ 完成 (286→0) |
-| 会话导出 / 分叉 / fork | ❌ 未开始 |
+| 会话导出 / 分叉 / fork | ✅ 完成 |
 | OTel tracing | 🟡 仅 metrics |
 | apply_patch / LSP didChange | ✅ 完成 |
 
