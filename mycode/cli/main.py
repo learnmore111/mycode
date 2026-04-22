@@ -1518,6 +1518,82 @@ def session_delete(session_id: str) -> None:
     asyncio.run(provide(".", _del))
 
 
+@session.command("export")
+@click.argument("session_id")
+@click.option("--output", "-o", type=click.Path(dir_okay=False, writable=True), default=None,
+              help="Write to file instead of stdout.")
+def session_export_cmd(session_id: str, output: str | None) -> None:
+    """Export a session to a JSON archive.
+
+    The archive is plain JSON with ``format: mycode-session-archive``;
+    pipe to a file (or pass ``-o path``) and import with
+    ``mycode session import``.
+    """
+    import asyncio
+
+    from mycode.project.instance import provide
+
+    async def _run() -> None:
+        from mycode.session.archive import export_session_json
+        try:
+            payload = export_session_json(session_id)
+        except KeyError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if output:
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(payload)
+            click.echo(f"Wrote archive → {output}")
+        else:
+            click.echo(payload)
+
+    asyncio.run(provide(".", _run))
+
+
+@session.command("import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--keep-id", is_flag=True, help="Preserve original session ID (dangerous if already present).")
+@click.option("--title-prefix", default="", help="Prefix to prepend to restored title.")
+def session_import_cmd(path: str, keep_id: bool, title_prefix: str) -> None:
+    """Import a session archive produced by ``mycode session export``."""
+    import asyncio
+
+    from mycode.project.instance import provide
+
+    async def _run() -> None:
+        from mycode.session.archive import import_session_json
+
+        with open(path, encoding="utf-8") as f:
+            payload = f.read()
+        try:
+            info = import_session_json(payload, new_id=not keep_id, title_prefix=title_prefix)
+        except (ValueError, KeyError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Imported session {info.id[:12]}  ({info.title})")
+
+    asyncio.run(provide(".", _run))
+
+
+@session.command("fork")
+@click.argument("session_id")
+@click.option("--turn", "-t", type=int, required=True, help="Assistant turn to fork after (inclusive).")
+@click.option("--title", default=None, help="Title for the new forked session.")
+def session_fork_cmd(session_id: str, turn: int, title: str | None) -> None:
+    """Fork a session at a given assistant turn into a new session."""
+    import asyncio
+
+    from mycode.project.instance import provide
+
+    async def _run() -> None:
+        from mycode.session.archive import fork_session
+        try:
+            info = fork_session(session_id, turn, title=title)
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Forked → {info.id[:12]}  ({info.title})")
+
+    asyncio.run(provide(".", _run))
+
+
 # --- MCP commands ---
 
 @cli.group()

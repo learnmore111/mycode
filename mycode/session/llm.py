@@ -46,6 +46,11 @@ class StreamInput:
     stop: list[str] | None = None
     api_key: str | None = None
     api_base: str | None = None
+    # When set, stream() watches this event between chunks and tears the
+    # HTTP response down as soon as it fires — letting the processor
+    # react to user-initiated abort within one chunk rather than having
+    # to wait for the LLM to stop generating on its own.
+    abort_event: asyncio.Event | None = None
 
 
 @dataclass
@@ -104,6 +109,50 @@ class ErrorEvent:
     error_code: str = "unknown"
     retryable: bool = False
     status_code: int | None = None
+
+
+async def _with_abort(
+    response: Any, abort_event: asyncio.Event | None,
+) -> "AsyncGenerator[Any, None]":
+    """Iterate ``response`` but stop early if ``abort_event`` fires.
+
+    litellm's streaming response is an async iterator. If we simply
+    ``async for chunk in response`` the only exit point is exhaustion or
+    an upstream error — a user hitting abort could wait tens of seconds
+    for the LLM to stop talking. Here we race each ``__anext__`` call
+    against the abort event and break out cleanly as soon as it's set.
+    """
+    if abort_event is None:
+        async for chunk in response:
+            yield chunk
+        return
+
+    it = response.__aiter__()
+    while True:
+        next_task = asyncio.ensure_future(it.__anext__())
+        abort_task = asyncio.ensure_future(abort_event.wait())
+        done, _pending = await asyncio.wait(
+            {next_task, abort_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        if next_task in done:
+            abort_task.cancel()
+            try:
+                chunk = next_task.result()
+            except StopAsyncIteration:
+                return
+            yield chunk
+        else:
+            # Abort fired first. Cancel the in-flight chunk read and
+            # close the upstream response so the provider stops sending.
+            next_task.cancel()
+            with contextlib.suppress(BaseException):
+                close = getattr(response, "aclose", None) or getattr(response, "close", None)
+                if close is not None:
+                    maybe = close()
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
+            logger.info("stream aborted by consumer")
+            return
 
 
 def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
@@ -235,7 +284,16 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     try:
         response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=300)
 
-        async for chunk in response:
+        # Consumer-initiated abort: race the next chunk against the abort
+        # event. Without this the user has to wait out the whole LLM
+        # response before the agent loop can unwind. We still let the
+        # current chunk land to avoid tearing the SSE parser mid-frame.
+        abort_event = stream_input.abort_event
+
+        async def _next_chunk():
+            return await response.__anext__()
+
+        async for chunk in _with_abort(response, abort_event):
             # Collect usage from any chunk that has it
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage

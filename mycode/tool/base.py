@@ -398,6 +398,11 @@ def atomic_write(file_path: str, content: str, encoding: str = "utf-8") -> None:
     This prevents file corruption if the process is interrupted mid-write.
     The temporary file is created in the same directory as the target to
     ensure they are on the same filesystem (required for atomic rename).
+
+    After a successful write we fan-out a ``post_write`` notification so
+    consumers (today: the LSP layer sending ``textDocument/didChange``)
+    can react without having to wrap every call site. Listeners run
+    best-effort — failures are logged and never propagate.
     """
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -410,3 +415,48 @@ def atomic_write(file_path: str, content: str, encoding: str = "utf-8") -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
+
+    _fire_post_write(file_path, content)
+
+
+# --- Post-write notification hook -----------------------------------------
+
+# List of (sync | async) callables invoked after ``atomic_write`` succeeds.
+# Keep it small: LSP didChange, possibly a watcher in the future.
+_PostWriteHook = Any  # Callable[[str, str], None | Awaitable[None]]
+_post_write_hooks: list[_PostWriteHook] = []
+
+
+def register_post_write_hook(fn: _PostWriteHook) -> None:
+    """Register a callback fired after every successful ``atomic_write``.
+
+    The callback receives ``(file_path, content)``. It may be a sync
+    function or a coroutine; coroutines are scheduled onto the running
+    event loop if one exists, else dropped (a sync-only caller like a
+    standalone CLI has no loop to post to, and losing an LSP notice
+    there is acceptable).
+    """
+    if fn not in _post_write_hooks:
+        _post_write_hooks.append(fn)
+
+
+def _fire_post_write(file_path: str, content: str) -> None:
+    import asyncio as _asyncio
+    import inspect as _inspect
+
+    for fn in list(_post_write_hooks):
+        try:
+            result = fn(file_path, content)
+            if _inspect.iscoroutine(result):
+                try:
+                    loop = _asyncio.get_running_loop()
+                except RuntimeError:
+                    # No running loop — drop the coroutine so it doesn't
+                    # leak a never-awaited warning.
+                    result.close()
+                    continue
+                loop.create_task(result)
+        except Exception:  # noqa: BLE001 — hooks must not break writes
+            # Caller-side hook failures are non-fatal; we don't even log
+            # to avoid spamming on every edit when an LSP is down.
+            pass

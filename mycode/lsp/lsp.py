@@ -20,6 +20,7 @@ class LspManager:
         self._clients: list[LspJsonRpcClient] = []
         self._servers: dict[str, LspServerDef] = dict(SERVERS)
         self._broken: set[str] = set()
+        self._hook_registered = False
 
     async def init(self, lsp_config: dict[str, Any] | bool | None = None) -> None:
         if lsp_config is False:
@@ -32,6 +33,17 @@ class LspManager:
                 elif isinstance(cfg, dict) and cfg.get("command"):
                     self._servers[name] = LspServerDef(
                         id=name, extensions=cfg.get("extensions", []), command=cfg["command"])
+        # Wire the post-write hook exactly once per process — on every
+        # successful atomic_write we'll fan a didChange out to LSPs that
+        # already track the file.
+        if not self._hook_registered:
+            from mycode.tool.base import register_post_write_hook
+
+            async def _on_post_write(path: str, content: str) -> None:
+                await self.notify_changed(path, text=content)
+
+            register_post_write_hook(_on_post_write)
+            self._hook_registered = True
 
     async def touch_file(self, file_path: str) -> None:
         """Notify LSP servers about a file (spawn server if needed)."""
@@ -74,6 +86,30 @@ class LspManager:
             except Exception as e:
                 self._broken.add(sid)
                 logger.warn("LSP spawn failed", server=sid, error=str(e))
+
+    async def notify_changed(self, file_path: str, *, text: str | None = None) -> None:
+        """Send textDocument/didChange to every LSP that has this file open.
+
+        Call this after edit/write/apply_patch operations so diagnostics
+        stay in sync with the on-disk content. We only notify servers
+        that have already opened the file (via ``touch_file``); this
+        avoids spawning a new LSP just to announce a change.
+
+        Errors are swallowed — LSP diagnostics are best-effort.
+        """
+        import os
+
+        ext = os.path.splitext(file_path)[1]
+        for sid, server in self._servers.items():
+            if server.extensions and ext not in server.extensions:
+                continue
+            for client in self._clients:
+                if client.server_id != sid:
+                    continue
+                try:
+                    await client.did_change(file_path, text=text)
+                except Exception as exc:  # noqa: BLE001 — best effort
+                    logger.debug("didChange failed, ignoring", server=sid, error=str(exc))
 
     def status(self) -> list[dict[str, str]]:
         return [{"id": c.server_id, "root": c.root, "status": c.status} for c in self._clients]

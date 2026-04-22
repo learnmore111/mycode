@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from mycode.util import log as logmod
 from mycode.util.git_async import git as _git
@@ -27,6 +28,9 @@ class Snapshot:
         self.worktree = worktree
         self.gitdir = str(GlobalPaths.data() / "snapshot" / project_id / hash_fast(worktree))
         self._initialized = False
+        # Populated by :meth:`track` on each call so consumers can inspect
+        # what the scanner found.
+        self.last_secret_hits: list[Any] = []
 
     async def init(self) -> None:
         if self._initialized:
@@ -53,7 +57,14 @@ class Snapshot:
         return ["--git-dir", self.gitdir, "--work-tree", self.worktree]
 
     async def track(self, message: str = "snapshot") -> str | None:
-        """Stage all files, write tree, and create a commit. Returns the commit hash."""
+        """Stage all files, write tree, and create a commit. Returns the commit hash.
+
+        Before committing we run a lightweight secret scan over any
+        newly added / modified text file. Hits are recorded on
+        ``self.last_secret_hits`` so callers (CLI, permission UI) can
+        surface warnings. The commit still goes through — we do not
+        break the agent loop — but critical findings are logged loudly.
+        """
         await self.init()
         if not self._initialized:
             return None
@@ -61,6 +72,12 @@ class Snapshot:
         add_code, _, add_err = await _git([*self._base_args(), "add", "--sparse", "."], cwd=self.worktree)
         if add_code != 0:
             logger.warn("git add failed", error=add_err.strip())
+
+        # Secret scan — only on staged files relative to HEAD, to avoid
+        # re-scanning everything on every turn. We cap at 2 MB per file
+        # and 64 files per pass to keep this cheap.
+        await self._scan_staged_for_secrets()
+
         code, tree_text, _ = await _git([*self._base_args(), "write-tree"], cwd=self.worktree)
         if code != 0:
             return None
@@ -80,6 +97,55 @@ class Snapshot:
 
         logger.debug("tracked (no commit)", tree=tree_hash)
         return tree_hash
+
+    _MAX_SCAN_FILES = 64
+    _MAX_SCAN_BYTES = 2 * 1024 * 1024  # 2 MB
+
+    async def _scan_staged_for_secrets(self) -> None:
+        """Scan staged-but-not-yet-committed files for secret patterns.
+
+        Diffs against HEAD so we only look at what actually changed this
+        turn. Limits (``_MAX_SCAN_FILES`` / ``_MAX_SCAN_BYTES``) keep the
+        scan bounded — agents that edit dozens of large files in one
+        turn fall back to summary-only reporting.
+        """
+        from mycode.util.secret_scan import SecretHit, has_critical, scan_text
+
+        self.last_secret_hits = []
+
+        # `git diff --cached --name-only` returns staged file paths.
+        code, names_out, _ = await _git(
+            [*self._base_args(), "diff", "--cached", "--name-only"], cwd=self.worktree,
+        )
+        if code != 0:
+            return
+        files = [p.strip() for p in names_out.splitlines() if p.strip()][: self._MAX_SCAN_FILES]
+
+        hits: list[SecretHit] = []
+        from pathlib import Path as _Path
+
+        for rel in files:
+            full = _Path(self.worktree) / rel
+            try:
+                if not full.is_file():
+                    continue
+                if full.stat().st_size > self._MAX_SCAN_BYTES:
+                    continue
+                content = full.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 — tolerate unreadable files
+                continue
+            for h in scan_text(content, path=rel):
+                hits.append(h)
+
+        self.last_secret_hits = hits
+        if hits:
+            severity = "critical" if has_critical(hits) else "warning"
+            logger.warn(
+                "snapshot secret scan flagged content",
+                count=len(hits),
+                severity=severity,
+                rules=sorted({h.rule for h in hits}),
+            )
 
     async def diff(self, tree_hash: str) -> str:
         await self.init()

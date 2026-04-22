@@ -773,3 +773,78 @@ async def session_rollback(
         return {**result, "restored": restored}
 
     return await provide(directory, _fn)
+
+
+@router.get("/{session_id}/export")
+async def session_export(session_id: str, directory: str = Query(default=".")):
+    """Export a session as a JSON archive (``SessionArchive`` v1).
+
+    The response is the archive dict — the client can JSON.stringify it
+    and save to disk. Binary attachments are NOT included in v1.
+    """
+    from mycode.project.instance import provide
+    from mycode.session.archive import export_session
+
+    async def _fn():
+        try:
+            return export_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    return await provide(directory, _fn)
+
+
+@router.post("/import")
+async def session_import(request: Request, directory: str = Query(default=".")):
+    """Import a session archive. Body must be the full archive dict."""
+    from mycode.project.instance import provide
+    from mycode.session.archive import import_session
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Archive body must be a JSON object")
+    new_id = bool(body.pop("_new_id", True))
+    prefix = str(body.pop("_title_prefix", "") or "")
+
+    async def _fn():
+        try:
+            info = import_session(body, new_id=new_id, title_prefix=prefix)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _session_json(info)
+
+    return await provide(directory, _fn)
+
+
+@router.post("/{session_id}/fork")
+async def session_fork(
+    session_id: str,
+    request: Request,
+    directory: str = Query(default="."),
+):
+    """Fork a session from a specific assistant turn.
+
+    Body: ``{"turn": <int>, "title": <str?>}``. Returns the new session.
+    """
+    from mycode.project.instance import provide
+    from mycode.session.archive import fork_session
+
+    body = await request.json() if request.headers.get("content-type") else {}
+    turn = body.get("turn") if isinstance(body, dict) else None
+    title = body.get("title") if isinstance(body, dict) else None
+
+    if not isinstance(turn, int) or turn < 1:
+        raise HTTPException(400, "Body must include integer field `turn` >= 1")
+
+    async def _fn():
+        try:
+            info = fork_session(session_id, turn, title=title if isinstance(title, str) else None)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _session_json(info)
+
+    return await provide(directory, _fn)
+
+    return await provide(directory, _fn)

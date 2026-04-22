@@ -29,10 +29,16 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Point Alembic at the real SQLite database, not the placeholder URL in
-# alembic.ini. This keeps dev/prod/test all using the same resolution.
-db_path = get_db_path()
-config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+# Resolve the SQLAlchemy URL. Callers that explicitly set
+# ``sqlalchemy.url`` via ``Config.set_main_option`` (tests, one-off
+# invocations against a specific DB file) win; otherwise fall back to
+# the project's canonical ``get_db_path()`` helper.
+resolved_url = config.get_main_option("sqlalchemy.url")
+_placeholder = "driver://user:pass@localhost/dbname"
+if not resolved_url or resolved_url == _placeholder:
+    db_path = get_db_path()
+    resolved_url = f"sqlite:///{db_path}"
+    config.set_main_option("sqlalchemy.url", resolved_url)
 
 target_metadata = Base.metadata
 
