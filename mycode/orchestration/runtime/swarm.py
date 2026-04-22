@@ -531,7 +531,19 @@ async def run_swarm(
         raise SwarmError("swarm requires at least 2 agents")
 
     peer_runner = runner or LiteLLMSwarmRunner()
-    system = MailboxSystem.inprocess(list(agents.keys()))
+    # Honour the backend hint from the spec.  ``None`` / ``auto`` /
+    # ``inprocess`` all collapse to the cheapest backend (in-process
+    # asyncio queues); the file- and terminal-backed modes are opt-in
+    # and require a writable ``root_dir`` — the factory creates a fresh
+    # temp directory when the spec does not supply one.
+    backend_spec = spec.backend
+    prefer: str = backend_spec.prefer if backend_spec else "auto"
+    root_dir = backend_spec.root_dir if backend_spec else None
+    system = MailboxSystem.for_backend(
+        prefer,  # type: ignore[arg-type]
+        list(agents.keys()),
+        root_dir=root_dir,
+    )
     # Wire the mailbox → emitter bridge so every message is visible on
     # the bus.  We keep it on the system (not each peer) to get one
     # emission per routed envelope even for broadcast fan-outs.
