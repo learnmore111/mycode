@@ -1682,3 +1682,137 @@ def snapshot_diff(tree_hash: str, directory: str) -> None:
             click.echo("No differences.")
 
     asyncio.run(_diff())
+
+
+# --- Orchestration commands ---
+
+@cli.group()
+def orchestrate() -> None:
+    """Manage multi-agent orchestration flows."""
+
+
+@orchestrate.command("list")
+@click.option("--directory", "-d", default=".", help="Project directory (for project-level flows)")
+def orchestrate_list(directory: str) -> None:
+    """List available orchestration flows (built-in + global + project)."""
+    from mycode.orchestration.registry import get_default_registry
+
+    registry = get_default_registry(project_dir=os.path.abspath(directory), refresh=True)
+    flows = registry.list_flows()
+    if not flows:
+        click.echo("No orchestration flows found.")
+        click.echo("  Built-in:  mycode/orchestration/flows/")
+        click.echo("  Global:    ~/.mycode/orchestrations/")
+        click.echo(f"  Project:   {os.path.abspath(directory)}/.mycode/orchestrations/")
+        return
+
+    # Group by source
+    by_source: dict[str, list] = {"builtin": [], "global": [], "project": []}
+    for f in flows:
+        by_source.setdefault(f.source, []).append(f)
+
+    for source in ("builtin", "global", "project"):
+        entries = by_source.get(source) or []
+        if not entries:
+            continue
+        click.echo(f"\n[{source}]")
+        for f in entries:
+            click.echo(f"  {f.name:<30} {f.path}")
+
+
+@orchestrate.command("inspect")
+@click.argument("flow_name")
+@click.option("--directory", "-d", default=".", help="Project directory")
+@click.option(
+    "--vars", "-v", "vars_", multiple=True,
+    help="Variable override: key=value (repeatable)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit resolved spec as JSON")
+def orchestrate_inspect(flow_name: str, directory: str, vars_: tuple[str, ...], as_json: bool) -> None:
+    """Load + validate + pretty-print an orchestration flow."""
+    from mycode.orchestration.registry import get_default_registry
+    from mycode.orchestration.topology.loader import OrchestrationLoadError
+    from mycode.orchestration.topology.validator import OrchestrationValidationError
+
+    overrides: dict[str, str] = {}
+    for kv in vars_:
+        if "=" not in kv:
+            raise click.ClickException(f"--vars expects key=value, got {kv!r}")
+        k, v = kv.split("=", 1)
+        overrides[k.strip()] = v
+
+    registry = get_default_registry(project_dir=os.path.abspath(directory), refresh=True)
+    try:
+        spec = registry.load(flow_name, vars_override=overrides)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except OrchestrationLoadError as exc:
+        raise click.ClickException(f"Load error: {exc}") from exc
+    except OrchestrationValidationError as exc:
+        msg = "Validation failed:\n  - " + "\n  - ".join(exc.issues)
+        raise click.ClickException(msg) from exc
+
+    if as_json:
+        import json as _json
+        click.echo(_json.dumps(spec.model_dump(exclude_none=True), indent=2, ensure_ascii=False))
+        return
+
+    _print_spec_tree(spec)
+
+
+def _print_spec_tree(spec) -> None:
+    """Pretty-print an OrchestrationSpec as a tree."""
+    from rich.console import Console
+    from rich.tree import Tree
+
+    console = Console(highlight=False)
+    root = Tree(f"[bold cyan]{spec.name}[/bold cyan] [dim]({spec.mode})[/dim]")
+    if spec.description:
+        root.add(f"[dim]{spec.description}[/dim]")
+    if spec.source_path:
+        root.add(f"[dim]source: {spec.source_path}[/dim]")
+    if spec.vars:
+        vars_node = root.add("[bold]vars[/bold]")
+        for k, v in spec.vars.items():
+            vars_node.add(f"{k} = {v!r}")
+
+    agents_node = root.add(f"[bold]agents[/bold] ({len(spec.agents)})")
+    for a in spec.agents:
+        line = f"[green]{a.name}[/green]"
+        if a.role:
+            line += f" [dim]role={a.role}[/dim]"
+        if a.extends:
+            line += f" [dim]extends={a.extends}[/dim]"
+        node = agents_node.add(line)
+        if a.tools:
+            node.add(f"tools: {', '.join(a.tools)}")
+        if a.isolation != "none":
+            node.add(f"isolation: {a.isolation}")
+        if a.max_turns:
+            node.add(f"max_turns: {a.max_turns}")
+
+    if spec.mode in ("coordinator", "hybrid") and spec.stages:
+        stages_node = root.add(f"[bold]stages[/bold] ({len(spec.stages)})")
+        for s in spec.stages:
+            line = f"[yellow]{s.id}[/yellow]"
+            flags = []
+            if s.parallel:
+                flags.append(f"parallel[{s.max_concurrency}]")
+            if s.runs_on:
+                flags.append(f"runs_on={s.runs_on}")
+            if s.fan_out_from:
+                flags.append(f"fan_out_from={s.fan_out_from}")
+            if s.depends_on:
+                flags.append(f"depends_on={','.join(s.depends_on)}")
+            if flags:
+                line += " [dim](" + ", ".join(flags) + ")[/dim]"
+            node = stages_node.add(line)
+            for spawn in s.spawn:
+                node.add(f"[blue]→[/blue] {spawn.agent}: {spawn.task[:80]}")
+
+    if spec.mode in ("swarm", "hybrid") and spec.lead:
+        root.add(f"[bold]lead[/bold]: [magenta]{spec.lead}[/magenta]")
+    if spec.backend:
+        root.add(f"[bold]backend[/bold]: prefer={spec.backend.prefer}")
+
+    console.print(root)
