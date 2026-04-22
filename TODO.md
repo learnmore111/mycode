@@ -220,7 +220,7 @@
 | Orchestration M7 (event bus integration + HTTP routes + SSE streaming) | ✅ 完成 |
 | Orchestration M6.5 (file / tmux / iterm mailbox backends) | ✅ 完成 |
 | Alembic 基线 revision | ✅ 完成 |
-| 多模态 end-to-end | 🟡 骨架 |
+| 多模态 end-to-end | ✅ 完成 (后端) |
 | mypy 零错误目标 | ✅ 完成 (286→0) |
 | 会话导出 / 分叉 / fork | ❌ 未开始 |
 | OTel tracing | 🟡 仅 metrics |
