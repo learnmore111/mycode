@@ -2,7 +2,10 @@
 
 M5 delivers the **coordinator** runtime (sequential/parallel stages,
 fan-out, coordinator synthesis).  M6 adds the **swarm** runtime
-(mailbox-driven peer agents) with an inprocess backend.
+(mailbox-driven peer agents) with an inprocess backend.  M7 adds an
+**event emitter** so both runtimes can publish lifecycle events onto
+:class:`mycode.bus.bus.Bus` — letting the FastAPI SSE endpoints and the
+web UI observe progress in real time.
 
 Public surface:
 
@@ -13,6 +16,8 @@ Public surface:
 - :class:`RunContext` / :class:`StageOutput` / :class:`SpawnOutput` —
   aggregated results that consumers (CLI, server, tests) read.
 - :class:`MailboxSystem` / :class:`Envelope` — swarm message plumbing.
+- :class:`BusOrchestrationEmitter` / :class:`RecordingEmitter` /
+  :class:`OrchestrationEventEmitter` — M7 event bridge.
 """
 
 from mycode.orchestration.runtime.context import (
@@ -25,6 +30,11 @@ from mycode.orchestration.runtime.coordinator import (
     CoordinatorError,
     CoordinatorResult,
     run_coordinator,
+)
+from mycode.orchestration.runtime.events import (
+    BusOrchestrationEmitter,
+    OrchestrationEventEmitter,
+    RecordingEmitter,
 )
 from mycode.orchestration.runtime.mailbox import (
     Envelope,
@@ -51,6 +61,7 @@ from mycode.orchestration.runtime.swarm import (
 __all__ = [
     "DEFAULT_MAX_TURNS",
     "AgentRunner",
+    "BusOrchestrationEmitter",
     "Coordinator",
     "CoordinatorError",
     "CoordinatorResult",
@@ -61,6 +72,8 @@ __all__ = [
     "LiteLLMSwarmRunner",
     "Mailbox",
     "MailboxSystem",
+    "OrchestrationEventEmitter",
+    "RecordingEmitter",
     "RunContext",
     "SpawnOutput",
     "SpawnRequest",
