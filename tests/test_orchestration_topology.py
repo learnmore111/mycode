@@ -186,7 +186,7 @@ def test_validator_rejects_unknown_agent_in_spawn() -> None:
     spec = OrchestrationSpec(
         name="demo",
         mode="coordinator",
-        agents=[AgentSpec(name="w")],
+        agents=[AgentSpec(name="w", role="coordinator")],
         stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="ghost", task="x")])],
     )
     with pytest.raises(OrchestrationValidationError, match="unknown agent 'ghost'"):
@@ -197,7 +197,7 @@ def test_validator_rejects_cycle() -> None:
     spec = OrchestrationSpec(
         name="demo",
         mode="coordinator",
-        agents=[AgentSpec(name="w")],
+        agents=[AgentSpec(name="w", role="coordinator")],
         stages=[
             StageSpec(id="a", depends_on=["b"], spawn=[SpawnSpec(agent="w", task="x")]),
             StageSpec(id="b", depends_on=["a"], spawn=[SpawnSpec(agent="w", task="x")]),
@@ -207,13 +207,114 @@ def test_validator_rejects_cycle() -> None:
         validate(spec)
 
 
-def test_validator_rejects_swarm_without_lead() -> None:
+def test_validator_allows_swarm_without_explicit_entry() -> None:
+    """Swarm is a decentralized / peer-to-peer topology; specifying an
+    entry agent (historically called ``lead``) is **optional**.  When
+    omitted, the runtime picks the first declared agent as the entry
+    point.  See docs/multi-agent-architecture.md for the rationale.
+    """
     spec = OrchestrationSpec(
         name="demo",
         mode="swarm",
         agents=[AgentSpec(name="a"), AgentSpec(name="b")],
     )
-    with pytest.raises(OrchestrationValidationError, match="requires a 'lead'"):
+    # Should pass validation without raising.
+    validate(spec)
+
+
+def test_validator_rejects_swarm_with_single_agent() -> None:
+    """Swarm collaboration requires at least two peers."""
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="swarm",
+        agents=[AgentSpec(name="a")],
+    )
+    with pytest.raises(OrchestrationValidationError, match="at least 2 agents"):
+        validate(spec)
+
+
+def test_validator_rejects_swarm_entry_unknown_agent() -> None:
+    """If an entry agent is pinned, it must reference a declared agent."""
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="swarm",
+        entry="ghost",
+        agents=[AgentSpec(name="a"), AgentSpec(name="b")],
+    )
+    with pytest.raises(OrchestrationValidationError, match="unknown agent"):
+        validate(spec)
+
+
+def test_validator_rejects_coordinator_without_leader() -> None:
+    """Coordinator mode follows the orchestrator-worker pattern; a
+    centralised leader must be designated either via the top-level
+    ``coordinator`` field or via exactly one agent with ``role='coordinator'``.
+    """
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="coordinator",
+        agents=[AgentSpec(name="w"), AgentSpec(name="x")],
+        stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="w", task="x")])],
+    )
+    with pytest.raises(OrchestrationValidationError, match="designated leader"):
+        validate(spec)
+
+
+def test_validator_rejects_coordinator_with_ambiguous_leader() -> None:
+    """Two agents claiming role='coordinator' without an explicit
+    top-level ``coordinator`` is ambiguous → reject.
+    """
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="coordinator",
+        agents=[
+            AgentSpec(name="a", role="coordinator"),
+            AgentSpec(name="b", role="coordinator"),
+        ],
+        stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="a", task="x")])],
+    )
+    with pytest.raises(OrchestrationValidationError, match="multiple agents with role='coordinator'"):
+        validate(spec)
+
+
+def test_validator_allows_coordinator_with_explicit_field() -> None:
+    """Explicit top-level ``coordinator: <agent>`` satisfies the leader rule
+    even if no agent carries role='coordinator'.
+    """
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="coordinator",
+        coordinator="a",
+        agents=[AgentSpec(name="a"), AgentSpec(name="b")],
+        stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="a", task="x")])],
+    )
+    validate(spec)  # no raise
+
+
+def test_validator_auto_derives_coordinator_from_single_role() -> None:
+    """Exactly one ``role=coordinator`` agent → coordinator field is
+    derived automatically by the schema's model_validator.
+    """
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="coordinator",
+        agents=[AgentSpec(name="boss", role="coordinator"), AgentSpec(name="worker", role="worker")],
+        stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="worker", task="x")])],
+    )
+    assert spec.coordinator == "boss"
+    validate(spec)  # no raise
+
+
+def test_validator_rejects_coordinator_unknown_reference() -> None:
+    """Explicit ``coordinator`` must reference a declared agent."""
+    spec = OrchestrationSpec(
+        name="demo",
+        mode="coordinator",
+        coordinator="ghost",
+        agents=[AgentSpec(name="a"), AgentSpec(name="b")],
+        stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="a", task="x")])],
+    )
+    with pytest.raises(OrchestrationValidationError, match="coordinator references unknown agent"):
         validate(spec)
 
 
@@ -231,7 +332,7 @@ def test_validator_detects_unresolved_placeholder() -> None:
     spec = OrchestrationSpec(
         name="demo",
         mode="coordinator",
-        agents=[AgentSpec(name="w")],
+        agents=[AgentSpec(name="w", role="coordinator")],
         stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="w", task="{{ missing }}")])],
     )
     with pytest.raises(OrchestrationValidationError, match="unresolved placeholder"):
@@ -243,7 +344,7 @@ def test_validator_allows_runtime_tokens() -> None:
     spec = OrchestrationSpec(
         name="demo",
         mode="coordinator",
-        agents=[AgentSpec(name="w")],
+        agents=[AgentSpec(name="w", role="coordinator")],
         stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="w", task="process {{ $item }}")])],
     )
     validate(spec)  # no exception
@@ -253,6 +354,7 @@ def test_validator_detects_duplicate_names() -> None:
     spec = OrchestrationSpec(
         name="demo",
         mode="coordinator",
+        coordinator="w",
         agents=[AgentSpec(name="w"), AgentSpec(name="w")],
         stages=[StageSpec(id="s1", spawn=[SpawnSpec(agent="w", task="x")])],
     )

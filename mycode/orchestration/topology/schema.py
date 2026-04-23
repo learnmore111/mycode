@@ -6,7 +6,13 @@ It declares:
 - ``mode``: coordinator | swarm | hybrid
 - ``agents``: named agent definitions (may ``extend`` a registry agent)
 - ``stages``: (coordinator) ordered DAG with optional fan-out / parallel
-- ``lead``: (swarm) the team lead agent name
+- ``coordinator``: (coordinator/hybrid) the leader agent that synthesises
+  worker outputs.  **Required** for coordinator mode — this is the
+  orchestrator-worker pattern (cf. Anthropic "orchestrator-worker",
+  LangGraph "supervisor").  When omitted, the loader attempts to derive
+  it from the single agent whose ``role == "coordinator"``.
+- ``entry``: (swarm) the entry agent — the initial task receiver.
+  ``lead`` is accepted as a backward-compatible alias.
 
 See :mod:`mycode.orchestration.topology.loader` for parsing and
 :mod:`mycode.orchestration.topology.validator` for semantic checks.
@@ -16,12 +22,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # --- Enums (string literals to keep YAML friendly) -------------------------
 
 OrchestrationMode = Literal["coordinator", "swarm", "hybrid"]
-AgentRole = Literal["coordinator", "worker", "teammate", "lead", "fork"]
+# ``lead`` kept for backwards-compat; ``entry`` is the preferred role for the
+# swarm entry agent (the initial task receiver — not a centralized leader).
+AgentRole = Literal["coordinator", "worker", "teammate", "lead", "entry", "fork"]
 IsolationMode = Literal["none", "worktree", "process"]
 
 
@@ -145,6 +153,15 @@ class OrchestrationSpec(BaseModel):
     vars: dict[str, Any] = Field(default_factory=dict)
     agents: list[AgentSpec] = Field(default_factory=list)
     stages: list[StageSpec] = Field(default_factory=list)
+    # In coordinator (or hybrid) mode ``coordinator`` names the leader agent
+    # that synthesises worker outputs — the orchestrator-worker pattern.
+    # Required for coordinator mode; may be omitted in pure swarm mode.
+    # If not explicitly set, the loader derives it from the unique agent
+    # whose ``role == "coordinator"`` (see ``_sync_coordinator``).
+    coordinator: str | None = None
+    # In swarm mode ``entry`` is the initial task receiver. ``lead`` is kept
+    # as a backward-compatible alias and mirrored to ``entry`` on load.
+    entry: str | None = None
     lead: str | None = None
     backend: BackendSpec | None = None
     max_depth: int = 3
@@ -157,6 +174,51 @@ class OrchestrationSpec(BaseModel):
         if not v or not v.strip():
             raise ValueError("orchestration name must be non-empty")
         return v
+
+    @model_validator(mode="after")
+    def _sync_entry_lead(self) -> OrchestrationSpec:
+        """Keep ``entry`` and ``lead`` mirrored.
+
+        - If only one of them is set, populate the other so downstream code
+          (and legacy tests) can read either name transparently.
+        - If both are set and disagree, raise — the caller must pick one.
+        """
+        if self.entry and self.lead and self.entry != self.lead:
+            raise ValueError(
+                f"'entry' ({self.entry!r}) and 'lead' ({self.lead!r}) disagree; "
+                f"prefer 'entry' and remove 'lead'"
+            )
+        if self.entry and not self.lead:
+            self.lead = self.entry
+        elif self.lead and not self.entry:
+            self.entry = self.lead
+        return self
+
+    @model_validator(mode="after")
+    def _sync_coordinator(self) -> OrchestrationSpec:
+        """Derive ``coordinator`` from ``role=coordinator`` agents when absent.
+
+        Business rule (coordinator / orchestrator-worker pattern):
+        a centralised coordinator is **required** for ``mode=coordinator``.
+        We *infer* it here from agent roles so existing flows that only
+        declare ``role: coordinator`` on one of the agents keep working,
+        while ``_check_mode_constraints`` in the validator still enforces
+        presence/uniqueness at semantic-validation time.
+
+        Rules:
+        - If ``coordinator`` is unset and exactly one agent has
+          ``role == "coordinator"``, adopt that agent's name.
+        - If ``coordinator`` is set but no matching agent exists with
+          ``role == "coordinator"``, leave it alone (validator will
+          catch any truly invalid state).
+        - Multiple ``role=coordinator`` agents are ambiguous — leave
+          ``coordinator`` unset so the validator raises a clear error.
+        """
+        if self.coordinator is None:
+            coord_agents = [a.name for a in self.agents if a.role == "coordinator"]
+            if len(coord_agents) == 1:
+                self.coordinator = coord_agents[0]
+        return self
 
     def agent_by_name(self, name: str) -> AgentSpec | None:
         for a in self.agents:

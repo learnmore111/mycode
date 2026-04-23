@@ -1,30 +1,42 @@
 """Swarm runtime: mailbox-driven peer agents.
 
-A swarm execution is the message-oriented counterpart to coordinator
-mode: there is no pre-declared DAG; instead a ``lead`` agent is seeded
-with the user task and every agent (lead + teammates) can send direct
-or broadcast messages to other peers via the ``send_message`` tool.
+A swarm execution is the peer-to-peer, message-oriented counterpart to
+coordinator mode. There is no pre-declared DAG and no central controller;
+instead one agent — the **entry agent** — is seeded with the user task and
+every agent can send direct or broadcast messages to other peers via the
+``send_message`` tool.
+
+``entry`` vs ``lead``
+=====================
+
+Historically this module called the entry agent ``lead``. The name is
+retained as a backward-compatible alias (``spec.lead`` / ``SwarmResult.lead``
+/ ``SwarmAgentContext.lead_name`` / ``'main'`` recipient alias), but
+semantically the role is closer to ``default_active_agent`` in LangGraph
+Swarm or ``initial_agent`` in OpenAI Agents SDK: just the **initial task
+receiver**, not a central coordinator. The entry agent is optional; when
+a spec omits it, the runtime uses the first declared agent.
 
 Execution model
 ===============
 
 1. :func:`run_swarm` builds a :class:`MailboxSystem` with one inbox per
-   agent, seeds the lead's inbox with the user's task, then spawns one
-   :class:`asyncio.Task` per peer running :class:`LiteLLMSwarmRunner`
+   agent, seeds the entry agent's inbox with the user's task, then spawns
+   one :class:`asyncio.Task` per peer running :class:`LiteLLMSwarmRunner`
    (or any :class:`SwarmAgentRunner` injected by a test).
 2. Each runner loops:
    - ``drain`` its mailbox for any new envelopes;
-   - if any are shutdown-responses the lead has gathered enough
+   - if any are shutdown-responses the entry agent has gathered enough
      acknowledgements, the runner exits;
    - otherwise append envelopes as ``user`` messages into the local
      conversation and take **one** LLM turn;
    - tool calls are executed in-line: ``send_message`` routes through
      the mailbox, every other tool goes through the normal registry.
 3. The swarm terminates when:
-   a. the lead returns without any pending tool call *and* its mailbox
-      is empty (peaceful quiescence), or
-   b. the lead sends a ``shutdown_request`` to all peers and they
-      respond (graceful drain), or
+   a. the entry agent returns without any pending tool call *and* its
+      mailbox is empty (peaceful quiescence), or
+   b. any peer sends a ``shutdown_request`` that is accepted by all
+      teammates (graceful drain), or
    c. the global turn budget or wall-clock limit is reached (safety).
 
 Design notes
@@ -39,11 +51,9 @@ Design notes
   bound to the mailbox system and the sender's name. This keeps the
   tool registry free of stateful singletons and lets two concurrent
   swarm runs coexist without cross-talk.
-- **Termination fairness**: the lead can always request shutdown but
-  teammates can refuse by responding ``approve=False``; the lead then
-  decides (usually: continue a few more turns, then give up and force
-  termination at the turn budget). This mirrors how real collaborators
-  negotiate endings.
+- **Termination fairness**: any peer can request shutdown; teammates
+  can refuse by responding ``approve=False``. This mirrors how real
+  collaborators negotiate endings.
 - **No shared state** between peers other than the mailbox log — each
   agent has its own conversation buffer and its own ``ToolContext``.
 """
@@ -72,7 +82,7 @@ if TYPE_CHECKING:
 
 
 class SwarmError(RuntimeError):
-    """Raised when a swarm run cannot start (unknown lead, no agents)."""
+    """Raised when a swarm run cannot start (unknown entry agent, no agents)."""
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +99,8 @@ class SendMessageParams(BaseModel):
     )
     recipient: str = Field(
         default="",
-        description="Target agent name. Use 'main' to address the team lead. "
-        "Required for message / shutdown_* kinds.",
+        description="Target agent name. Use 'main' to address the swarm entry "
+        "agent. Required for message / shutdown_* kinds.",
     )
     content: str = Field(default="", description="Message body.")
     summary: str = Field(
@@ -115,9 +125,9 @@ class _SendMessageTool(CallableTool[SendMessageParams]):
     id = "send_message"
     description = (
         "Send a message to a swarm teammate.  'recipient' is another "
-        "agent's name, or 'main' for the team lead.  Use type='broadcast' "
-        "to fan-out to every teammate.  Use type='shutdown_request' to "
-        "propose ending the collaboration."
+        "agent's name, or 'main' for the swarm entry agent.  Use "
+        "type='broadcast' to fan-out to every teammate.  Use "
+        "type='shutdown_request' to propose ending the collaboration."
     )
 
     def __init__(self, system: MailboxSystem, sender: str, lead_name: str) -> None:
@@ -218,13 +228,21 @@ class SwarmAgentContext:
     agent: AgentInfo
     sender_name: str  # == agent.name; kept distinct for readability
     system: MailboxSystem
+    # Name of the swarm entry agent (the initial task receiver).  Kept as
+    # ``lead_name`` for backwards compatibility with existing fakes/tests;
+    # new code should read ``entry_name`` which aliases the same field.
     lead_name: str
-    initial_task: str | None  # only the lead gets a seed task
+    initial_task: str | None  # only the entry agent gets a seed task
     max_turns: int
     # Called by the runner after every turn so the orchestrator can
     # decide whether the global budget is exhausted.  Returning True
     # tells the runner to stop cleanly.
     should_stop: Callable[[], bool]
+
+    @property
+    def entry_name(self) -> str:
+        """Alias for :attr:`lead_name` — the swarm entry agent's name."""
+        return self.lead_name
 
 
 class SwarmAgentRunner(Protocol):
@@ -474,6 +492,8 @@ class SwarmResult:
     """Aggregated outcome of a swarm run."""
 
     flow_name: str
+    # Name of the entry agent (initial task receiver).  Kept as ``lead`` for
+    # backwards compatibility; new code may read the ``entry`` alias.
     lead: str
     # Per-peer final outputs (the peer's last assistant text, plus
     # token accounting).  Keyed by agent name.
@@ -481,9 +501,19 @@ class SwarmResult:
     # Full ordered message log (including broadcast fan-outs, shutdown
     # negotiation, everything).  Tests and the CLI consume this.
     transcript: list[Envelope] = field(default_factory=list)
-    # Convenience: the lead's final text is commonly the swarm answer.
+    # Convenience: the entry agent's final text is commonly the swarm answer.
     lead_output: str = ""
     terminated_reason: str = ""  # "lead-quiet" | "turn-budget" | "walltime" | "shutdown"
+
+    @property
+    def entry(self) -> str:
+        """Alias for :attr:`lead` — the swarm entry agent's name."""
+        return self.lead
+
+    @property
+    def entry_output(self) -> str:
+        """Alias for :attr:`lead_output` — the entry agent's final text."""
+        return self.lead_output
 
 
 async def run_swarm(
@@ -501,11 +531,13 @@ async def run_swarm(
     Parameters
     ----------
     spec:
-        Validated spec with ``mode='swarm'`` and ``lead`` set.
+        Validated spec with ``mode='swarm'``.  ``spec.entry`` (or the
+        legacy alias ``spec.lead``) names the initial task receiver; when
+        neither is set the runtime falls back to the first declared agent.
     agents:
         Resolved ``{name → AgentInfo}`` from :mod:`agent_resolver`.
     user_task:
-        The initial prompt delivered to the lead's inbox.
+        The initial prompt delivered to the entry agent's inbox.
     runner:
         Per-peer loop.  Defaults to :class:`LiteLLMSwarmRunner`; tests
         inject a deterministic fake.
@@ -522,13 +554,25 @@ async def run_swarm(
     """
     if spec.mode != "swarm":
         raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
-    if not spec.lead:
-        raise SwarmError("swarm spec is missing 'lead'")
-    lead = spec.lead
-    if lead not in agents:
-        raise SwarmError(f"lead {lead!r} not in resolved agents: {sorted(agents)}")
+    if not agents:
+        raise SwarmError("swarm requires at least 1 agent")
     if len(agents) < 2:
         raise SwarmError("swarm requires at least 2 agents")
+
+    # Resolve the entry agent.  Prefer the new ``entry`` field; fall back
+    # to the legacy ``lead`` alias; finally use the first declared agent
+    # as a sensible default so a fully-decentralized swarm spec (no entry
+    # pinned) still has a deterministic task-seeding target.
+    entry_name = spec.entry or spec.lead
+    if not entry_name:
+        # ``spec.agents`` preserves declaration order; ``agents`` is a dict
+        # rebuilt from it, but we re-derive from the spec to be explicit.
+        entry_name = spec.agents[0].name if spec.agents else next(iter(agents))
+    if entry_name not in agents:
+        raise SwarmError(
+            f"entry agent {entry_name!r} not in resolved agents: {sorted(agents)}"
+        )
+    lead = entry_name  # kept for readability below (callbacks, events)
 
     peer_runner = runner or LiteLLMSwarmRunner()
     # Honour the backend hint from the spec.  ``None`` / ``auto`` /
