@@ -178,14 +178,20 @@ def touch(session_id: str) -> None:
 
 
 def remove(session_id: str) -> None:
-    """Soft-delete a session (set visible = 0)."""
+    """Soft-delete a session (set visible = 0).
+
+    Raises ``KeyError`` if no session with ``session_id`` exists, so callers
+    (CLI / HTTP) can surface an accurate result rather than reporting a
+    non-existent deletion as success.
+    """
     db = get_db_session()
     try:
         row = db.query(SessionTable).filter(SessionTable.id == session_id).first()
-        if row:
-            row.visible = 0
-            row.time_updated = int(time.time() * 1000)
-            db.commit()
+        if not row:
+            raise KeyError(f"Session not found: {session_id}")
+        row.visible = 0
+        row.time_updated = int(time.time() * 1000)
+        db.commit()
     finally:
         db.close()
 

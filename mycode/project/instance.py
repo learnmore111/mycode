@@ -86,17 +86,31 @@ async def provide[T](
     """Run an async function within a project instance context.
 
     This is the primary way to establish context for project operations.
+
+    If ``project`` is not supplied, the project is auto-discovered from
+    ``directory`` via ``mycode.project.project.from_directory`` (git root →
+    stable project id). Callers that already resolved the project (e.g.
+    ``mycode run``/``serve``) should still pass it explicitly to avoid a
+    duplicate discovery call.
     """
     resolved = str(Path(directory).resolve())
 
     if project is None:
-        # Create a minimal "global" project for now
-        # Real project discovery will be in project/project.py
-        project = ProjectInfo(
-            id="global",
-            worktree=resolved,
-            vcs=None,
-        )
+        # Import lazily to avoid a circular import: project.project already
+        # imports ProjectInfo from this module at module load time.
+        from mycode.project.project import from_directory as _from_directory
+
+        try:
+            project = await _from_directory(resolved)
+        except Exception:
+            # Fall back to a minimal "global" project so CLI commands that
+            # don't strictly need a real project (e.g. running outside any
+            # repo) still work.
+            project = ProjectInfo(
+                id="global",
+                worktree=resolved,
+                vcs=None,
+            )
 
     ctx = InstanceContext(
         directory=resolved,

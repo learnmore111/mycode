@@ -60,7 +60,31 @@
 
 ## 中等价值(P1 — 可观测性、安全、体验)
 
-### 5. 结构化 OpenTelemetry tracing
+### 5. 模型"声明即执行"循环自我校正
+**状态**: 端到端复现发现,当 prompt 让模型"先检查历史再继续"时,模型会只回复"让我先检查一下:"然后在没有调用任何工具的情况下直接结束本轮,导致用户请求没有实际推进。对照测试表明,若 prompt 中含明确的工具执行指令(如"先 listdir 再 read pyproject.toml")则工具链正常。属于 prompt/processor 层的行为缺陷,不是数据库或调度 bug。
+
+**复现**:
+```
+uv run mycode run -p "继续处理我上一个被暂停的请求。
+
+上一个请求:再新建一个
+
+请先检查当前会话历史和工作区里已经完成的代码修改,再从中断处继续,不要重复已经做完的步骤。"
+```
+输出: `我需要查看当前工作区的状态和最近的修改记录来了解您之前的请求内容。让我先检查一下:` → 无 tool_call 直接 Done。
+
+**待办**:
+- [ ] 在系统 prompt 中加一条硬约束:当助手声明"让我 / 我需要 / 我来…看看 / 检查 / 读取 / 查看"等意图时,**必须**在同一轮产出对应 tool_call,否则即为失败输出。
+- [ ] `mycode/session/processor.py` 在 assistant 文本以意图结尾且本轮无 tool_call 时,自动再推一次 LLM(类似 loop_guard 的反向信号);阈值和次数需防止死循环。
+- [ ] 或者在检测到这种情况时,以 SystemMessage(info) 注入"Reminder: you declared an intent but did not call any tool; either call the tool or state that you are done."再让模型继续。
+- [ ] 给"恢复被暂停请求"的系统 prompt 模板也加一条:显式列出应先调用的工具(read session history, list workspace diff 等)。
+- [ ] 加 regression 测试: headless 模式跑上面的复现 prompt,断言至少触发一次工具调用。
+
+**参考**: `mycode/session/processor.py`、`mycode/session/prompt.py`、`mycode/agent/build/PROMPT.md`(系统提示模板所在位置)
+
+---
+
+### 6. 结构化 OpenTelemetry tracing
 **状态**: 已经有 in-process metrics counter + histogram;缺 span/trace。
 
 **待办**:
