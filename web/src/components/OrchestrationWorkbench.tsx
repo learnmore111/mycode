@@ -247,7 +247,7 @@ function AgentEditor({ initial, allAgents, onSave, onCancel, saving }: {
               <div>
                 <label className={labelStyle}>角色</label>
                 <Select value={role} onChange={setRole} placeholder="无"
-                  options={['coordinator', 'worker', 'teammate', 'lead', 'fork'].map((r) => ({ value: r, label: r }))} mono />
+                  options={['coordinator', 'worker', 'teammate', 'entry', 'lead', 'fork'].map((r) => ({ value: r, label: r }))} mono />
               </div>
               <div>
                 <label className={labelStyle}>模式</label>
@@ -332,7 +332,13 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
   const [name, setName] = useState(initial?.name ?? '')
   const [desc, setDesc] = useState('')
   const [mode, setMode] = useState<string>(initial?.mode ?? 'coordinator')
-  const [lead, setLead] = useState(initial?.lead ?? '')
+  // Swarm entry agent (initial task receiver). Falls back to the legacy
+  // `lead` alias for flows loaded from older backends.
+  const [entry, setEntry] = useState(initial?.entry ?? initial?.lead ?? '')
+  // Coordinator leader agent (orchestrator-worker pattern). Required for
+  // coordinator/hybrid mode. When empty the backend will try to derive it
+  // from the single agent with `role: coordinator`.
+  const [coordinator, setCoordinator] = useState(initial?.coordinator ?? '')
   const [scope, setScope] = useState('project')
   const [vars, setVars] = useState<Array<{ key: string; value: string }>>(
     initial?.vars ? Object.entries(initial.vars).map(([key, value]) => ({ key, value })) : []
@@ -362,6 +368,51 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
 
   const agentNames = agents.filter((a) => a.name.trim()).map((a) => a.name.trim())
 
+  // Dropdown for Lead / Entry / Spawn agents should also show agents
+  // discovered from the registry (builtin / global / project) — otherwise a
+  // freshly-created flow has nothing to pick from until the user manually
+  // adds participants.  Registry agents are surfaced with a "(注册表)" hint.
+  const registryOnlyNames = allAgents
+    .map((a) => a.name)
+    .filter((name) => !agentNames.includes(name))
+  const agentSelectOptions = [
+    ...agentNames.map((name) => ({ value: name, label: name })),
+    ...registryOnlyNames.map((name) => ({ value: name, label: `${name} (注册表)` })),
+  ]
+
+  // Auto-append a registry agent into the flow's agent list when the user
+  // picks one from a Lead/Entry/Spawn dropdown.  Keeps the backend happy —
+  // the validator requires the referenced agent to exist inside the flow.
+  const ensureAgent = (selected: string, defaultRole: string) => {
+    if (!selected) return
+    if (agentNames.includes(selected)) return
+    setAgents((prev) => [
+      ...prev,
+      { name: selected, extends: selected, role: defaultRole, prompt: '' },
+    ])
+  }
+
+  const handleSelectCoordinator = (v: string) => {
+    setCoordinator(v)
+    ensureAgent(v, 'coordinator')
+  }
+
+  const handleSelectEntry = (v: string) => {
+    setEntry(v)
+    ensureAgent(v, 'entry')
+  }
+
+  const handleSelectSpawnAgent = (stageIdx: number, spawnIdx: number, v: string) => {
+    setStages((p) =>
+      p.map((s, idx) =>
+        idx === stageIdx
+          ? { ...s, spawns: s.spawns.map((x, j) => (j === spawnIdx ? { ...x, agent: v } : x)) }
+          : s,
+      ),
+    )
+    ensureAgent(v, 'worker')
+  }
+
   const handleSave = () => {
     const varsObj: Record<string, string> = {}
     vars.forEach((v) => { if (v.key.trim()) varsObj[v.key.trim()] = v.value })
@@ -381,7 +432,9 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
       if (s.spawns.length > 0) spec.spawn = s.spawns.filter((sp) => sp.agent.trim()).map((sp) => ({ agent: sp.agent.trim(), task: sp.task }))
       return spec
     })
-    onSave({ name: name.trim(), description: desc || undefined, mode, lead: lead || undefined,
+    onSave({ name: name.trim(), description: desc || undefined, mode,
+      entry: entry || undefined,
+      coordinator: coordinator || undefined,
       agents: agentSpecs.length > 0 ? agentSpecs : undefined, stages: stageSpecs.length > 0 ? stageSpecs : undefined,
       vars: Object.keys(varsObj).length > 0 ? varsObj : undefined, scope }, isNew)
   }
@@ -412,7 +465,7 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
           {/* Basic */}
           <div className={cardStyle + ' p-5'}>
             <div className={sectionTitle + ' mb-4'}><Hash size={12} className="text-[#3D3BF3]" />基本信息</div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid gap-4 grid-cols-3">
               <div>
                 <label className={labelStyle}>名称 *</label>
                 <input value={name} onChange={(e) => setName(e.target.value)} disabled={!isNew} placeholder="my-flow" className={inputMono + ' disabled:opacity-40'} />
@@ -421,33 +474,44 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                 <label className={labelStyle}>模式 *</label>
                 <div className="flex gap-1.5">
                   {([{ v: 'coordinator', l: 'Coordinator', i: Network }, { v: 'swarm', l: 'Swarm', i: Users }] as const).map(({ v, l, i: I }) => (
-                    <button key={v} onClick={() => setMode(v)}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-semibold transition-all border ${mode === v ? pillActive : pillInactive}`}>
+                    <button key={v} type="button" onClick={() => setMode(v)}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-[11px] font-semibold transition-all border whitespace-nowrap focus:outline-none ${mode === v ? pillActive : pillInactive}`}>
                       <I size={12} />{l}
                     </button>
                   ))}
                 </div>
               </div>
               <div>
-                <label className={labelStyle}>{mode === 'swarm' ? 'Lead Agent' : '作用域'}</label>
-                {mode === 'swarm' ? (
-                  <Select value={lead} onChange={setLead} placeholder="选择 Lead..."
-                    options={agentNames.map((n) => ({ value: n, label: n }))} mono />
-                ) : (
-                  <div className="flex gap-2">
-                    {(['project', 'global'] as const).map((s) => (
-                      <button key={s} onClick={() => setScope(s)} className={`flex-1 px-3 py-2 rounded-lg text-[12px] font-semibold transition-all border ${scope === s ? pillActive : pillInactive}`}>
-                        {s === 'project' ? '项目级' : '全局'}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <label className={labelStyle}>作用域</label>
+                <div className="flex gap-2">
+                  {(['project', 'global'] as const).map((s) => (
+                    <button key={s} type="button" onClick={() => setScope(s)} className={`flex-1 px-3 py-2 rounded-lg text-[12px] font-semibold transition-all border focus:outline-none ${scope === s ? pillActive : pillInactive}`}>
+                      {s === 'project' ? '项目级' : '全局'}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-            {/* Description */}
-            <div className="mt-4">
-              <label className={labelStyle}>描述</label>
-              <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="编排流描述" className={inputBase} />
+            {/* Leader / Entry agent (mode-specific) */}
+            <div className="mt-4 grid gap-4 grid-cols-2">
+              {mode === 'coordinator' && (
+                <div>
+                  <label className={labelStyle} title="Coordinator 模式（orchestrator-worker）的中央领导者，负责分派并汇总 worker 结果">Lead Agent *</label>
+                  <Select value={coordinator} onChange={handleSelectCoordinator} placeholder="选择 Lead Agent（必填）"
+                    options={agentSelectOptions} mono />
+                </div>
+              )}
+              {mode === 'swarm' && (
+                <div>
+                  <label className={labelStyle} title="Swarm 去中心化协作的初始任务接收者（入口 Agent）">入口 Agent</label>
+                  <Select value={entry} onChange={handleSelectEntry} placeholder="选择入口 Agent（可选）"
+                    options={agentSelectOptions} mono />
+                </div>
+              )}
+              <div>
+                <label className={labelStyle}>描述</label>
+                <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="编排流描述" className={inputBase} />
+              </div>
             </div>
           </div>
 
@@ -469,7 +533,7 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                     <Select value={agent.extends} onChange={(v) => updateAgentField(i, 'extends', v)} placeholder="无继承" className="w-28"
                       options={[...allAgents.map((a) => a.name), ...agentNames.filter((n) => n !== agent.name)].filter((v, j, arr) => arr.indexOf(v) === j).map((n) => ({ value: n, label: n }))} mono />
                     <Select value={agent.role} onChange={(v) => updateAgentField(i, 'role', v)} placeholder="无角色" className="w-24"
-                      options={['coordinator', 'worker', 'teammate', 'lead'].map((r) => ({ value: r, label: r }))} mono />
+                      options={['coordinator', 'worker', 'teammate', 'entry', 'lead'].map((r) => ({ value: r, label: r }))} mono />
                     <button onClick={() => removeAgent(i)} className="p-1.5 rounded-lg text-[#ABABAB] hover:text-[#dc2626] hover:bg-[#dc2626]/8 transition-colors">
                       <Trash2 size={12} />
                     </button>
@@ -515,9 +579,9 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                     <div className="pl-3.5 border-l-2 border-[#3D3BF3]/20 space-y-1.5">
                       {stage.spawns.map((sp, spi) => (
                         <div key={spi} className="flex items-center gap-2">
-                          <Select value={sp.agent} onChange={(v) => setStages((p) => p.map((s, idx) => idx === si ? { ...s, spawns: s.spawns.map((x, j) => j === spi ? { ...x, agent: v } : x) } : s))}
+                          <Select value={sp.agent} onChange={(v) => handleSelectSpawnAgent(si, spi, v)}
                             placeholder="Agent" className="w-28" mono
-                            options={agentNames.map((n) => ({ value: n, label: n }))} />
+                            options={agentSelectOptions} />
                           <input value={sp.task} onChange={(e) => setStages((p) => p.map((s, idx) => idx === si ? { ...s, spawns: s.spawns.map((x, j) => j === spi ? { ...x, task: e.target.value } : x) } : s))}
                             placeholder="任务 / {{ vars.key }}" className="flex-1 bg-white rounded-lg px-2.5 py-1.5 text-[11px] outline-none border border-[#E5E4E0] focus:border-[#3D3BF3]/30 font-[JetBrains_Mono,monospace]" />
                           <button onClick={() => removeSpawn(si, spi)} className="p-0.5 text-[#D4D3CF] hover:text-[#dc2626] transition-colors"><X size={11} /></button>
@@ -663,7 +727,9 @@ function getEventHeadline(event: string, data: Record<string, unknown>): string 
   const stageId = asText(data.stage_id)
   const sender = asText(data.sender)
   const recipient = asText(data.recipient)
-  const lead = asText(data.lead)
+  // Event payloads historically use ``lead``; prefer ``entry`` when the
+  // backend has been updated.
+  const entry = asText(data.entry) || asText(data.lead)
   switch (event) {
     case 'orchestration.flow.started':
       return `Flow 启动 · ${asText(data.mode) || 'unknown'}`
@@ -680,7 +746,7 @@ function getEventHeadline(event: string, data: Record<string, unknown>): string 
     case 'orchestration.message.sent':
       return `${sender || 'unknown'} → ${recipient || 'unknown'}`
     case 'orchestration.swarm.started':
-      return `Swarm 启动 · Lead ${lead || 'unknown'}`
+      return `Swarm 启动 · 入口 ${entry || 'unknown'}`
     case 'orchestration.swarm.finished':
       return `Swarm 完成 · ${asText(data.terminated_reason) || 'unknown'}`
     default:
@@ -859,6 +925,9 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       fire('success', isNew ? `Agent "${params.name}" 已创建` : '已更新')
       setEditingAgent(null)
       await refresh({ silent: true })
+      // Notify the sidebar (which maintains its own agent/flow state)
+      // to re-fetch so the newly-created agent shows up immediately.
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `保存失败: ${err}`)
     } finally {
@@ -872,6 +941,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       await deleteAgent(name, source === 'global' ? 'global' : 'project')
       fire('success', '已删除')
       await refresh({ silent: true })
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `删除失败: ${err}`)
     }
@@ -885,6 +955,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       fire('success', isNew ? `编排流 "${params.name}" 已创建` : '已更新')
       setEditingFlow(null)
       await refresh({ silent: true })
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `保存失败: ${err}`)
     } finally {
@@ -898,6 +969,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       await deleteFlow(name, source === 'global' ? 'global' : 'project')
       fire('success', '已删除')
       await refresh({ silent: true })
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `删除失败: ${err}`)
     }
@@ -1131,7 +1203,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                               <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
                                 flowDetail.mode === 'coordinator' ? 'bg-[#3D3BF3]/8 text-[#3D3BF3]' : 'bg-[#d97706]/8 text-[#d97706]'
                               }`}>{flowDetail.mode === 'coordinator' ? <Network size={10} /> : <Users size={10} />}{flowDetail.mode}</span>
-                              {flowDetail.lead && <span className="text-[11px] text-[#8A8A85]">Lead: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.lead}</span></span>}
+                              {flowDetail.mode === 'coordinator' && flowDetail.coordinator && <span className="text-[11px] text-[#8A8A85]">Lead: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.coordinator}</span></span>}
+                              {flowDetail.mode !== 'coordinator' && (flowDetail.entry || flowDetail.lead) && <span className="text-[11px] text-[#8A8A85]">入口: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.entry || flowDetail.lead}</span></span>}
                               <span className="text-[11px] text-[#ABABAB]">{flowDetail.agents.length} agents · {flowDetail.stages.length} stages</span>
                               <button onClick={() => void openRunDialog(flow)} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-[#16a34a]/20 bg-[#16a34a]/8 px-3 py-1.5 text-[11px] font-semibold text-[#16a34a] transition-colors hover:bg-[#16a34a]/12">
                                 <Play size={11} />配置并运行
@@ -1318,8 +1391,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                               <div className={sectionTitle}><Users size={12} className="text-[#d97706]" />Swarm 结果</div>
                               <div className="grid gap-3 md:grid-cols-4">
                                 <div className="rounded-2xl bg-[#FAFAF8] px-4 py-3">
-                                  <div className="text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">Lead</div>
-                                  <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.result.lead || '—'}</div>
+                                  <div className="text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">入口 Agent</div>
+                                  <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.result.entry || activeRun.result.lead || '—'}</div>
                                 </div>
                                 <div className="rounded-2xl bg-[#FAFAF8] px-4 py-3">
                                   <div className="text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">Peer 数</div>
@@ -1335,8 +1408,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 </div>
                               </div>
                               <div className="rounded-2xl border border-[#d97706]/15 bg-[#d97706]/[0.04] p-4">
-                                <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#b45309]">Lead 输出预览</div>
-                                <p className="mt-2 text-[12px] leading-6 text-[#6B4D1F]">{activeRun.result.lead_output_preview || '暂无输出摘要。'}</p>
+                                <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#b45309]">入口 Agent 输出预览</div>
+                                <p className="mt-2 text-[12px] leading-6 text-[#6B4D1F]">{activeRun.result.entry_output_preview || activeRun.result.lead_output_preview || '暂无输出摘要。'}</p>
                               </div>
                               <div className="grid gap-3 md:grid-cols-2">
                                 {activeRun.result.peers.map((peer) => (
@@ -1481,7 +1554,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                     </div>
                   </div>
                   {runDialog.detail.mode === 'swarm' && (
-                    <p className="mt-3 text-[11px] leading-6 text-[#ABABAB]">Swarm 需要一条清晰的团队任务描述。Lead 会拿着这条任务发起协作，其他 peer 通过 `send_message` 在运行时沟通。</p>
+                    <p className="mt-3 text-[11px] leading-6 text-[#ABABAB]">Swarm 是去中心化的点对点协作。入口 Agent（如已指定）会接收初始任务；其他 peer 通过 <code>send_message</code> 在运行时自由 handoff。</p>
                   )}
                 </div>
                 <button onClick={() => setRunDialog(null)} className="rounded-xl p-2 text-[#8A8A85] transition-colors hover:bg-white/10 hover:text-white">
@@ -1520,7 +1593,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                   <div className={sectionTitle + ' mb-3'}><Layers size={12} className="text-[#3D3BF3]" />执行结构</div>
                   <div className="space-y-2 text-[11px] text-[#5C5C5C]">
                     <div className="flex items-center justify-between"><span>模式</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.mode}</span></div>
-                    <div className="flex items-center justify-between"><span>Lead</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.lead || '—'}</span></div>
+                    <div className="flex items-center justify-between"><span>入口</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.entry || runDialog.detail.lead || '—'}</span></div>
                     <div className="flex items-center justify-between"><span>Stages</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.stages.length}</span></div>
                     <div className="flex items-center justify-between"><span>默认变量</span><span className="font-semibold text-[#0F0F0F]">{Object.keys(runDialog.detail.vars).length}</span></div>
                   </div>

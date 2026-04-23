@@ -1796,7 +1796,7 @@ def orchestrate_inspect(flow_name: str, directory: str, vars_: tuple[str, ...], 
 )
 @click.option(
     "--task", "-t", "task_text", default=None,
-    help="Swarm mode only: the initial user task delivered to the lead.",
+    help="Swarm mode only: the initial user task delivered to the entry agent.",
 )
 @click.option(
     "--max-turns", "max_turns", type=int, default=8, show_default=True,
@@ -1822,9 +1822,9 @@ def orchestrate_run(
 
     - **coordinator / hybrid**: walks the stage DAG and prints the last
       stage's synthesised output.
-    - **swarm**: requires ``--task`` (or stdin); seeds the lead's inbox
-      and drives every peer via the mailbox backend until quiescence or
-      ``--walltime``.
+    - **swarm**: requires ``--task`` (or stdin); seeds the entry agent's
+      inbox and drives every peer via the mailbox backend until quiescence
+      or ``--walltime``.
 
     Use ``--dry-run`` to validate + resolve agents without spending LLM
     tokens — useful for smoke-testing YAML authoring in either mode.
@@ -1871,7 +1871,8 @@ def orchestrate_run(
         for a in agents.values():
             click.echo(f"  - agent {a.name!r} resolved (extends={a.extends!r})")
         if spec.mode == "swarm":
-            click.echo(f"  - lead: {spec.lead!r}")
+            entry_name = spec.entry or spec.lead or (spec.agents[0].name if spec.agents else None)
+            click.echo(f"  - entry: {entry_name!r}")
         else:
             for s in spec.stages:
                 click.echo(
@@ -1884,7 +1885,8 @@ def orchestrate_run(
     if spec.mode == "swarm":
         if not task_text:
             raise click.ClickException(
-                "swarm mode requires --task / -t (the initial user task for the lead)"
+                "swarm mode requires --task / -t (the initial user task "
+                "for the entry agent)"
             )
         try:
             swarm_result = asyncio.run(run_swarm(
@@ -1901,9 +1903,11 @@ def orchestrate_run(
             payload = {
                 "flow": spec.name,
                 "mode": "swarm",
-                "lead": swarm_result.lead,
+                "entry": swarm_result.entry,
+                "lead": swarm_result.lead,  # deprecated alias
                 "terminated_reason": swarm_result.terminated_reason,
-                "lead_output": swarm_result.lead_output,
+                "entry_output": swarm_result.entry_output,
+                "lead_output": swarm_result.lead_output,  # deprecated alias
                 "peers": {
                     name: {
                         "agent": out.agent,
@@ -2093,8 +2097,9 @@ def _print_spec_tree(spec: Any) -> None:
             for spawn in s.spawn:
                 node.add(f"[blue]→[/blue] {spawn.agent}: {spawn.task[:80]}")
 
-    if spec.mode in ("swarm", "hybrid") and spec.lead:
-        root.add(f"[bold]lead[/bold]: [magenta]{spec.lead}[/magenta]")
+    entry_name = spec.entry or spec.lead
+    if spec.mode in ("swarm", "hybrid") and entry_name:
+        root.add(f"[bold]entry[/bold]: [magenta]{entry_name}[/magenta]")
     if spec.backend:
         root.add(f"[bold]backend[/bold]: prefer={spec.backend.prefer}")
 

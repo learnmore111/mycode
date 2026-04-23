@@ -213,7 +213,9 @@ class TestResolveAllAgents:
 
         lead = resolved["reviewer-lead"]
         assert lead.extends == "build"
-        assert lead.role == "lead"
+        # Role was renamed from legacy "lead" to "entry" when the Swarm
+        # semantics were aligned with OpenAI / LangGraph Swarm.
+        assert lead.role == "entry"
         assert set(lead.tools or []) == {
             "send_message",
             "team_create",
@@ -241,7 +243,7 @@ class TestValidatorWithRegistry:
         spec = OrchestrationSpec(
             name="bogus",
             mode="coordinator",
-            agents=[AgentSpec(name="w", extends="totally-missing")],
+            agents=[AgentSpec(name="w", role="coordinator", extends="totally-missing")],
             stages=[],
         )
         # Add a stage so mode-constraint check passes (otherwise we'd get two
@@ -266,7 +268,7 @@ class TestValidatorWithRegistry:
         spec = OrchestrationSpec(
             name="bogus",
             mode="coordinator",
-            agents=[AgentSpec(name="w", extends="totally-missing")],
+            agents=[AgentSpec(name="w", role="coordinator", extends="totally-missing")],
             stages=[StageSpec(id="s1", spawn=[])],
         )
         validate(spec)  # no raise

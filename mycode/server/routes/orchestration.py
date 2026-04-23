@@ -177,11 +177,13 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
     return {
         "kind": "swarm",
         "lead": getattr(result, "lead", ""),
+        "entry": getattr(result, "entry", "") or getattr(result, "lead", ""),
         "peer_count": len(peers),
         "terminated_reason": getattr(result, "terminated_reason", ""),
         "message_count": len(getattr(result, "transcript", []) or []),
         "has_errors": any(peer["is_error"] for peer in peer_summaries),
         "lead_output_preview": _preview(getattr(result, "lead_output", "")),
+        "entry_output_preview": _preview(getattr(result, "lead_output", "")),
         "peers": peer_summaries,
     }
 
@@ -189,10 +191,32 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
 # --- Read endpoints --------------------------------------------------------
 
 
+def _resolve_project_dir(directory: str | None) -> str | None:
+    """Pick the effective project directory for discovery/resolution.
+
+    Precedence:
+      1. Explicit ``directory`` query parameter from the client.
+      2. The active :class:`InstanceContext` (set by request middleware or
+         the CLI when a project is already active).
+      3. The server process's current working directory — matches the
+         write side (``_agent_dir`` / ``_flow_dir``), so any file that the
+         UI just created in ``<cwd>/.mycode/...`` is visible to the list
+         endpoints without forcing the caller to pass the directory.
+    """
+    from mycode.project.instance import current_or_none
+
+    if directory:
+        return os.path.abspath(directory)
+    inst = current_or_none()
+    if inst is not None and inst.directory:
+        return os.path.abspath(inst.directory)
+    return os.path.abspath(os.getcwd())
+
+
 @router.get("/flow")
 async def list_flows(directory: str | None = Query(default=None)) -> Any:
     """List flows discovered in builtin + global + project scope."""
-    project_dir = os.path.abspath(directory) if directory else None
+    project_dir = _resolve_project_dir(directory)
     reg = get_default_registry(project_dir=project_dir, refresh=True)
     return [
         {"name": f.name, "source": f.source, "path": str(f.path)}
@@ -203,7 +227,7 @@ async def list_flows(directory: str | None = Query(default=None)) -> Any:
 @router.get("/flow/{name}")
 async def get_flow(name: str, directory: str | None = Query(default=None)) -> Any:
     """Resolve a flow by name and return the parsed spec as JSON."""
-    project_dir = os.path.abspath(directory) if directory else None
+    project_dir = _resolve_project_dir(directory)
     reg = get_default_registry(project_dir=project_dir, refresh=True)
     try:
         spec = reg.load(name)
@@ -216,8 +240,10 @@ async def get_flow(name: str, directory: str | None = Query(default=None)) -> An
         "name": spec.name,
         "mode": spec.mode,
         "lead": spec.lead,
+        "entry": spec.entry or spec.lead,
+        "coordinator": spec.coordinator,
         "agents": [
-            {"name": a.name, "extends": a.extends, "prompt": a.prompt}
+            {"name": a.name, "extends": a.extends, "role": a.role, "prompt": a.prompt}
             for a in spec.agents
         ],
         "stages": [
@@ -239,7 +265,7 @@ async def get_flow(name: str, directory: str | None = Query(default=None)) -> An
 @router.get("/agent")
 async def list_agents(directory: str | None = Query(default=None)) -> Any:
     """List agents discovered in builtin + global + project scope."""
-    project_dir = os.path.abspath(directory) if directory else None
+    project_dir = _resolve_project_dir(directory)
     reg = get_default_agent_registry(project_dir=project_dir, refresh=True)
     entries = []
     for entry in reg.list_entries():
@@ -403,12 +429,25 @@ class _FlowBody(BaseModel):
     name: str
     description: str = ""
     mode: str = "coordinator"
+    # ``entry`` is the preferred field for the swarm initial task receiver.
+    # ``lead`` is kept for backwards-compat and mirrored to ``entry`` on
+    # persist.  Clients may send either; the server normalizes.
+    entry: str | None = None
     lead: str | None = None
+    # ``coordinator`` names the leader agent in coordinator/hybrid mode
+    # (orchestrator-worker pattern).  Required for coordinator mode unless
+    # exactly one agent already has ``role: coordinator`` — in which case
+    # the schema layer derives it automatically.
+    coordinator: str | None = None
     agents: list[dict[str, Any]] = []
     stages: list[dict[str, Any]] = []
     vars: dict[str, str] = {}
     backend: dict[str, str] | None = None
     scope: str = "project"
+
+    def resolved_entry(self) -> str | None:
+        """Return the effective entry-agent name, regardless of field used."""
+        return self.entry or self.lead
 
 
 def _flow_dir(scope: str) -> str:
@@ -440,8 +479,13 @@ async def create_flow(body: _FlowBody) -> Any:
     spec: dict[str, Any] = {"name": name, "mode": body.mode}
     if body.description:
         spec["description"] = body.description
-    if body.lead:
-        spec["lead"] = body.lead
+    entry_name = body.resolved_entry()
+    if entry_name:
+        # Persist as ``entry`` (the canonical key).  Loaders still accept
+        # legacy ``lead`` aliases.
+        spec["entry"] = entry_name
+    if body.coordinator:
+        spec["coordinator"] = body.coordinator
     if body.vars:
         spec["vars"] = dict(body.vars)
     if body.agents:
@@ -485,8 +529,11 @@ async def update_flow(name: str, body: _FlowBody) -> Any:
     spec: dict[str, Any] = {"name": name, "mode": body.mode}
     if body.description:
         spec["description"] = body.description
-    if body.lead:
-        spec["lead"] = body.lead
+    entry_name = body.resolved_entry()
+    if entry_name:
+        spec["entry"] = entry_name
+    if body.coordinator:
+        spec["coordinator"] = body.coordinator
     if body.vars:
         spec["vars"] = dict(body.vars)
     if body.agents:
@@ -545,7 +592,7 @@ async def start_run(body: _RunBody) -> Any:
     ``GET /orchestration/events?run_id=...`` to observe progress.
     """
     bus = _require_bus()
-    project_dir = os.path.abspath(body.directory) if body.directory else None
+    project_dir = _resolve_project_dir(body.directory)
 
     flow_reg = get_default_registry(project_dir=project_dir, refresh=True)
     agent_reg = get_default_agent_registry(project_dir=project_dir, refresh=True)
