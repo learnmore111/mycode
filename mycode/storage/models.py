@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import Index, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Float, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -233,3 +233,56 @@ class CompactionEventTable(Base):
     @old_messages.setter
     def old_messages(self, value: list[dict[str, Any]]) -> None:
         self._old_messages = json.dumps(value)
+
+
+# ---------------------------------------------------------------------------
+# Orchestration Run
+# ---------------------------------------------------------------------------
+
+
+class OrchestrationRunTable(Base):
+    __tablename__ = "orchestration_run"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    flow: Mapped[str] = mapped_column(String, nullable=False)
+    mode: Mapped[str] = mapped_column(String, nullable=False)
+    directory: Mapped[str | None] = mapped_column(String, nullable=True)
+    task_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    _vars: Mapped[str] = mapped_column("vars", Text, nullable=False, default="{}", server_default="{}")
+    max_turns: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
+    walltime_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="running", server_default="running")
+    started_at: Mapped[float] = mapped_column(Float, nullable=False)
+    finished_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    _result: Mapped[str | None] = mapped_column("result", Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_orchestration_run_started_at", "started_at"),
+        Index("ix_orchestration_run_status_started", "status", "started_at"),
+    )
+
+    @property  # noqa: A003
+    def vars(self) -> dict[str, str]:
+        try:
+            data = json.loads(self._vars) if self._vars else {}
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @vars.setter  # noqa: A003
+    def vars(self, value: dict[str, str]) -> None:
+        self._vars = json.dumps(value or {})
+
+    @property
+    def result(self) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self._result) if self._result else None
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    @result.setter
+    def result(self, value: dict[str, Any] | None) -> None:
+        self._result = json.dumps(value) if value else None

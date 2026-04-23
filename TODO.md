@@ -185,6 +185,84 @@
 
 ---
 
+## 多 Agent 架构优化（新增）
+
+**状态**: `task` 子代理体系与 `orchestration` 编排体系都已可用,但当前更像“能力骨架已齐、控制面与体验仍待补完”的阶段。
+
+<!--
+暂不执行：统一运行入口
+- 现状：`task` / `subagent` / `orchestration` 仍是并行三套入口。
+- 问题：普通会话里没有全局 `orchestrate` 工具,主 Agent 不能像调 `task` 一样直接发起 flow。
+- 影响：轻量委派与正式编排长期割裂,用户与模型都难形成稳定心智模型。
+- 后续方向：简单任务走 `task`,多节点任务走 `orchestrate`,或把 `orchestration` 收敛进 `subagent` 的某种 mode。
+-->
+
+### 18. Orchestration run 控制面与持久化
+**状态**: `/orchestration/run` 已支持后台启动、详情查询、取消请求，以及基于 SQLite 的 run 历史持久化；服务重启后仍可查看 run 摘要与结果。当前剩余缺口主要在更细粒度的执行历史与运行时隔离。
+
+**待办**:
+- [ ] 将 stage / spawn / transcript / mailbox 时间线摘要持久化到 SQLite,支持历史回放与排障。
+- [ ] 为历史 run 补充事件回放或分页查询接口,避免 SSE 只覆盖 live 运行期。
+- [ ] 评估将编排执行与 API 主事件循环解耦,避免高并发 run 影响服务响应。
+
+---
+
+### 19. Swarm Web 工作台闭环
+**状态**: 后端与 CLI 已支持 swarm 运行,但 Web 工作台仍缺任务输入交互;当前前端会直接报“Swarm 需要任务描述（TODO: 弹窗输入）”。
+
+**待办**:
+- [ ] 给 swarm run 增加任务输入弹窗或启动面板。
+- [ ] 在工作台展示 transcript / mailbox 时间线,便于观察 peer 间通信。
+- [ ] 展示 lead / peer 输出、终止原因、turn 统计等 run 结果摘要。
+- [ ] 补一组前端集成测试,覆盖 swarm 发起与事件展示流程。
+
+---
+
+### 20. 前后端工具能力对齐
+**状态**: 前端 `COMMON_TOOLS` 仍是硬编码清单,其中包含 `send_message`;但该能力实际是 swarm 运行时动态注入工具,并非普通全局工具。
+
+**待办**:
+- [ ] 由后端暴露“全局静态工具”与“运行时专属工具”的能力描述。
+- [ ] 前端按 flow mode 动态展示可选工具,避免误配 `send_message` 一类运行时工具。
+- [ ] 校验 Agent 编辑器提交内容,提前拦截无效工具组合。
+- [ ] 将当前硬编码工具清单替换为后端驱动配置。
+
+---
+
+### 21. Coordinator 动态调度能力
+**状态**: 当前 `Coordinator` 已能稳定执行声明式 DAG,但尚不具备根据中间结果动态拆任务、改派 worker、失败重试的“总控代理”能力。
+
+**待办**:
+- [ ] 在保留 DAG 模式的前提下,设计可选的 agentic coordinator 模式。
+- [ ] 支持根据 worker 输出继续派发新任务,而不是完全依赖静态 `stages`。
+- [ ] 增加失败重试、改派、预算感知等调度策略。
+- [ ] 为动态调度模式补充可复现实验流与专项测试。
+
+---
+
+### 22. 真实隔离与 Hybrid 语义补完
+**状态**: `agent.isolation` 目前主要体现在 fresh tool context 层面,尚未真正形成 worktree / process 级隔离;`hybrid` 也已有 schema 与校验入口,但缺少清晰独立语义。
+
+**待办**:
+- [ ] 为编排节点补上真正的 worktree isolation。
+- [ ] 评估 process 级隔离或独立执行环境,降低多 agent 并发改代码风险。
+- [ ] 明确 `hybrid` 的产品语义与运行时边界;若短期不做,则降级为实验特性。
+- [ ] 为 isolation / hybrid 增加端到端测试与故障回收策略。
+
+---
+
+### 23. 工具策略、可观测性与长生命周期能力
+**状态**: 当前 `task` / `subagent` / `spawn` / `swarm` 各自持有部分工具过滤规则;运行事件已具备骨架,但成本、质量与长期团队能力仍偏弱。
+
+**待办**:
+- [ ] 抽出统一的 tool policy layer,统一递归禁用、交互工具禁用、运行时工具注入策略。
+- [ ] 为 run / stage / peer 增加 token、cost、latency、retry、失败分类等观测指标。
+- [ ] 补充 reviewer / validator / 交叉审阅等结果质量控制机制。
+- [ ] 设计团队级记忆、scratchpad、可恢复 run 等长生命周期协作能力。
+- [ ] 引入 token / walltime / turn budget 感知的调度策略。
+
+---
+
 ## 待归档(超出当前项目范围但被多次提出)
 
 - SaaS 部署 / 多租户 / 计费

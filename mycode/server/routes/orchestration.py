@@ -23,9 +23,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml as _yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -34,6 +38,12 @@ from mycode.bus import events as bus_events
 from mycode.orchestration.registry import (
     get_default_agent_registry,
     get_default_registry,
+)
+from mycode.orchestration.run_store import (
+    OrchestrationRunInfo,
+    get_run_record,
+    list_run_records,
+    save_run_record,
 )
 from mycode.orchestration.runtime.coordinator import run_coordinator
 from mycode.orchestration.runtime.events import BusOrchestrationEmitter
@@ -51,11 +61,14 @@ router = APIRouter(prefix="/orchestration", tags=["orchestration"])
 
 _bus: Bus | None = None
 
-# In-memory registry of currently-running orchestrations.  Keyed by
-# ``run_id``; value is the asyncio Task so we can surface status and
-# avoid dangling background work on server shutdown.  Kept tiny — no
-# persistence is the point for M7.
-_runs: dict[str, asyncio.Task[Any]] = {}
+@dataclass
+class _RunRecord(OrchestrationRunInfo):
+    task: asyncio.Task[Any] | None = None
+
+
+# In-memory registry of active orchestration runs for this server process.
+# Durable history lives in SQLite via ``mycode.orchestration.run_store``.
+_runs: dict[str, _RunRecord] = {}
 
 
 def set_bus(bus: Bus) -> None:
@@ -71,6 +84,106 @@ def _require_bus() -> Bus:
             detail="orchestration bus not initialised — server still starting up?",
         )
     return _bus
+
+
+def _preview(text: str, limit: int = 280) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1] + "…"
+
+
+def _persist_run(run: OrchestrationRunInfo) -> None:
+    save_run_record(run)
+
+
+def _get_run_or_404(run_id: str) -> OrchestrationRunInfo:
+    run = _runs.get(run_id)
+    if run is not None:
+        return run
+    stored = get_run_record(run_id)
+    if stored is not None:
+        return stored
+    raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+
+def _stage_output_preview(stage: Any) -> str:
+    coordinator_output = getattr(stage, "coordinator_output", None)
+    if coordinator_output:
+        return _preview(coordinator_output)
+    spawns = getattr(stage, "spawns", []) or []
+    if spawns:
+        return _preview(getattr(spawns[0], "output", ""))
+    return ""
+
+
+def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
+    context = getattr(result, "context", None)
+    stage_order = getattr(context, "stage_order", None)
+    stages_by_id = getattr(context, "stages", None)
+    if context is None or stage_order is None or stages_by_id is None:
+        return None
+
+    stages: list[dict[str, Any]] = []
+    total_spawn_count = 0
+    total_error_count = 0
+    for stage_id in stage_order:
+        stage = stages_by_id[stage_id]
+        spawn_count = len(stage.spawns)
+        error_count = sum(1 for spawn in stage.spawns if spawn.is_error)
+        total_spawn_count += spawn_count
+        total_error_count += error_count
+        stages.append({
+            "stage_id": stage.stage_id,
+            "is_error": stage.is_error,
+            "spawn_count": spawn_count,
+            "ok_count": len(stage.ok_spawns()),
+            "error_count": error_count,
+            "coordinator_agent": stage.coordinator_agent,
+            "output_preview": _stage_output_preview(stage),
+        })
+
+    last_stage = getattr(result, "last_stage", None)
+    return {
+        "kind": "coordinator",
+        "stage_count": len(stages),
+        "stage_order": list(stage_order),
+        "total_spawn_count": total_spawn_count,
+        "total_error_count": total_error_count,
+        "has_errors": any(stage["is_error"] or stage["error_count"] > 0 for stage in stages),
+        "last_stage_id": getattr(last_stage, "stage_id", None),
+        "last_output_preview": _stage_output_preview(last_stage) if last_stage is not None else "",
+        "stages": stages,
+    }
+
+
+def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
+    peers = getattr(result, "peers", None)
+    if peers is None:
+        return None
+
+    peer_summaries = []
+    for name in sorted(peers):
+        out = peers[name]
+        peer_summaries.append({
+            "name": name,
+            "agent": out.agent,
+            "is_error": out.is_error,
+            "turns": out.turns,
+            "tool_calls": out.tool_calls,
+            "output_preview": _preview(out.output),
+        })
+
+    return {
+        "kind": "swarm",
+        "lead": getattr(result, "lead", ""),
+        "peer_count": len(peers),
+        "terminated_reason": getattr(result, "terminated_reason", ""),
+        "message_count": len(getattr(result, "transcript", []) or []),
+        "has_errors": any(peer["is_error"] for peer in peer_summaries),
+        "lead_output_preview": _preview(getattr(result, "lead_output", "")),
+        "peers": peer_summaries,
+    }
 
 
 # --- Read endpoints --------------------------------------------------------
@@ -316,9 +429,6 @@ def _flow_dir(scope: str) -> str:
 @router.post("/flow")
 async def create_flow(body: _FlowBody) -> Any:
     """Create a new flow YAML file."""
-    import yaml as _yaml
-    from pathlib import Path
-
     name = body.name.strip()
     if not name or not name.replace("-", "").replace("_", "").isalnum():
         raise HTTPException(400, f"Invalid flow name: '{name}'")
@@ -349,9 +459,6 @@ async def create_flow(body: _FlowBody) -> Any:
 @router.put("/flow/{name}")
 async def update_flow(name: str, body: _FlowBody) -> Any:
     """Update an existing flow YAML file."""
-    import yaml as _yaml
-    from pathlib import Path
-
     body.name = name
     d = _flow_dir(body.scope)
     fp = os.path.join(d, f"{name}.yaml")
@@ -459,36 +566,97 @@ async def start_run(body: _RunBody) -> Any:
         raise HTTPException(status_code=400, detail="swarm mode requires 'task' in body")
 
     run_id = uuid.uuid4().hex[:16]
+    entry = _RunRecord(
+        run_id=run_id,
+        flow=spec.name,
+        mode=spec.mode,
+        directory=project_dir,
+        task_text=body.task,
+        vars=dict(body.vars or {}),
+        max_turns=body.max_turns,
+        walltime_seconds=body.walltime_seconds,
+    )
+    _runs[run_id] = entry
+    _persist_run(entry)
     emitter = BusOrchestrationEmitter(bus=bus, flow_name=spec.name, run_id=run_id)
 
     async def _run() -> None:
         try:
             if spec.mode == "swarm":
-                await run_swarm(
+                result = await run_swarm(
                     spec, agents,
                     user_task=body.task or "",
                     max_turns=body.max_turns,
                     walltime_seconds=body.walltime_seconds,
                     events=emitter,
                 )
+                entry.result = _summarize_swarm_result(result)
             else:
-                await run_coordinator(spec, agents, events=emitter)
+                result = await run_coordinator(spec, agents, events=emitter)
+                entry.result = _summarize_coordinator_result(result)
+            entry.status = "completed"
+            entry.error = None
+        except asyncio.CancelledError:
+            entry.status = "cancelled"
+            entry.error = None
+            entry.result = {
+                "kind": spec.mode,
+                "cancelled": True,
+            }
+        except Exception as exc:  # noqa: BLE001
+            entry.status = "failed"
+            entry.error = f"{type(exc).__name__}: {exc}"
         finally:
-            _runs.pop(run_id, None)
+            entry.finished_at = time.time()
+            _persist_run(entry)
 
     task = asyncio.create_task(_run(), name=f"orchestration-run-{run_id}")
-    _runs[run_id] = task
+    entry.task = task
 
-    return {"run_id": run_id, "flow": spec.name, "mode": spec.mode}
+    return {
+        "run_id": run_id,
+        "flow": spec.name,
+        "mode": spec.mode,
+        "status": entry.status,
+    }
 
 
 @router.get("/run")
 async def list_runs() -> Any:
-    """List currently-tracked runs (in-memory; cleared on finish)."""
-    return [
-        {"run_id": rid, "done": task.done(), "cancelled": task.cancelled()}
-        for rid, task in _runs.items()
-    ]
+    """List known orchestration runs, newest first."""
+    merged: dict[str, OrchestrationRunInfo] = {
+        run.run_id: run for run in list_run_records()
+    }
+    for run_id, run in _runs.items():
+        merged[run_id] = run
+    runs = sorted(merged.values(), key=lambda run: run.started_at, reverse=True)
+    return [run.to_summary() for run in runs]
+
+
+@router.get("/run/{run_id}")
+async def get_run(run_id: str) -> Any:
+    """Return detailed status and result summary for one run."""
+    return _get_run_or_404(run_id).to_detail()
+
+
+@router.post("/run/{run_id}/cancel")
+async def cancel_run(run_id: str) -> Any:
+    """Request cancellation of a running orchestration."""
+    run = _get_run_or_404(run_id)
+    if run.status == "cancelled":
+        run.cancel_requested = True
+        _persist_run(run)
+        return {"ok": True, "run_id": run_id, "status": run.status, "already_finished": True}
+    if run.is_done():
+        return {"ok": True, "run_id": run_id, "status": run.status, "already_finished": True}
+    if not isinstance(run, _RunRecord) or run.task is None:
+        raise HTTPException(status_code=409, detail=f"Run '{run_id}' is not active in this server process")
+
+    run.cancel_requested = True
+    run.status = "cancelling"
+    _persist_run(run)
+    run.task.cancel()
+    return {"ok": True, "run_id": run_id, "status": "cancelling"}
 
 
 # --- SSE stream ------------------------------------------------------------

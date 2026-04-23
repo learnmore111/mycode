@@ -173,7 +173,7 @@ export default function App() {
         Main content area: ChatArea stays mounted (hidden via CSS) so it
         doesn't lose state. OrchestrationWorkbench mounts/unmounts on demand.
       */}
-      <div className={mainView === 'chat' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
+      <div className={mainView === 'chat' ? 'flex-1 flex flex-col min-w-0 min-h-0' : 'hidden'}>
         <ChatArea
           session={session.active}
           messages={chat.messages}

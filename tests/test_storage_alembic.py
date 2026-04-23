@@ -257,12 +257,15 @@ def test_apply_migrations_stamps_legacy(tmp_path: Path) -> None:
     insp = inspect(create_engine(f"sqlite:///{db_file}"))
     assert "alembic_version" in insp.get_table_names()
 
-    # Stored revision must be the baseline.
+    # Stored revision must reflect the current Alembic head.
     with create_engine(f"sqlite:///{db_file}").connect() as conn:
+        from alembic.script import ScriptDirectory
         from sqlalchemy import text
 
         rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert rev == BASELINE_REVISION
+
+    head = ScriptDirectory.from_config(_alembic_cfg(db_file)).get_current_head()
+    assert rev == head
 
 
 def test_apply_migrations_idempotent_on_already_head(tmp_path: Path) -> None:
