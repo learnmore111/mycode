@@ -207,6 +207,21 @@ def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
 StreamEvent = TextDelta | ToolCallDelta | ToolCallPartial | ToolCallArgsPartial | FinishEvent | ErrorEvent
 
 
+def _dashscope_explicit_cache_content(text: str) -> list[dict[str, Any]]:
+    """Build a DashScope OpenAI-compatible content block with explicit cache."""
+    return [{
+        "type": "text",
+        "text": text,
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
+def _should_use_dashscope_explicit_cache(stream_input: StreamInput) -> bool:
+    """Whether this request should opt into DashScope explicit prompt caching."""
+    model = stream_input.model
+    return model.provider_id == "dashscope" and model.id == "qwen3.6-plus"
+
+
 def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
     """Build the messages list with system prompts prepended."""
     messages: list[dict[str, Any]] = []
@@ -215,7 +230,13 @@ def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
     if stream_input.system:
         system_content = "\n\n".join(stream_input.system)
         if system_content.strip():
-            messages.append({"role": "system", "content": system_content})
+            if _should_use_dashscope_explicit_cache(stream_input):
+                messages.append({
+                    "role": "system",
+                    "content": _dashscope_explicit_cache_content(system_content),
+                })
+            else:
+                messages.append({"role": "system", "content": system_content})
 
     # Add conversation messages
     messages.extend(stream_input.messages)
@@ -227,6 +248,55 @@ def _build_tools(stream_input: StreamInput) -> list[dict[str, Any]] | None:
     if not stream_input.tools:
         return None
     return stream_input.tools
+
+
+async def _openai_stream_with_client(client: Any, response: Any) -> AsyncGenerator[Any, None]:
+    """Yield OpenAI stream chunks and close the client afterward."""
+    try:
+        async for chunk in response:
+            yield chunk
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            maybe = close()
+            if asyncio.iscoroutine(maybe):
+                await maybe
+
+
+async def _dashscope_explicit_cache_response(
+    stream_input: StreamInput,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> AsyncGenerator[Any, None]:
+    """Create a DashScope OpenAI-compatible stream that preserves cache_control blocks."""
+    from openai import AsyncOpenAI
+
+    from mycode.provider.transform import build_litellm_kwargs
+
+    client = AsyncOpenAI(api_key=stream_input.api_key, base_url=stream_input.api_base)
+    kwargs: dict[str, Any] = {
+        "model": stream_input.model.api.id,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    kwargs.update(build_litellm_kwargs(stream_input.model))
+
+    if tools:
+        kwargs["tools"] = tools
+    if stream_input.tool_choice:
+        kwargs["tool_choice"] = stream_input.tool_choice
+    if stream_input.temperature is not None:
+        kwargs["temperature"] = stream_input.temperature
+    if stream_input.top_p is not None:
+        kwargs["top_p"] = stream_input.top_p
+    if stream_input.max_tokens is not None:
+        kwargs["max_tokens"] = stream_input.max_tokens
+    if stream_input.stop:
+        kwargs["stop"] = stream_input.stop
+
+    response = await client.chat.completions.create(**kwargs)
+    return _openai_stream_with_client(client, response)
 
 
 async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]:
@@ -283,7 +353,13 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     pending_finish_reason: str | None = None
 
     try:
-        response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=300)
+        if _should_use_dashscope_explicit_cache(stream_input):
+            response = await asyncio.wait_for(
+                _dashscope_explicit_cache_response(stream_input, messages, tools),
+                timeout=300,
+            )
+        else:
+            response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=300)
 
         # Consumer-initiated abort: race the next chunk against the abort
         # event. Without this the user has to wait out the whole LLM
@@ -428,7 +504,13 @@ def _get_cache_read_tokens(usage: Any) -> int:
 
 def _get_cache_write_tokens(usage: Any) -> int:
     """Extract cache write tokens."""
-    return getattr(usage, "cache_creation_input_tokens", 0) or 0
+    val = getattr(usage, "cache_creation_input_tokens", 0)
+    if val:
+        return val
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details:
+        return getattr(details, "cache_creation_input_tokens", 0) or 0
+    return 0
 
 
 def _calc_cost(model_name: str, usage: dict[str, int]) -> float:
