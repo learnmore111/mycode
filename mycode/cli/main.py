@@ -1507,15 +1507,35 @@ def session_list(limit: int) -> None:
 @session.command("delete")
 @click.argument("session_id")
 def session_delete(session_id: str) -> None:
-    """Delete a session by ID."""
+    """Delete a session by ID (prefix match allowed)."""
     import asyncio
 
     from mycode.project.instance import provide
 
     async def _del() -> None:
-        from mycode.session.session import remove
-        remove(session_id)
-        click.echo(f"Deleted session {session_id}")
+        from mycode.session.session import list_sessions, remove
+
+        # Allow short/prefix IDs — `session list` prints the first 12 chars.
+        target = session_id
+        if len(session_id) < 26:
+            matches = [s.id for s in list_sessions(limit=1000) if s.id.startswith(session_id)]
+            if not matches:
+                # Also try deleted sessions, in case user double-deletes.
+                from mycode.session.session import list_deleted
+                matches = [s.id for s in list_deleted(limit=1000) if s.id.startswith(session_id)]
+            if len(matches) == 0:
+                raise click.ClickException(f"No session matches: {session_id}")
+            if len(matches) > 1:
+                raise click.ClickException(
+                    f"Ambiguous prefix '{session_id}' matches {len(matches)} sessions; use full ID"
+                )
+            target = matches[0]
+
+        try:
+            remove(target)
+        except KeyError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Deleted session {target}")
 
     asyncio.run(provide(".", _del))
 

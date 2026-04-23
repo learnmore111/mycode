@@ -420,7 +420,10 @@ async def session_delete(session_id: str, directory: str = Query(default=".")) -
     from mycode.project.instance import provide
 
     async def _fn() -> Any:
-        remove(session_id)
+        try:
+            remove(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"Session not found: {session_id}") from exc
         return {"ok": True}
 
     return await provide(directory, _fn)
