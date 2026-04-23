@@ -54,16 +54,93 @@ export interface OrchestrationAgent {
   error?: string
 }
 
+export interface SwarmPeerSummary {
+  name: string
+  agent: string
+  is_error: boolean
+  turns: number
+  tool_calls: number
+  output_preview: string
+}
+
+export interface SwarmRunResult {
+  kind: 'swarm'
+  lead: string
+  peer_count: number
+  terminated_reason: string
+  message_count: number
+  has_errors: boolean
+  lead_output_preview: string
+  peers: SwarmPeerSummary[]
+}
+
+export interface CoordinatorStageSummary {
+  stage_id: string
+  is_error: boolean
+  spawn_count: number
+  ok_count: number
+  error_count: number
+  coordinator_agent?: string
+  output_preview: string
+}
+
+export interface CoordinatorRunResult {
+  kind: 'coordinator'
+  stage_count: number
+  stage_order: string[]
+  total_spawn_count: number
+  total_error_count: number
+  has_errors: boolean
+  last_stage_id?: string | null
+  last_output_preview: string
+  stages: CoordinatorStageSummary[]
+}
+
+export type RunResult = SwarmRunResult | CoordinatorRunResult | Record<string, unknown> | null
+
 export interface RunInfo {
   run_id: string
   flow: string
   mode: string
+  status: string
 }
 
 export interface RunStatus {
   run_id: string
+  flow: string
+  mode: string
+  status: string
   done: boolean
   cancelled: boolean
+  cancel_requested: boolean
+  started_at: number
+  finished_at?: number | null
+  has_result: boolean
+  error?: string | null
+}
+
+export interface RunDetail extends RunStatus {
+  directory?: string | null
+  task_preview: string
+  vars: Record<string, string>
+  max_turns: number
+  walltime_seconds: number
+  result?: RunResult
+}
+
+export interface StartRunParams {
+  flow: string
+  task?: string
+  vars?: Record<string, string>
+  max_turns?: number
+  walltime_seconds?: number
+}
+
+export interface CancelRunResponse {
+  ok: boolean
+  run_id: string
+  status: string
+  already_finished?: boolean
 }
 
 // --- Agent CRUD types ---
@@ -112,13 +189,7 @@ export async function listOrchestrationAgents(): Promise<OrchestrationAgent[]> {
   return apiFetch<OrchestrationAgent[]>('/orchestration/agent')
 }
 
-export async function startRun(params: {
-  flow: string
-  task?: string
-  vars?: Record<string, string>
-  max_turns?: number
-  walltime_seconds?: number
-}): Promise<RunInfo> {
+export async function startRun(params: StartRunParams): Promise<RunInfo> {
   return apiFetch<RunInfo>('/orchestration/run', {
     method: 'POST',
     body: JSON.stringify(params),
@@ -127,6 +198,16 @@ export async function startRun(params: {
 
 export async function listRuns(): Promise<RunStatus[]> {
   return apiFetch<RunStatus[]>('/orchestration/run')
+}
+
+export async function getRun(runId: string): Promise<RunDetail> {
+  return apiFetch<RunDetail>(`/orchestration/run/${encodeURIComponent(runId)}`)
+}
+
+export async function cancelRun(runId: string): Promise<CancelRunResponse> {
+  return apiFetch<CancelRunResponse>(`/orchestration/run/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+  })
 }
 
 // --- Agent CRUD ---

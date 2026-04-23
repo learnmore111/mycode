@@ -13,10 +13,12 @@ Behaviour, in order:
    and the baseline revision creates the full schema.
 2. **Existing legacy database** — schema was created by the in-code
    ``Base.metadata.create_all`` + ``_migrate`` path and no
-   ``alembic_version`` table is present.  We ``stamp 0001_baseline`` so
-   Alembic inherits authority without re-running DDL (which would
-   fail with "table already exists"), then ``upgrade head`` catches up
-   on any newer revisions.
+   ``alembic_version`` table is present.  We inspect whether the live
+   schema already matches the current ORM table set: if yes, we stamp
+   directly to ``head``; otherwise we stamp ``0001_baseline`` and then
+   let ``upgrade head`` apply newer revisions.  This avoids replaying
+   CREATE TABLE migrations against legacy databases that already carry
+   the latest tables.
 3. **Alembic-managed database** — ``alembic_version`` already present.
    Straight ``upgrade head``; a no-op when already at head.
 
@@ -87,6 +89,16 @@ def _inspect_tables(db_path: str | Path) -> set[str]:
         engine.dispose()
 
 
+def _head_revision(cfg: Config) -> str:
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(cfg)
+    head = script.get_current_head()
+    if not head:
+        raise RuntimeError("Alembic script directory has no head revision")
+    return head
+
+
 def apply_migrations(
     db_path: str | Path,
     *,
@@ -115,12 +127,20 @@ def apply_migrations(
         return "fresh"
 
     if has_schema and not has_alembic:
+        from mycode.storage.models import Base
+
+        model_tables = {table.name for table in Base.metadata.sorted_tables}
+        stamp_target = BASELINE_REVISION
+        if model_tables <= tables:
+            stamp_target = _head_revision(cfg)
+
         _log.info(
-            "alembic: legacy schema detected, stamping baseline then upgrading",
+            "alembic: legacy schema detected, stamping then upgrading",
             db_path=str(db_path),
             baseline=BASELINE_REVISION,
+            stamp_target=stamp_target,
         )
-        command.stamp(cfg, BASELINE_REVISION)
+        command.stamp(cfg, stamp_target)
         command.upgrade(cfg, "head")
         return "stamp+upgrade"
 

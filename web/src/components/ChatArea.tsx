@@ -342,7 +342,7 @@ export default function ChatArea({
 
   if (!session) {
     return (
-      <div className="flex-1 flex flex-col bg-surface-1">
+      <div className="flex-1 flex flex-col min-h-0 bg-surface-1">
         <div className="flex-1 flex flex-col items-center justify-center px-6">
           <div className="mb-8 flex flex-col items-center gap-3">
             <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center shadow-sm">
@@ -397,7 +397,7 @@ export default function ChatArea({
   }
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-surface-1">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-surface-1">
       <ChatHeader
         session={session}
         models={models}

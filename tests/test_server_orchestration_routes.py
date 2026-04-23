@@ -17,6 +17,7 @@ server-wide :class:`Bus`, which the client observes via the SSE endpoint.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,7 +25,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENCODE_DB", ":memory:")
+    monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "orchestration-routes.db"))
     monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
     monkeypatch.setattr("mycode.util.paths.GlobalPaths.config", staticmethod(lambda: tmp_path / "config"))
     import mycode.storage.database as dbmod
@@ -32,7 +33,24 @@ def client(tmp_path, monkeypatch):
 
     from mycode.server.app import create_app
     app = create_app()
-    return TestClient(app)
+    client = TestClient(app)
+    try:
+        yield client
+    finally:
+        client.close()
+        dbmod.reset()
+
+
+def _wait_for_run_status(client: TestClient, run_id: str, expected: str, *, attempts: int = 80) -> dict:
+    last: dict | None = None
+    for _ in range(attempts):
+        resp = client.get(f"/orchestration/run/{run_id}")
+        assert resp.status_code == 200, resp.text
+        last = resp.json()
+        if last["status"] == expected:
+            return last
+        time.sleep(0.01)
+    raise AssertionError(f"run {run_id} did not reach status={expected!r}; last={last}")
 
 
 def test_list_flows_returns_shipped_flows(client):
@@ -136,6 +154,163 @@ def test_post_run_coordinator_flow_no_task_required(client, monkeypatch):
         if "mode" in seen:
             break
     assert resp.json()["mode"] == "coordinator"
+
+
+def test_get_run_detail_returns_swarm_summary(client, monkeypatch):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    async def _fake_run_swarm(spec, agents, *, user_task, events=None, **kw):
+        if events is not None:
+            await events.swarm_started(
+                lead=spec.lead or "", peers=[name for name in agents if name != (spec.lead or "")], user_task=user_task,
+            )
+            await events.swarm_finished(
+                lead=spec.lead or "",
+                terminated_reason="lead-quiet",
+                duration_seconds=0.01,
+                peer_count=len(agents),
+            )
+        return SwarmResult(
+            flow_name=spec.name,
+            lead=spec.lead or "",
+            peers={
+                name: SpawnOutput(
+                    agent=name,
+                    task=f"task for {name}",
+                    output=f"output from {name}",
+                    turns=1,
+                    tool_calls=0,
+                )
+                for name in agents
+            },
+            transcript=[],
+            lead_output="final swarm answer",
+            terminated_reason="lead-quiet",
+        )
+
+    monkeypatch.setattr(orch_route, "run_swarm", _fake_run_swarm)
+    resp = client.post("/orchestration/run", json={"flow": "pair-review", "task": "review this"})
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+
+    detail = _wait_for_run_status(client, run_id, "completed")
+    assert detail["flow"] == "pair-review"
+    assert detail["mode"] == "swarm"
+    assert detail["done"] is True
+    assert detail["result"]["kind"] == "swarm"
+    assert detail["result"]["terminated_reason"] == "lead-quiet"
+    assert detail["result"]["lead_output_preview"] == "final swarm answer"
+    assert detail["result"]["peer_count"] >= 2
+
+
+def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
+    from mycode.server.routes import orchestration as orch_route
+
+    flags = {"started": False, "cancelled": False}
+
+    async def _fake_run_swarm(spec, agents, *, user_task, events=None, **kw):
+        flags["started"] = True
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            flags["cancelled"] = True
+            raise
+
+    monkeypatch.setattr(orch_route, "run_swarm", _fake_run_swarm)
+    resp = client.post("/orchestration/run", json={"flow": "pair-review", "task": "stay alive"})
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+
+    for _ in range(80):
+        if flags["started"]:
+            break
+        time.sleep(0.01)
+
+    cancel_resp = client.post(f"/orchestration/run/{run_id}/cancel")
+    assert cancel_resp.status_code == 200, cancel_resp.text
+    assert cancel_resp.json()["status"] in {"cancelling", "cancelled"}
+
+    detail = _wait_for_run_status(client, run_id, "cancelled")
+    assert detail["cancelled"] is True
+    assert detail["cancel_requested"] is True
+    assert detail["result"]["cancelled"] is True
+    assert flags["cancelled"] is True
+
+
+def test_run_history_survives_app_recreation(tmp_path, monkeypatch):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.app import create_app
+    from mycode.server.routes import orchestration as orch_route
+    import mycode.storage.database as dbmod
+
+    monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "orchestration-history.db"))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
+    monkeypatch.setattr("mycode.util.paths.GlobalPaths.config", staticmethod(lambda: tmp_path / "config"))
+    dbmod.reset()
+
+    async def _fake_run_swarm(spec, agents, *, user_task, events=None, **kw):
+        if events is not None:
+            await events.swarm_started(
+                lead=spec.lead or "", peers=[name for name in agents if name != (spec.lead or "")], user_task=user_task,
+            )
+            await events.swarm_finished(
+                lead=spec.lead or "",
+                terminated_reason="lead-quiet",
+                duration_seconds=0.01,
+                peer_count=len(agents),
+            )
+        return SwarmResult(
+            flow_name=spec.name,
+            lead=spec.lead or "",
+            peers={
+                name: SpawnOutput(
+                    agent=name,
+                    task=f"task for {name}",
+                    output=f"output from {name}",
+                    turns=1,
+                    tool_calls=0,
+                )
+                for name in agents
+            },
+            transcript=[],
+            lead_output="persistent answer",
+            terminated_reason="lead-quiet",
+        )
+
+    monkeypatch.setattr(orch_route, "run_swarm", _fake_run_swarm)
+
+    client1 = TestClient(create_app())
+    try:
+        resp = client1.post("/orchestration/run", json={"flow": "pair-review", "task": "persist this"})
+        assert resp.status_code == 200, resp.text
+        run_id = resp.json()["run_id"]
+        detail = _wait_for_run_status(client1, run_id, "completed")
+        assert detail["result"]["lead_output_preview"] == "persistent answer"
+    finally:
+        client1.close()
+
+    orch_route._runs.clear()
+    dbmod.reset()
+
+    client2 = TestClient(create_app())
+    try:
+        detail_resp = client2.get(f"/orchestration/run/{run_id}")
+        assert detail_resp.status_code == 200, detail_resp.text
+        detail = detail_resp.json()
+        assert detail["status"] == "completed"
+        assert detail["result"]["lead_output_preview"] == "persistent answer"
+
+        list_resp = client2.get("/orchestration/run")
+        assert list_resp.status_code == 200, list_resp.text
+        runs = list_resp.json()
+        assert any(run["run_id"] == run_id and run["has_result"] for run in runs)
+    finally:
+        client2.close()
+        orch_route._runs.clear()
+        dbmod.reset()
 
 
 def test_sse_generator_filters_by_run_id(client):
