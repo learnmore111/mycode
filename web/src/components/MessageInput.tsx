@@ -11,7 +11,7 @@ import {
   Paperclip,
 } from 'lucide-react'
 import type { AgentInfo } from '../types'
-import FileBrowser from './FileBrowser'
+import FilePicker from './FilePicker'
 
 interface Props {
   onSend: (text: string) => void
@@ -225,18 +225,16 @@ export default function MessageInput({
 
   return (
     <div className="relative max-w-3xl mx-auto w-full">
-      {/* File Browser popup */}
+      {/* File Picker modal */}
       {showFileBrowser && (
-        <div className="absolute bottom-full mb-2 left-0 right-0 z-20">
-          <FileBrowser
-            onSelectFile={(path) => {
-              setText((prev) => prev + `@${path} `)
-              setShowFileBrowser(false)
-              textareaRef.current?.focus()
-            }}
-            onClose={() => setShowFileBrowser(false)}
-          />
-        </div>
+        <FilePicker
+          onSelectFile={(path) => {
+            setText((prev) => prev + `@${path} `)
+            setShowFileBrowser(false)
+            textareaRef.current?.focus()
+          }}
+          onClose={() => setShowFileBrowser(false)}
+        />
       )}
 
       <div className="rounded-2xl border border-line bg-surface-0 shadow-sm transition-all focus-within:border-accent/30 focus-within:shadow-md">

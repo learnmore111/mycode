@@ -21,6 +21,7 @@ interface Props {
   onDismissPausedRun: () => void
   pausedRun: PausedRun | null
   codeChanges: SessionCodeChange[]
+  onCodeChangesCleared?: () => void
   chatStatus: 'idle' | 'streaming' | 'paused'
   onCreate: () => Promise<Session>
   models: { id: string; name: string; provider: string }[]
@@ -65,6 +66,7 @@ function ChangesPanel({
   const [expanded, setExpanded] = useState(false)
   const [busyFiles, setBusyFiles] = useState<Record<string, 'stage' | 'revert'>>({})
   const [batchBusy, setBatchBusy] = useState<'stage' | 'revert' | null>(null)
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
   if (!pausedRun && codeChanges.length === 0) return null
 
@@ -109,8 +111,13 @@ function ChangesPanel({
     try {
       await Promise.all(filePaths.map((p) => stageGitFile(p)))
       onRefreshGit?.()
+      setExpanded(false)
+      setToast({ type: 'success', message: `已确认 ${filePaths.length} 个文件的更改` })
+      setTimeout(() => setToast(null), 2500)
     } catch (err) {
       console.error('Stage all failed', err)
+      setToast({ type: 'error', message: '确认失败，请重试' })
+      setTimeout(() => setToast(null), 2500)
     } finally {
       setBatchBusy(null)
     }
@@ -123,8 +130,13 @@ function ChangesPanel({
     try {
       await Promise.all(filePaths.map((p) => revertGitFile(p)))
       onRefreshGit?.()
+      setExpanded(false)
+      setToast({ type: 'success', message: `已回退 ${filePaths.length} 个文件的更改` })
+      setTimeout(() => setToast(null), 2500)
     } catch (err) {
       console.error('Revert all failed', err)
+      setToast({ type: 'error', message: '回退失败，请重试' })
+      setTimeout(() => setToast(null), 2500)
     } finally {
       setBatchBusy(null)
     }
@@ -302,6 +314,20 @@ function ChangesPanel({
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Toast notification */}
+      {toast && (
+        <div className="px-3.5 py-2 border-t border-line-subtle animate-slide-up">
+          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium ${
+            toast.type === 'success'
+              ? 'bg-status-success/10 text-status-success border border-status-success/20'
+              : 'bg-status-error/10 text-status-error border border-status-error/20'
+          }`}>
+            {toast.type === 'success' ? <Check size={12} /> : <X size={12} />}
+            <span>{toast.message}</span>
+          </div>
         </div>
       )}
     </div>
