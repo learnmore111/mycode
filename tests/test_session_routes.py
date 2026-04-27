@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import mycode.project.instance as inst
-import mycode.storage.database as dbmod
 import pytest
 from fastapi.testclient import TestClient
 
+import mycode.project.instance as inst
+import mycode.storage.database as dbmod
 from mycode.server.app import create_app
 
 
@@ -104,3 +104,28 @@ def test_resume_route_streams_and_clears_pause_state(client: TestClient, tmp_pat
     assert "event: started" in resp.text
     assert "event: done" in resp.text
     assert get_paused_run(session.id) is None
+
+
+def test_messages_route_returns_reasoning_parts(client: TestClient, tmp_path):
+    from mycode.session.message import (
+        create_assistant_message,
+        create_reasoning_part,
+        create_text_part,
+        persist_turn,
+    )
+    from mycode.session.session import create
+
+    session = create(title="reasoning-route")
+    assistant = create_assistant_message(session.id, "parent-1", "openai", "test-model", "build")
+    reasoning = create_reasoning_part(session.id, assistant.id)
+    reasoning.content = "先分析事件流。"
+    text = create_text_part(session.id, assistant.id)
+    text.content = "已经补齐实现。"
+    persist_turn(session.id, assistant, [reasoning, text])
+
+    resp = client.get(f"/session/{session.id}/messages", params={"directory": str(tmp_path)})
+    assert resp.status_code == 200
+    messages = resp.json()
+    assert len(messages) == 1
+    assert messages[0]["parts"][0]["type"] == "reasoning"
+    assert messages[0]["parts"][0]["content"] == "先分析事件流。"

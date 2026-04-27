@@ -1,6 +1,7 @@
 import type { StreamingPart } from '../types'
 import TextContent from './TextContent'
 import ToolExecution from './ToolExecution'
+import ReasoningBlock from './ReasoningBlock'
 
 interface Props {
   text: string
@@ -8,6 +9,9 @@ interface Props {
 }
 
 export default function StreamingIndicator({ text, parts }: Props) {
+  const reasoningParts = parts.filter((part) => part.type === 'reasoning')
+  const toolParts = parts.filter((part) => part.type === 'tool')
+
   return (
     <div className="animate-fade-in">
       {/* Role label */}
@@ -24,7 +28,15 @@ export default function StreamingIndicator({ text, parts }: Props) {
 
       {/* Content */}
       <div className="pl-7 text-ink">
-        {parts.map((part) => (
+        {reasoningParts.map((part) => (
+          <ReasoningBlock
+            key={part.id}
+            content={part.content}
+            streaming
+          />
+        ))}
+
+        {toolParts.map((part) => (
           <ToolExecution
             key={part.id}
             part={{

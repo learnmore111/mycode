@@ -49,7 +49,7 @@ export default function MessageList({ messages, streaming, streamText, streamPar
         {messages.map((msg, i) => (
           <div key={msg.id}>
             {i > 0 && <div className="my-6" />}
-            <MessageBubble message={msg} onRollback={onRollback} streaming={streaming} />
+            <MessageBubble message={msg} onRollback={onRollback} streaming={false} />
           </div>
         ))}
 

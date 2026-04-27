@@ -186,6 +186,14 @@ def create_system_message(
 def create_text_part(session_id: str, message_id: str) -> TextPart:
     return TextPart(id=ids.part_id(), session_id=session_id, message_id=message_id, time_created=int(time.time() * 1000))
 
+def create_reasoning_part(session_id: str, message_id: str) -> ReasoningPart:
+    return ReasoningPart(
+        id=ids.part_id(),
+        session_id=session_id,
+        message_id=message_id,
+        time_created=int(time.time() * 1000),
+    )
+
 def create_tool_part(session_id: str, message_id: str, tool: str, call_id: str) -> ToolPart:
     return ToolPart(
         id=ids.part_id(), session_id=session_id, message_id=message_id,

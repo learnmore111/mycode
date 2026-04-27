@@ -110,6 +110,31 @@ export function useChat(sessionId: string | null) {
   const applyStreamEvent = useCallback(
     (event: SSEEvent) => {
       switch (event.type) {
+        case 'reasoning_delta':
+          setStreamParts((prev) => {
+            const existingIndex = prev.findIndex((part) => part.type === 'reasoning')
+            if (existingIndex >= 0) {
+              const next = prev.map((part, index) =>
+                index === existingIndex
+                  ? { ...part, content: part.content + ((event.data.content as string) ?? '') }
+                  : part,
+              )
+              streamPartsRef.current = next
+              return next
+            }
+            const next = [
+              ...prev,
+              {
+                id: `reasoning-${Date.now()}`,
+                type: 'reasoning' as const,
+                content: (event.data.content as string) ?? '',
+              },
+            ]
+            streamPartsRef.current = next
+            return next
+          })
+          break
+
         case 'text_delta':
           setStreamText((prev) => {
             const next = prev + (event.data.content ?? '')

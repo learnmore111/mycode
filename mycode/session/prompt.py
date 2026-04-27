@@ -136,6 +136,7 @@ class PromptEvent:
 
     Types:
       - "started":    Session started. data has model/agent info.
+      - "reasoning_delta": Incremental thinking text from LLM. data["content"] is the delta.
       - "text_delta": Incremental text from LLM. data["content"] is the delta.
       - "tool_start": A tool call identified. data["tool"], data["call_id"].
       - "tool_running": Tool execution started. data["tool"], data["call_id"], data["input"].
@@ -505,7 +506,10 @@ async def prompt(
             iter_text_content = ""
 
             async for event in proc.process_stream(ctx, stream_input):
-                if event.type == "text_delta":
+                if event.type == "reasoning_delta":
+                    yield PromptEvent(type="reasoning_delta", data=event.data)
+
+                elif event.type == "text_delta":
                     iter_text_content += event.data.get("content", "")
                     yield PromptEvent(type="text_delta", data=event.data)
 
