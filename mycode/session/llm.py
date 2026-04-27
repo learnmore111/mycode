@@ -93,6 +93,7 @@ class FinishEvent:
     type: str = "finish"
     reason: str = "stop"  # "stop" | "tool-calls" | "length"
     usage: dict[str, int] = field(default_factory=dict)
+    raw_usage: dict[str, Any] | None = None
     cost: float = 0.0
 
 
@@ -405,6 +406,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     tool_calls_in_progress: dict[int, dict[str, Any]] = {}
     # Accumulate usage across chunks (some providers send usage in a separate final chunk)
     accumulated_usage: dict[str, int] = {}
+    raw_usage_payload: dict[str, Any] | None = None
     # Defer FinishEvent until stream ends (usage may arrive after finish_reason)
     pending_finish_reason: str | None = None
 
@@ -425,6 +427,9 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             # Collect usage from any chunk that has it
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage
+                # Debug: log raw usage object to verify cache fields
+                logger.debug("usage", usage_raw=str(u))
+                raw_usage_payload = _serialize_usage(u)
                 accumulated_usage = {
                     "input_tokens": _usage_get(u, "prompt_tokens", 0) or _usage_get(u, "input_tokens", 0) or 0,
                     "output_tokens": _usage_get(u, "completion_tokens", 0) or _usage_get(u, "output_tokens", 0) or 0,
@@ -497,6 +502,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             yield FinishEvent(
                 reason=_map_finish_reason(pending_finish_reason),
                 usage=accumulated_usage,
+                raw_usage=raw_usage_payload,
                 cost=cost,
             )
 
@@ -538,7 +544,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         # Ensure a FinishEvent is always emitted so consumers don't hang
         if not pending_finish_reason:
             cost = _calc_cost(model_name, accumulated_usage)
-            yield FinishEvent(reason="error", usage=accumulated_usage, cost=cost)
+            yield FinishEvent(reason="error", usage=accumulated_usage, raw_usage=raw_usage_payload, cost=cost)
 
 
 def _get_reasoning_tokens(usage: Any) -> int:
@@ -691,3 +697,32 @@ def _coerce_delta_segments(value: Any) -> list[str]:
             if nested_segments:
                 return nested_segments
     return []
+
+
+def _serialize_usage(value: Any) -> dict[str, Any] | None:
+    """Convert provider usage payloads into plain JSON-safe objects."""
+    serialized = _serialize_jsonable(value)
+    return serialized if isinstance(serialized, dict) else None
+
+
+def _serialize_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _serialize_jsonable(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_serialize_jsonable(v) for v in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _serialize_jsonable(model_dump())
+        except Exception:
+            pass
+    as_dict = getattr(value, "__dict__", None)
+    if isinstance(as_dict, dict) and as_dict:
+        return {
+            str(k): _serialize_jsonable(v)
+            for k, v in as_dict.items()
+            if not str(k).startswith("_")
+        }
+    return str(value)

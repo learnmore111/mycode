@@ -59,6 +59,28 @@ _session_lock_last_used: dict[str, float] = {}
 _SESSION_LOCK_GC_IDLE_SECONDS = 3600.0
 
 
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _language_alignment_instruction(user_text: str) -> str | None:
+    """Return a lightweight language instruction derived from the user's text.
+
+    We only add this when the user's current turn is clearly Chinese, so
+    the base provider prompt can stay stable for other languages.
+    """
+    if not user_text.strip():
+        return None
+    if _contains_cjk(user_text):
+        return (
+            "The user is writing in Chinese. Reply in Chinese. "
+            "If you explicitly surface reasoning or thinking content to the user, "
+            "write that surfaced content in Chinese as well. "
+            "Prefer Simplified Chinese unless the user indicates otherwise."
+        )
+    return None
+
+
 def is_session_busy(session_id: str) -> bool:
     """Check if a session is currently being processed."""
     lock = _session_locks.get(session_id)
@@ -202,10 +224,6 @@ async def prompt(
         if prompt_input.system:
             system.append(prompt_input.system)
 
-        # Persist the exact system prompt used for this turn so history views
-        # can reconstruct the context window without depending on frontend guesses.
-        assistant_system = list(system)
-
         # Memory and skills are now injected as system-reminder messages (not in system prompt)
         # This keeps the system prompt static for prefix cache reuse across sessions
 
@@ -281,6 +299,14 @@ async def prompt(
             user_content = content_list
         else:
             user_content = user_text
+
+        language_instruction = _language_alignment_instruction(user_text)
+        if language_instruction:
+            system.append(language_instruction)
+
+        # Persist the exact system prompt used for this turn so history views
+        # can reconstruct the context window without depending on frontend guesses.
+        assistant_system = list(system)
 
         # Build conversation messages
         messages: list[dict[str, Any]] = list(history or [])
@@ -624,6 +650,7 @@ async def prompt(
             "messages": messages,
             "stop_reason": stop_reason,
             "checkpoint": guard.checkpoint,
+            "raw_usage": getattr(assistant_msg, "raw_usage", None),
         })
 
         # Persist after yielding done (user sees result immediately)

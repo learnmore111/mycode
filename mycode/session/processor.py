@@ -172,6 +172,7 @@ async def process_stream(
             ctx.assistant_message.tokens_cache_read += event.usage.get("cache_read_tokens", 0)
             ctx.assistant_message.tokens_cache_write += event.usage.get("cache_write_tokens", 0)
             ctx.assistant_message.cost += event.cost
+            ctx.assistant_message.raw_usage = event.raw_usage
 
         elif isinstance(event, llmmod.ErrorEvent):
             logger.error(

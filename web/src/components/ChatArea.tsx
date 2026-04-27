@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Sparkles, ArrowRight, PauseCircle, Play, FileCode2, X, ChevronDown, ChevronUp, Check, Undo2, Loader2 } from 'lucide-react'
-import type { AgentInfo, ContextSnapshot, Message, PausedRun, Session, SessionCodeChange, StreamingPart } from '../types'
+import type { AgentInfo, ContextSnapshot, GitChangedFile, Message, PausedRun, Session, SessionCodeChange, StreamingPart } from '../types'
 import { stageGitFile, revertGitFile } from '../api/git'
 import ChatHeader from './ChatHeader'
 import MessageList from './MessageList'
@@ -37,6 +37,7 @@ interface Props {
   onRefreshGit?: () => void
   onRollback?: (turn: number, options?: { restoreSnapshot?: boolean }) => Promise<unknown> | void
   gitChangedPaths?: Set<string>
+  gitFilesByPath?: Map<string, GitChangedFile>
 }
 
 const SUGGESTIONS = [
@@ -54,6 +55,7 @@ function ChangesPanel({
   onSelectFile,
   onRefreshGit,
   gitChangedPaths,
+  gitFilesByPath,
 }: {
   pausedRun: PausedRun | null
   codeChanges: SessionCodeChange[]
@@ -62,6 +64,7 @@ function ChangesPanel({
   onSelectFile?: (path: string) => void
   onRefreshGit?: () => void
   gitChangedPaths?: Set<string>
+  gitFilesByPath?: Map<string, GitChangedFile>
 }) {
   const [expanded, setExpanded] = useState(false)
   const [busyFiles, setBusyFiles] = useState<Record<string, 'stage' | 'revert'>>({})
@@ -70,7 +73,13 @@ function ChangesPanel({
 
   if (!pausedRun && codeChanges.length === 0) return null
 
-  const filePaths = codeChanges.map((c) => c.filePath).filter((p): p is string => !!p)
+  const confirmablePaths = codeChanges
+    .map((c) => c.filePath)
+    .filter((p): p is string => {
+      if (!p) return false
+      const gitFile = gitFilesByPath?.get(p)
+      return !!gitFile && (!gitFile.staged || gitFile.unstaged)
+    })
 
   const handleStage = async (path: string) => {
     setBusyFiles((prev) => ({ ...prev, [path]: 'stage' }))
@@ -106,13 +115,13 @@ function ChangesPanel({
   }
 
   const handleStageAll = async () => {
-    if (filePaths.length === 0) return
+    if (confirmablePaths.length === 0) return
     setBatchBusy('stage')
     try {
-      await Promise.all(filePaths.map((p) => stageGitFile(p)))
+      await Promise.all(confirmablePaths.map((p) => stageGitFile(p)))
       onRefreshGit?.()
       setExpanded(false)
-      setToast({ type: 'success', message: `已确认 ${filePaths.length} 个文件的更改` })
+      setToast({ type: 'success', message: `已确认 ${confirmablePaths.length} 个文件的更改` })
       setTimeout(() => setToast(null), 2500)
     } catch (err) {
       console.error('Stage all failed', err)
@@ -124,6 +133,7 @@ function ChangesPanel({
   }
 
   const handleRevertAll = async () => {
+    const filePaths = codeChanges.map((c) => c.filePath).filter((p): p is string => !!p)
     if (filePaths.length === 0) return
     if (!confirm(`确定要丢弃全部 ${filePaths.length} 个文件的更改？此操作不可撤销。`)) return
     setBatchBusy('revert')
@@ -157,7 +167,7 @@ function ChangesPanel({
           {expanded ? <ChevronDown size={12} className="text-ink-muted" /> : <ChevronUp size={12} className="text-ink-muted" />}
         </button>
 
-        {filePaths.length > 0 && (
+        {codeChanges.some((change) => !!change.filePath) && (
           <div className="flex items-center gap-1">
             {batchBusy ? (
               <Loader2 size={12} className="animate-spin text-ink-muted" />
@@ -165,7 +175,8 @@ function ChangesPanel({
               <>
                 <button
                   onClick={handleStageAll}
-                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xxs font-medium text-status-success hover:bg-status-success-light transition-colors"
+                  disabled={confirmablePaths.length === 0}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-xxs font-medium text-status-success hover:bg-status-success-light transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   title="全部确认 (git add)"
                 >
                   <Check size={11} />
@@ -221,11 +232,13 @@ function ChangesPanel({
             <div className="py-1.5">
               {codeChanges.map((change) => {
                 const busy = change.filePath ? busyFiles[change.filePath] : undefined
+                const gitFile = change.filePath ? gitFilesByPath?.get(change.filePath) : undefined
                 const isStale =
                   !!change.filePath &&
                   !!gitChangedPaths &&
                   gitChangedPaths.size > 0 &&
                   !gitChangedPaths.has(change.filePath)
+                const isConfirmed = !!gitFile && gitFile.staged && !gitFile.unstaged
                 const handleClick = () => {
                   if (!change.filePath) return
                   if (isStale) {
@@ -283,13 +296,21 @@ function ChangesPanel({
                         已失效
                       </span>
                     )}
+                    {isConfirmed && !isStale && (
+                      <span
+                        className="text-xxs text-status-success flex-shrink-0"
+                        title="文件修改已完全确认到暂存区"
+                      >
+                        已确认
+                      </span>
+                    )}
                     <span className="text-xxs text-ink-faint font-mono flex-shrink-0">{change.tool}</span>
 
                     {change.filePath && !isStale && (
                       <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                         {busy ? (
                           <Loader2 size={12} className="animate-spin text-ink-muted" />
-                        ) : (
+                        ) : isConfirmed ? null : (
                           <>
                             <button
                               onClick={() => handleStage(change.filePath!)}
@@ -363,6 +384,7 @@ export default function ChatArea({
   onRefreshGit,
   onRollback,
   gitChangedPaths,
+  gitFilesByPath,
 }: Props) {
   const [showContext, setShowContext] = useState(false)
 
@@ -470,6 +492,7 @@ export default function ChatArea({
         onSelectFile={onSelectGitFile}
         onRefreshGit={onRefreshGit}
         gitChangedPaths={gitChangedPaths}
+        gitFilesByPath={gitFilesByPath}
       />
       {showContext && contextSnapshot && (
         <ContextViewer snapshot={contextSnapshot} sessionId={session.id} onClose={() => setShowContext(false)} />
