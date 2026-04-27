@@ -114,6 +114,10 @@ export default function App() {
     () => new Set((git.status?.files ?? []).map((f) => f.path)),
     [git.status?.files],
   )
+  const gitFilesByPath = useMemo(
+    () => new Map((git.status?.files ?? []).map((f) => [f.path, f])),
+    [git.status?.files],
+  )
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -202,6 +206,7 @@ export default function App() {
           onSelectGitFile={git.openDiff}
           onRefreshGit={git.refresh}
           gitChangedPaths={gitChangedPaths}
+          gitFilesByPath={gitFilesByPath}
           onRollback={async (turn, options) => {
             const result = await chat.rollbackToTurn(turn, options)
             git.refresh()

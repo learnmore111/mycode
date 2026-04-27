@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 
 from mycode.provider.schema import Model, ModelApi, ModelCapabilities, ModelLimit
-from mycode.session.llm import _build_messages, _get_cache_read_tokens, _get_cache_write_tokens, StreamInput
+from mycode.session.llm import (
+    StreamInput,
+    _build_messages,
+    _get_cache_read_tokens,
+    _get_cache_write_tokens,
+    _serialize_usage,
+)
 
 
 def _make_model(mid: str, pid: str = "dashscope", npm: str = "@ai-sdk/openai-compatible") -> Model:
@@ -133,3 +139,17 @@ def test_get_cache_tokens_from_dict_usage_payload() -> None:
 
     assert _get_cache_read_tokens(usage) == 321
     assert _get_cache_write_tokens(usage) == 654
+
+
+def test_serialize_usage_keeps_nested_payload() -> None:
+    usage = SimpleNamespace(
+        prompt_tokens=12,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=9),
+        completion_tokens_details={"reasoning_tokens": 4},
+    )
+
+    assert _serialize_usage(usage) == {
+        "prompt_tokens": 12,
+        "prompt_tokens_details": {"cached_tokens": 9},
+        "completion_tokens_details": {"reasoning_tokens": 4},
+    }

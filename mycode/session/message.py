@@ -110,6 +110,7 @@ class AssistantMessage:
     tokens_cache_read: int = 0
     tokens_cache_write: int = 0
     cost: float = 0.0
+    raw_usage: dict[str, Any] | None = None
     time_created: int = 0
     time_completed: int | None = None
     is_api_error: bool = False  # Marks API errors (rate limit, prompt too long)

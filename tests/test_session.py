@@ -1,10 +1,14 @@
 """Tests for session and message models."""
-import pytest
 from mycode.session.message import (
-    create_user_message, create_assistant_message, create_text_part, TextPart, ToolPart,
+    TextPart,
+    ToolPart,
+    create_assistant_message,
+    create_user_message,
 )
-from mycode.session.system import build
 from mycode.session.processor import build_tool_results_messages
+from mycode.session.prompt import _language_alignment_instruction
+from mycode.session.system import build
+
 
 def test_create_user_message():
     msg = create_user_message("sess1")
@@ -47,3 +51,14 @@ def test_build_tool_results_messages():
     assert msgs[0]["tool_calls"][0]["function"]["name"] == "bash"
     assert msgs[1]["role"] == "tool"
     assert msgs[1]["content"] == "file.py"
+
+
+def test_language_alignment_instruction_for_chinese():
+    instruction = _language_alignment_instruction("请帮我修这个 bug")
+    assert instruction is not None
+    assert "Reply in Chinese" in instruction
+
+
+def test_language_alignment_instruction_for_english():
+    instruction = _language_alignment_instruction("Please fix this bug")
+    assert instruction is None

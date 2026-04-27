@@ -181,6 +181,7 @@ export interface ContextSnapshot {
     cache_write_tokens: number
     reasoning_tokens: number
     total_cost: number
+    raw_usage?: Record<string, unknown> | null
   } | null
   iteration: number
   model: string

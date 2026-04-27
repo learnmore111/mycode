@@ -112,11 +112,12 @@ export function useChat(sessionId: string | null) {
       switch (event.type) {
         case 'reasoning_delta':
           setStreamParts((prev) => {
-            const existingIndex = prev.findIndex((part) => part.type === 'reasoning')
-            if (existingIndex >= 0) {
+            const delta = (event.data.content as string) ?? ''
+            const lastPart = prev[prev.length - 1]
+            if (lastPart?.type === 'reasoning') {
               const next = prev.map((part, index) =>
-                index === existingIndex
-                  ? { ...part, content: part.content + ((event.data.content as string) ?? '') }
+                index === prev.length - 1
+                  ? { ...part, content: part.content + delta }
                   : part,
               )
               streamPartsRef.current = next
@@ -127,7 +128,7 @@ export function useChat(sessionId: string | null) {
               {
                 id: `reasoning-${Date.now()}`,
                 type: 'reasoning' as const,
-                content: (event.data.content as string) ?? '',
+                content: delta,
               },
             ]
             streamPartsRef.current = next
@@ -139,6 +140,29 @@ export function useChat(sessionId: string | null) {
           setStreamText((prev) => {
             const next = prev + (event.data.content ?? '')
             streamTextRef.current = next
+            return next
+          })
+          setStreamParts((prev) => {
+            const delta = (event.data.content as string) ?? ''
+            const lastPart = prev[prev.length - 1]
+            if (lastPart?.type === 'text') {
+              const next = prev.map((part, index) =>
+                index === prev.length - 1
+                  ? { ...part, content: part.content + delta }
+                  : part,
+              )
+              streamPartsRef.current = next
+              return next
+            }
+            const next = [
+              ...prev,
+              {
+                id: `text-${Date.now()}`,
+                type: 'text' as const,
+                content: delta,
+              },
+            ]
+            streamPartsRef.current = next
             return next
           })
           break
@@ -243,6 +267,7 @@ export function useChat(sessionId: string | null) {
                   cache_write_tokens: tokens.cache_write ?? 0,
                   reasoning_tokens: tokens.reasoning ?? 0,
                   total_cost: (event.data.cost as number) ?? 0,
+                  raw_usage: (event.data.raw_usage as Record<string, unknown> | null | undefined) ?? null,
                 },
               }
             })

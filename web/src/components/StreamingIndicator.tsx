@@ -9,9 +9,6 @@ interface Props {
 }
 
 export default function StreamingIndicator({ text, parts }: Props) {
-  const reasoningParts = parts.filter((part) => part.type === 'reasoning')
-  const toolParts = parts.filter((part) => part.type === 'tool')
-
   return (
     <div className="animate-fade-in">
       {/* Role label */}
@@ -28,34 +25,45 @@ export default function StreamingIndicator({ text, parts }: Props) {
 
       {/* Content */}
       <div className="pl-7 text-ink">
-        {reasoningParts.map((part) => (
-          <ReasoningBlock
-            key={part.id}
-            content={part.content}
-            streaming
-          />
-        ))}
+        {parts.map((part, index) => {
+          if (part.type === 'reasoning') {
+            return (
+              <ReasoningBlock
+                key={part.id}
+                content={part.content}
+                streaming
+              />
+            )
+          }
 
-        {toolParts.map((part) => (
-          <ToolExecution
-            key={part.id}
-            part={{
-              id: part.id,
-              type: part.type,
-              content: part.content,
-              tool: part.tool,
-              toolCallId: part.toolCallId,
-              state: part.state,
-              time: { created: Date.now() },
-            }}
-          />
-        ))}
+          if (part.type === 'tool') {
+            return (
+              <ToolExecution
+                key={part.id}
+                part={{
+                  id: part.id,
+                  type: part.type,
+                  content: part.content,
+                  tool: part.tool,
+                  toolCallId: part.toolCallId,
+                  state: part.state,
+                  time: { created: Date.now() },
+                }}
+              />
+            )
+          }
 
-        {text ? (
-          <div className="streaming-cursor">
-            <TextContent content={text} />
-          </div>
-        ) : null}
+          if (part.type === 'text') {
+            const isLast = index === parts.length - 1
+            return (
+              <div key={part.id} className={isLast ? 'streaming-cursor' : undefined}>
+                <TextContent content={part.content} />
+              </div>
+            )
+          }
+
+          return null
+        })}
 
         {!text && parts.length === 0 && (
           <div className="flex items-center gap-2.5 text-ink-muted text-sm py-1">
