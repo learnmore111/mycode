@@ -37,6 +37,10 @@ import type {
 interface Props {
   loading: boolean
   onRefresh: () => void
+  /** Bumped by the parent whenever an external action (e.g. a Workbench
+   * create/update/delete) mutates flows or agents.  The sidebar listens
+   * and re-fetches its own lists so the UI stays in sync. */
+  refreshToken?: number
 }
 
 type ActiveView = 'flows' | 'agents' | 'runs'
@@ -54,7 +58,7 @@ const SOURCE_BADGE: Record<string, { bg: string; text: string }> = {
   config: { bg: 'bg-surface-2', text: 'text-ink-muted' },
 }
 
-export default function OrchestrationSidebar({ loading: _parentLoading, onRefresh }: Props) {
+export default function OrchestrationSidebar({ loading: _parentLoading, onRefresh, refreshToken = 0 }: Props) {
   const [activeView, setActiveView] = useState<ActiveView>('flows')
   const [flows, setFlows] = useState<FlowInfo[]>([])
   const [agents, setAgents] = useState<OrchestrationAgent[]>([])
@@ -110,9 +114,37 @@ export default function OrchestrationSidebar({ loading: _parentLoading, onRefres
   }, [refreshFlows])
 
   useEffect(() => {
-    if (activeView === 'agents' && agents.length === 0) refreshAgents()
+    // Always refresh on tab switch — a freshly created / deleted agent
+    // or flow would otherwise stay cached and not appear until the tab
+    // loses its state.  Cheap GETs; fine to re-run.
+    if (activeView === 'agents') refreshAgents()
     if (activeView === 'runs') refreshRuns()
-  }, [activeView, agents.length, refreshAgents, refreshRuns])
+    if (activeView === 'flows') refreshFlows()
+  }, [activeView, refreshAgents, refreshRuns, refreshFlows])
+
+  // External refresh trigger: parent (Workbench) bumps ``refreshToken``
+  // after a mutation.  Pull whatever the current tab shows so the user
+  // sees their new agent / flow immediately without manual tab toggle.
+  useEffect(() => {
+    if (refreshToken === 0) return  // initial mount; handled above
+    if (activeView === 'agents') refreshAgents()
+    if (activeView === 'runs') refreshRuns()
+    if (activeView === 'flows') refreshFlows()
+  }, [refreshToken, activeView, refreshAgents, refreshRuns, refreshFlows])
+
+  // Loose-coupling channel: the Workbench dispatches a
+  // ``orchestration:refresh`` window event after create/update/delete
+  // mutations.  Listening here keeps the two components in sync without
+  // threading extra props through App.tsx.
+  useEffect(() => {
+    const handler = () => {
+      if (activeView === 'agents') refreshAgents()
+      if (activeView === 'runs') refreshRuns()
+      if (activeView === 'flows') refreshFlows()
+    }
+    window.addEventListener('orchestration:refresh', handler)
+    return () => window.removeEventListener('orchestration:refresh', handler)
+  }, [activeView, refreshAgents, refreshRuns, refreshFlows])
 
   // Poll runs every 3s when viewing runs tab
   useEffect(() => {

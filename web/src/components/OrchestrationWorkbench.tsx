@@ -368,6 +368,51 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
 
   const agentNames = agents.filter((a) => a.name.trim()).map((a) => a.name.trim())
 
+  // Dropdown for Lead / Entry / Spawn agents should also show agents
+  // discovered from the registry (builtin / global / project) — otherwise a
+  // freshly-created flow has nothing to pick from until the user manually
+  // adds participants.  Registry agents are surfaced with a "(注册表)" hint.
+  const registryOnlyNames = allAgents
+    .map((a) => a.name)
+    .filter((name) => !agentNames.includes(name))
+  const agentSelectOptions = [
+    ...agentNames.map((name) => ({ value: name, label: name })),
+    ...registryOnlyNames.map((name) => ({ value: name, label: `${name} (注册表)` })),
+  ]
+
+  // Auto-append a registry agent into the flow's agent list when the user
+  // picks one from a Lead/Entry/Spawn dropdown.  Keeps the backend happy —
+  // the validator requires the referenced agent to exist inside the flow.
+  const ensureAgent = (selected: string, defaultRole: string) => {
+    if (!selected) return
+    if (agentNames.includes(selected)) return
+    setAgents((prev) => [
+      ...prev,
+      { name: selected, extends: selected, role: defaultRole, prompt: '' },
+    ])
+  }
+
+  const handleSelectCoordinator = (v: string) => {
+    setCoordinator(v)
+    ensureAgent(v, 'coordinator')
+  }
+
+  const handleSelectEntry = (v: string) => {
+    setEntry(v)
+    ensureAgent(v, 'entry')
+  }
+
+  const handleSelectSpawnAgent = (stageIdx: number, spawnIdx: number, v: string) => {
+    setStages((p) =>
+      p.map((s, idx) =>
+        idx === stageIdx
+          ? { ...s, spawns: s.spawns.map((x, j) => (j === spawnIdx ? { ...x, agent: v } : x)) }
+          : s,
+      ),
+    )
+    ensureAgent(v, 'worker')
+  }
+
   const handleSave = () => {
     const varsObj: Record<string, string> = {}
     vars.forEach((v) => { if (v.key.trim()) varsObj[v.key.trim()] = v.value })
@@ -452,15 +497,15 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
               {mode === 'coordinator' && (
                 <div>
                   <label className={labelStyle} title="Coordinator 模式（orchestrator-worker）的中央领导者，负责分派并汇总 worker 结果">Lead Agent *</label>
-                  <Select value={coordinator} onChange={setCoordinator} placeholder="选择 Lead Agent（必填）"
-                    options={agentNames.map((n) => ({ value: n, label: n }))} mono />
+                  <Select value={coordinator} onChange={handleSelectCoordinator} placeholder="选择 Lead Agent（必填）"
+                    options={agentSelectOptions} mono />
                 </div>
               )}
               {mode === 'swarm' && (
                 <div>
                   <label className={labelStyle} title="Swarm 去中心化协作的初始任务接收者（入口 Agent）">入口 Agent</label>
-                  <Select value={entry} onChange={setEntry} placeholder="选择入口 Agent（可选）"
-                    options={agentNames.map((n) => ({ value: n, label: n }))} mono />
+                  <Select value={entry} onChange={handleSelectEntry} placeholder="选择入口 Agent（可选）"
+                    options={agentSelectOptions} mono />
                 </div>
               )}
               <div>
@@ -534,9 +579,9 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                     <div className="pl-3.5 border-l-2 border-[#3D3BF3]/20 space-y-1.5">
                       {stage.spawns.map((sp, spi) => (
                         <div key={spi} className="flex items-center gap-2">
-                          <Select value={sp.agent} onChange={(v) => setStages((p) => p.map((s, idx) => idx === si ? { ...s, spawns: s.spawns.map((x, j) => j === spi ? { ...x, agent: v } : x) } : s))}
+                          <Select value={sp.agent} onChange={(v) => handleSelectSpawnAgent(si, spi, v)}
                             placeholder="Agent" className="w-28" mono
-                            options={agentNames.map((n) => ({ value: n, label: n }))} />
+                            options={agentSelectOptions} />
                           <input value={sp.task} onChange={(e) => setStages((p) => p.map((s, idx) => idx === si ? { ...s, spawns: s.spawns.map((x, j) => j === spi ? { ...x, task: e.target.value } : x) } : s))}
                             placeholder="任务 / {{ vars.key }}" className="flex-1 bg-white rounded-lg px-2.5 py-1.5 text-[11px] outline-none border border-[#E5E4E0] focus:border-[#3D3BF3]/30 font-[JetBrains_Mono,monospace]" />
                           <button onClick={() => removeSpawn(si, spi)} className="p-0.5 text-[#D4D3CF] hover:text-[#dc2626] transition-colors"><X size={11} /></button>
@@ -880,6 +925,9 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       fire('success', isNew ? `Agent "${params.name}" 已创建` : '已更新')
       setEditingAgent(null)
       await refresh({ silent: true })
+      // Notify the sidebar (which maintains its own agent/flow state)
+      // to re-fetch so the newly-created agent shows up immediately.
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `保存失败: ${err}`)
     } finally {
@@ -893,6 +941,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       await deleteAgent(name, source === 'global' ? 'global' : 'project')
       fire('success', '已删除')
       await refresh({ silent: true })
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `删除失败: ${err}`)
     }
@@ -906,6 +955,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       fire('success', isNew ? `编排流 "${params.name}" 已创建` : '已更新')
       setEditingFlow(null)
       await refresh({ silent: true })
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `保存失败: ${err}`)
     } finally {
@@ -919,6 +969,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       await deleteFlow(name, source === 'global' ? 'global' : 'project')
       fire('success', '已删除')
       await refresh({ silent: true })
+      window.dispatchEvent(new CustomEvent('orchestration:refresh'))
     } catch (err) {
       fire('error', `删除失败: ${err}`)
     }
