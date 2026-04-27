@@ -191,10 +191,32 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
 # --- Read endpoints --------------------------------------------------------
 
 
+def _resolve_project_dir(directory: str | None) -> str | None:
+    """Pick the effective project directory for discovery/resolution.
+
+    Precedence:
+      1. Explicit ``directory`` query parameter from the client.
+      2. The active :class:`InstanceContext` (set by request middleware or
+         the CLI when a project is already active).
+      3. The server process's current working directory — matches the
+         write side (``_agent_dir`` / ``_flow_dir``), so any file that the
+         UI just created in ``<cwd>/.mycode/...`` is visible to the list
+         endpoints without forcing the caller to pass the directory.
+    """
+    from mycode.project.instance import current_or_none
+
+    if directory:
+        return os.path.abspath(directory)
+    inst = current_or_none()
+    if inst is not None and inst.directory:
+        return os.path.abspath(inst.directory)
+    return os.path.abspath(os.getcwd())
+
+
 @router.get("/flow")
 async def list_flows(directory: str | None = Query(default=None)) -> Any:
     """List flows discovered in builtin + global + project scope."""
-    project_dir = os.path.abspath(directory) if directory else None
+    project_dir = _resolve_project_dir(directory)
     reg = get_default_registry(project_dir=project_dir, refresh=True)
     return [
         {"name": f.name, "source": f.source, "path": str(f.path)}
@@ -205,7 +227,7 @@ async def list_flows(directory: str | None = Query(default=None)) -> Any:
 @router.get("/flow/{name}")
 async def get_flow(name: str, directory: str | None = Query(default=None)) -> Any:
     """Resolve a flow by name and return the parsed spec as JSON."""
-    project_dir = os.path.abspath(directory) if directory else None
+    project_dir = _resolve_project_dir(directory)
     reg = get_default_registry(project_dir=project_dir, refresh=True)
     try:
         spec = reg.load(name)
@@ -243,7 +265,7 @@ async def get_flow(name: str, directory: str | None = Query(default=None)) -> An
 @router.get("/agent")
 async def list_agents(directory: str | None = Query(default=None)) -> Any:
     """List agents discovered in builtin + global + project scope."""
-    project_dir = os.path.abspath(directory) if directory else None
+    project_dir = _resolve_project_dir(directory)
     reg = get_default_agent_registry(project_dir=project_dir, refresh=True)
     entries = []
     for entry in reg.list_entries():
@@ -570,7 +592,7 @@ async def start_run(body: _RunBody) -> Any:
     ``GET /orchestration/events?run_id=...`` to observe progress.
     """
     bus = _require_bus()
-    project_dir = os.path.abspath(body.directory) if body.directory else None
+    project_dir = _resolve_project_dir(body.directory)
 
     flow_reg = get_default_registry(project_dir=project_dir, refresh=True)
     agent_reg = get_default_agent_registry(project_dir=project_dir, refresh=True)
