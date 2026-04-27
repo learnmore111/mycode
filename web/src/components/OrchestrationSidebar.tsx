@@ -365,9 +365,14 @@ export default function OrchestrationSidebar({ loading: _parentLoading, onRefres
                                     </span>
                                   )
                                 })()}
-                                {flowDetail.lead && (
+                                {flowDetail.mode === 'coordinator' && flowDetail.coordinator && (
                                   <span className="text-[10px] text-ink-muted">
-                                    Lead: <span className="font-mono font-medium text-ink-secondary">{flowDetail.lead}</span>
+                                    Lead: <span className="font-mono font-medium text-ink-secondary">{flowDetail.coordinator}</span>
+                                  </span>
+                                )}
+                                {flowDetail.mode !== 'coordinator' && (flowDetail.entry || flowDetail.lead) && (
+                                  <span className="text-[10px] text-ink-muted">
+                                    入口: <span className="font-mono font-medium text-ink-secondary">{flowDetail.entry || flowDetail.lead}</span>
                                   </span>
                                 )}
                               </div>

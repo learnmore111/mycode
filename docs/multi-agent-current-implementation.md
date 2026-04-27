@@ -141,7 +141,7 @@ flow 的核心 schema 位于 `mycode/orchestration/topology/schema.py`，顶层�
 - `mode`
 - `agents`
 - `stages`
-- `lead`
+- `entry`（旧版 `lead`，已保留为别名）
 - `backend`
 - `vars`
 - `extends`
@@ -168,7 +168,7 @@ flow 的核心 schema 位于 `mycode/orchestration/topology/schema.py`，顶层�
 - agent 名称唯一
 - stage id 唯一
 - `spawn.agent` 必须存在
-- `runs_on` / `lead` / `fan_out_from` 必须存在
+- `runs_on` / `entry`（旧 `lead`，保留别名）/ `fan_out_from` 必须存在
 - `depends_on` 的 DAG 无环
 - mode 相关约束
 - 未解析变量占位符检查
@@ -244,11 +244,11 @@ flow 的核心 schema 位于 `mycode/orchestration/topology/schema.py`，顶层�
 
 ### 6.1 总体模型
 
-`mycode/orchestration/runtime/swarm.py` 中的 swarm 采用消息驱动模型：
+`mycode/orchestration/runtime/swarm.py` 中的 swarm 采用消息驱动模型（去中心化 / peer-to-peer，参考 OpenAI Swarm、LangGraph Swarm）：
 
 1. 创建 `MailboxSystem`
 2. 给每个 agent 分配 inbox
-3. 把用户任务投递给 lead
+3. 把用户任务投递给 **入口 Agent（entry）**。`entry` 可选，未显式声明时默认使用第一个 agent；它**不是**中央控制者，只是初始任务接收者
 4. 为每个 peer 启动独立异步任务
 5. 每个 peer 在自己的循环里处理 inbox、执行 LLM、调用工具并继续通信
 
@@ -258,7 +258,7 @@ flow 的核心 schema 位于 `mycode/orchestration/topology/schema.py`，顶层�
 
 - 不污染全局工具表
 - 并发 swarm 之间互不串话
-- `main` 别名可以映射到当前 lead
+- `main` 别名映射到当前 swarm 的入口 agent（entry）
 - 每次运行都绑定当前 mailbox system
 
 ### 6.3 Mailbox 抽象
@@ -288,7 +288,7 @@ Swarm 运行结束后会得到 `SwarmResult`，其中包含：
 
 - `peers`
 - `transcript`
-- `lead_output`
+- `entry_output`（旧字段名 `lead_output`，仍作为别名返回）
 - `terminated_reason`
 
 这让 swarm 路径不仅能协作执行，也具备较清晰的运行结果结构。

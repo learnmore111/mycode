@@ -5,9 +5,17 @@ This module enforces cross-field / whole-graph invariants:
 
 - unique agent names / stage ids
 - ``spawn.agent`` references exist in ``agents``
-- ``runs_on`` / ``lead`` / ``fan_out_from`` references exist
+- ``runs_on`` / ``entry`` (``lead`` alias) / ``fan_out_from`` references exist
 - no cycles in ``depends_on`` / ``fan_out_from`` edges
-- mode-specific constraints (coordinator needs stages, swarm needs lead, ...)
+- mode-specific constraints:
+
+  * **coordinator** mode — *centralised* orchestrator-worker pattern:
+    must have ≥1 stage and exactly one designated coordinator/leader
+    agent (either via the top-level ``coordinator`` field or exactly
+    one agent with ``role == "coordinator"``).  See
+    https://docs.anthropic.com/en/docs/agents / LangGraph supervisor.
+  * **swarm** mode — *decentralised* peer-to-peer pattern:
+    requires ≥2 agents, forbids stages, entry is optional.
 - unknown ``{{ var.X }}`` placeholders leftover after rendering
 """
 
@@ -113,23 +121,57 @@ def _check_references(spec: OrchestrationSpec, r: _Report) -> None:
 
     if spec.lead and spec.lead not in agent_names:
         r.add(f"lead references unknown agent {spec.lead!r}")
+    if spec.entry and spec.entry not in agent_names:
+        r.add(f"entry references unknown agent {spec.entry!r}")
+    if spec.coordinator and spec.coordinator not in agent_names:
+        r.add(f"coordinator references unknown agent {spec.coordinator!r}")
 
 
 def _check_mode_constraints(spec: OrchestrationSpec, r: _Report) -> None:
     if spec.mode == "coordinator":
         if not spec.stages:
             r.add("coordinator mode requires at least one stage")
-        # A coordinator agent (role=coordinator) is strongly recommended but
-        # not strictly required — stages with runs_on may implicitly define it.
+        # Coordinator is a CENTRALISED orchestrator-worker topology: exactly
+        # one leader agent must be designated.  We accept either:
+        #   (a) an explicit top-level ``coordinator: <agent>`` field, or
+        #   (b) exactly one agent with ``role == "coordinator"`` (which the
+        #       schema's ``_sync_coordinator`` already lifts into
+        #       ``spec.coordinator`` for us).
+        # Zero or multiple role=coordinator agents without an explicit
+        # ``coordinator`` field is an error.
+        coord_role_agents = [a.name for a in spec.agents if a.role == "coordinator"]
+        if not spec.coordinator:
+            if not coord_role_agents:
+                r.add(
+                    "coordinator mode requires a designated leader: set top-level "
+                    "'coordinator: <agent>' or mark exactly one agent with "
+                    "'role: coordinator'"
+                )
+            elif len(coord_role_agents) > 1:
+                r.add(
+                    "coordinator mode has multiple agents with role='coordinator' "
+                    f"({sorted(coord_role_agents)!r}); pick one by setting the "
+                    "top-level 'coordinator: <agent>' field"
+                )
+        elif len(coord_role_agents) > 1 and spec.coordinator not in coord_role_agents:
+            # Explicit coordinator is set, but it doesn't match any role.
+            # We still allow this (role is informational), but warn if there
+            # are *other* agents claiming the role — likely a misconfig.
+            r.add(
+                f"coordinator {spec.coordinator!r} is declared but other agents "
+                f"also carry role='coordinator': {sorted(coord_role_agents)!r}; "
+                "only the designated coordinator should have that role"
+            )
     elif spec.mode == "swarm":
-        if not spec.lead:
-            r.add("swarm mode requires a 'lead' agent")
+        # Swarm is peer-to-peer / decentralized; an explicit entry agent
+        # (formerly "lead") is **optional**. When omitted, the runtime uses
+        # the first declared agent as the initial task receiver.
         if spec.stages:
             r.add("swarm mode should not declare stages (it is message-driven)")
         if len(spec.agents) < 2:
             r.add("swarm mode requires at least 2 agents")
-    elif spec.mode == "hybrid" and not spec.stages and not spec.lead:
-        r.add("hybrid mode requires stages and/or a lead")
+    elif spec.mode == "hybrid" and not spec.stages and not spec.entry:
+        r.add("hybrid mode requires stages and/or an entry agent")
 
 
 def _check_stage_dag(spec: OrchestrationSpec, r: _Report) -> None:

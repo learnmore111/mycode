@@ -1,0 +1,4 @@
+{"service": "cli.dev", "pid": 19553, "port": 4096, "event": "backend started", "logger": "mycode.util.log", "level": "info", "timestamp": "2026-04-27T07:37:25.716111Z"}
+{"service": "cli.dev", "pid": 19554, "port": 3000, "event": "frontend started", "logger": "mycode.util.log", "level": "info", "timestamp": "2026-04-27T07:37:25.719885Z"}
+{"service": "cli.dev", "pid": 20368, "port": 4096, "event": "backend started", "logger": "mycode.util.log", "level": "info", "timestamp": "2026-04-27T07:39:05.195256Z"}
+{"service": "cli.dev", "pid": 20369, "port": 3000, "event": "frontend started", "logger": "mycode.util.log", "level": "info", "timestamp": "2026-04-27T07:39:05.196873Z"}

@@ -30,6 +30,9 @@ class GlobalPaths:
     @staticmethod
     def data() -> Path:
         """~/.local/share/mycode (Linux) or ~/Library/Application Support/mycode (macOS)."""
+        # Allow override via environment variable for development/testing
+        if os.environ.get("MYCODE_DATA_DIR"):
+            return Path(os.environ.get("MYCODE_DATA_DIR"))
         if sys.platform == "darwin":
             return Path.home() / "Library" / "Application Support" / APP_NAME
         if sys.platform == "win32":

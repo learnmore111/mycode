@@ -83,7 +83,7 @@ mode: coordinator
 vars:
   q: default
 agents:
-  - { name: worker }
+  - { name: worker, role: coordinator }
 stages:
   - id: s1
     spawn:
@@ -108,7 +108,7 @@ def test_load_supports_extends_across_files(tmp_path: Path) -> None:
 name: base
 mode: coordinator
 agents:
-  - { name: worker }
+  - { name: worker, role: coordinator }
 stages:
   - id: s1
     spawn:
@@ -121,7 +121,7 @@ stages:
 name: child
 extends: base
 agents:
-  - { name: worker, model: gpt-5 }
+  - { name: worker, role: coordinator, model: gpt-5 }
 """.strip(),
     )
 

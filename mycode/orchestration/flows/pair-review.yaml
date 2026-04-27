@@ -1,19 +1,24 @@
 # Built-in "pair-review" swarm.
 #
-# Three peer reviewers coordinate via named mailboxes. Runtime support lands
-# in milestone M5/M6; M1 only parses + validates the declaration.
+# Three peer reviewers coordinate via named mailboxes. Swarm mode is
+# **decentralized / peer-to-peer** — the ``entry`` field below just marks
+# which agent receives the initial user task; it is *not* a central
+# controller.  All peers can ``send_message`` to each other freely.
+#
+# ``entry`` is the canonical field; ``lead`` is retained as a deprecated
+# alias for backward compatibility with flows authored pre-v0.x.
 name: pair-review
 description: Security + performance + general code review via swarm mailboxes
 mode: swarm
-lead: reviewer-lead
+entry: reviewer-lead
 
 agents:
   - name: reviewer-lead
     extends: build
-    role: lead
+    role: entry
     tools: [send_message, team_create, read, grep, task_stop]
     prompt: |
-      You are the review lead. Delegate security concerns to
+      You are the review entry point. Delegate security concerns to
       `security-reviewer` and performance concerns to `perf-reviewer`
       via `send_message`. Collect responses and produce the final report.
 

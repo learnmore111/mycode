@@ -38,7 +38,12 @@ export interface FlowStage {
 export interface FlowDetail {
   name: string
   mode: 'coordinator' | 'swarm' | 'hybrid'
+  /** Preferred field: the swarm initial task receiver. */
+  entry?: string
+  /** @deprecated Alias of {@link entry}; kept for backward compatibility. */
   lead?: string
+  /** The leader agent in coordinator/hybrid mode (orchestrator-worker pattern). */
+  coordinator?: string
   agents: FlowAgent[]
   stages: FlowStage[]
   vars: Record<string, string>
@@ -65,11 +70,17 @@ export interface SwarmPeerSummary {
 
 export interface SwarmRunResult {
   kind: 'swarm'
+  /** Preferred: the swarm entry (initial task receiver) agent name. */
+  entry: string
+  /** @deprecated Alias of {@link entry}. */
   lead: string
   peer_count: number
   terminated_reason: string
   message_count: number
   has_errors: boolean
+  /** Preferred: preview of the entry agent's final output. */
+  entry_output_preview: string
+  /** @deprecated Alias of {@link entry_output_preview}. */
   lead_output_preview: string
   peers: SwarmPeerSummary[]
 }
@@ -167,7 +178,12 @@ export interface FlowCreateParams {
   name: string
   description?: string
   mode?: string
+  /** Preferred field for the swarm initial task receiver. */
+  entry?: string
+  /** @deprecated Alias of {@link entry}; still accepted by the backend. */
   lead?: string
+  /** The leader agent in coordinator/hybrid mode. */
+  coordinator?: string
   agents?: Array<Record<string, unknown>>
   stages?: Array<Record<string, unknown>>
   vars?: Record<string, string>
