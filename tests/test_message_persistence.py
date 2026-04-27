@@ -1,10 +1,18 @@
 """Tests for message persistence (save_message, save_parts, persist_turn)."""
 import pytest
+
 import mycode.project.instance as inst
 import mycode.storage.database as dbmod
 from mycode.session.message import (
-    create_user_message, create_assistant_message, create_text_part, create_tool_part,
-    save_message, save_part, save_parts, persist_turn, TextPart, ToolPart,
+    create_assistant_message,
+    create_reasoning_part,
+    create_text_part,
+    create_tool_part,
+    create_user_message,
+    persist_turn,
+    save_message,
+    save_part,
+    save_parts,
 )
 from mycode.storage.models import MessageTable, PartTable, SessionTable
 
@@ -77,6 +85,20 @@ def test_save_tool_part():
         assert row is not None
         assert row.tool == "bash"
         assert row.tool_call_id == "tc1"
+    finally:
+        db.close()
+
+
+def test_save_reasoning_part():
+    part = create_reasoning_part("sess1", "msg1")
+    part.content = "Need to inspect the parser first."
+    save_part(part)
+    db = dbmod.get_session()
+    try:
+        row = db.query(PartTable).filter(PartTable.id == part.id).first()
+        assert row is not None
+        assert row.type == "reasoning"
+        assert row.content == "Need to inspect the parser first."
     finally:
         db.close()
 

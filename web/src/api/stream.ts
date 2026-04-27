@@ -18,6 +18,7 @@ export interface StreamCallbacks {
  */
 const KNOWN_EVENT_TYPES = new Set<SSEEventType>([
   'started',
+  'reasoning_delta',
   'text_delta',
   'tool_start',
   'tool_running',

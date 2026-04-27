@@ -1,49 +1,15 @@
-import { useMemo, useState, useRef, useEffect } from 'react'
-import { History, Loader2, ChevronDown, ChevronRight, Lightbulb } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { History, Loader2 } from 'lucide-react'
 import type { Message } from '../types'
 import TextContent from './TextContent'
 import ToolExecution from './ToolExecution'
 import MessageMeta from './MessageMeta'
+import ReasoningBlock from './ReasoningBlock'
 
 interface Props {
   message: Message
   onRollback?: (turn: number, options?: { restoreSnapshot?: boolean }) => Promise<unknown> | void
   streaming?: boolean
-}
-
-function ReasoningBlock({ content, streaming }: { content: string; streaming?: boolean }) {
-  const [collapsed, setCollapsed] = useState(false)
-  const wasStreaming = useRef(streaming)
-
-  useEffect(() => {
-    if (wasStreaming.current && !streaming) {
-      setCollapsed(true)
-    }
-    wasStreaming.current = streaming
-  }, [streaming])
-
-  if (!content) return null
-
-  return (
-    <div className="my-3 rounded-lg border border-accent/15 bg-accent/5 overflow-hidden">
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center gap-2 w-full px-3 py-2 text-xs text-accent/80 hover:text-accent hover:bg-accent/10 transition-colors text-left"
-      >
-        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-        <Lightbulb size={12} />
-        <span className="font-medium">思考过程</span>
-        {!collapsed && (
-          <span className="ml-auto text-xxs text-ink-faint">{content.length} 字符</span>
-        )}
-      </button>
-      {!collapsed && (
-        <div className="px-3 pb-3 pt-0 text-sm text-ink-tertiary leading-relaxed whitespace-pre-wrap animate-fade-in">
-          {content}
-        </div>
-      )}
-    </div>
-  )
 }
 
 export default function MessageBubble({ message, onRollback, streaming }: Props) {

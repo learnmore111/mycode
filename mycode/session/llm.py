@@ -61,6 +61,12 @@ class TextDelta:
 
 
 @dataclass
+class ReasoningDelta:
+    type: str = "reasoning-delta"
+    text: str = ""
+
+
+@dataclass
 class ToolCallDelta:
     type: str = "tool-call"
     tool_call_id: str = ""
@@ -204,7 +210,51 @@ def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
 
 
 # Union type for stream events
-StreamEvent = TextDelta | ToolCallDelta | ToolCallPartial | ToolCallArgsPartial | FinishEvent | ErrorEvent
+StreamEvent = ReasoningDelta | TextDelta | ToolCallDelta | ToolCallPartial | ToolCallArgsPartial | FinishEvent | ErrorEvent
+
+
+DASHSCOPE_EXPLICIT_CACHE_MODELS = frozenset({
+    "qwen3-max",
+    "qwen3.6-max-preview",
+    "qwen-max",
+    "qwen3.6-plus",
+    "qwen3.5-plus",
+    "qwen-plus",
+    "qwen3.6-flash",
+    "qwen3.5-flash",
+    "qwen-flash",
+    "qwen3-coder-plus",
+    "qwen3-coder-flash",
+    "qwen3-vl-plus",
+    "qwen3-vl-flash",
+    "deepseek-v3.2",
+    "kimi-k2.6",
+    "kimi-k2.5",
+    "glm-5.1",
+})
+
+DASHSCOPE_EXPLICIT_CACHE_PREFIX_MODELS = (
+    "qwen3.5-plus-",
+)
+
+
+def _usage_get(obj: Any, key: str, default: Any = 0) -> Any:
+    """Read a usage field from either an object or dict-like payload."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _usage_get_path(obj: Any, *path: str, default: Any = 0) -> Any:
+    """Walk nested usage payloads across object and dict representations."""
+    current = obj
+    for key in path:
+        current = _usage_get(current, key, None)
+        if current is None:
+            return default
+    return current
 
 
 def _dashscope_explicit_cache_content(text: str) -> list[dict[str, Any]]:
@@ -219,7 +269,13 @@ def _dashscope_explicit_cache_content(text: str) -> list[dict[str, Any]]:
 def _should_use_dashscope_explicit_cache(stream_input: StreamInput) -> bool:
     """Whether this request should opt into DashScope explicit prompt caching."""
     model = stream_input.model
-    return model.provider_id == "dashscope" and model.id == "qwen3.6-plus"
+    if model.provider_id != "dashscope":
+        return False
+
+    model_id = model.id.lower()
+    if model_id in DASHSCOPE_EXPLICIT_CACHE_MODELS:
+        return True
+    return any(model_id.startswith(prefix) for prefix in DASHSCOPE_EXPLICIT_CACHE_PREFIX_MODELS)
 
 
 def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
@@ -370,9 +426,9 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage
                 accumulated_usage = {
-                    "input_tokens": getattr(u, "prompt_tokens", 0) or 0,
-                    "output_tokens": getattr(u, "completion_tokens", 0) or 0,
-                    "total_tokens": getattr(u, "total_tokens", 0) or 0,
+                    "input_tokens": _usage_get(u, "prompt_tokens", 0) or _usage_get(u, "input_tokens", 0) or 0,
+                    "output_tokens": _usage_get(u, "completion_tokens", 0) or _usage_get(u, "output_tokens", 0) or 0,
+                    "total_tokens": _usage_get(u, "total_tokens", 0) or 0,
                     "reasoning_tokens": _get_reasoning_tokens(u),
                     "cache_read_tokens": _get_cache_read_tokens(u),
                     "cache_write_tokens": _get_cache_write_tokens(u),
@@ -396,9 +452,15 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             if not delta:
                 continue
 
-            # Text content
-            if delta.content:
-                yield TextDelta(text=delta.content)
+            # Provider reasoning / thinking content
+            for reasoning_text in _extract_reasoning_segments(delta):
+                if reasoning_text:
+                    yield ReasoningDelta(text=reasoning_text)
+
+            # User-visible text content
+            for text in _extract_text_segments(delta):
+                if text:
+                    yield TextDelta(text=text)
 
             # Tool calls
             if delta.tool_calls:
@@ -482,9 +544,9 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
 def _get_reasoning_tokens(usage: Any) -> int:
     """Extract reasoning tokens from various provider formats."""
     # OpenAI: usage.completion_tokens_details.reasoning_tokens
-    details = getattr(usage, "completion_tokens_details", None)
-    if details:
-        return getattr(details, "reasoning_tokens", 0) or 0
+    val = _usage_get_path(usage, "completion_tokens_details", "reasoning_tokens", default=0)
+    if val:
+        return val
     # Some providers use prompt_tokens_details
     return 0
 
@@ -492,24 +554,49 @@ def _get_reasoning_tokens(usage: Any) -> int:
 def _get_cache_read_tokens(usage: Any) -> int:
     """Extract cache read tokens."""
     # Anthropic: usage.cache_read_input_tokens
-    val = getattr(usage, "cache_read_input_tokens", 0)
+    val = _usage_get(usage, "cache_read_input_tokens", 0)
     if val:
         return val
-    # OpenAI: usage.prompt_tokens_details.cached_tokens
-    details = getattr(usage, "prompt_tokens_details", None)
-    if details:
-        return getattr(details, "cached_tokens", 0) or 0
+    # DashScope/OpenAI chat.completions: usage.prompt_tokens_details.cached_tokens
+    val = _usage_get_path(usage, "prompt_tokens_details", "cached_tokens", default=0)
+    if val:
+        return val
+    # DashScope/OpenAI responses: usage.input_tokens_details.cached_tokens
+    val = _usage_get_path(usage, "input_tokens_details", "cached_tokens", default=0)
+    if val:
+        return val
+    # Some DashScope model/region variants expose cached_tokens at top level.
+    val = _usage_get(usage, "cached_tokens", 0)
+    if val:
+        return val
     return 0
 
 
 def _get_cache_write_tokens(usage: Any) -> int:
     """Extract cache write tokens."""
-    val = getattr(usage, "cache_creation_input_tokens", 0)
+    val = _usage_get(usage, "cache_creation_input_tokens", 0)
     if val:
         return val
-    details = getattr(usage, "prompt_tokens_details", None)
-    if details:
-        return getattr(details, "cache_creation_input_tokens", 0) or 0
+    # DashScope/OpenAI chat.completions explicit cache accounting.
+    val = _usage_get_path(usage, "prompt_tokens_details", "cache_creation_input_tokens", default=0)
+    if val:
+        return val
+    val = _usage_get_path(usage, "prompt_tokens_details", "cache_creation", "cache_creation_input_tokens", default=0)
+    if val:
+        return val
+    val = _usage_get_path(usage, "prompt_tokens_details", "cache_creation", "ephemeral_5m_input_tokens", default=0)
+    if val:
+        return val
+    # DashScope/OpenAI responses explicit cache accounting.
+    val = _usage_get_path(usage, "input_tokens_details", "cache_creation_input_tokens", default=0)
+    if val:
+        return val
+    val = _usage_get_path(usage, "input_tokens_details", "cache_creation", "cache_creation_input_tokens", default=0)
+    if val:
+        return val
+    val = _usage_get_path(usage, "input_tokens_details", "cache_creation", "ephemeral_5m_input_tokens", default=0)
+    if val:
+        return val
     return 0
 
 
@@ -535,3 +622,72 @@ def _map_finish_reason(reason: str) -> str:
     if reason == "length":
         return "length"
     return "stop"
+
+
+def _extract_reasoning_segments(delta: Any) -> list[str]:
+    """Extract provider-specific reasoning/thinking text from a delta chunk."""
+    return _extract_delta_segments(
+        delta,
+        field_names=("reasoning_content", "reasoning", "thinking"),
+    )
+
+
+def _extract_text_segments(delta: Any) -> list[str]:
+    """Extract normal assistant text from a delta chunk."""
+    return _extract_delta_segments(delta, field_names=("content",))
+
+
+def _extract_delta_segments(delta: Any, *, field_names: tuple[str, ...]) -> list[str]:
+    segments: list[str] = []
+    for name in field_names:
+        value = _delta_get(delta, name)
+        segments.extend(_coerce_delta_segments(value))
+    return [segment for segment in segments if segment]
+
+
+def _delta_get(delta: Any, key: str) -> Any:
+    if delta is None:
+        return None
+    if isinstance(delta, dict):
+        return delta.get(key)
+    value = getattr(delta, key, None)
+    if value is not None:
+        return value
+    model_extra = getattr(delta, "model_extra", None)
+    if isinstance(model_extra, dict) and key in model_extra:
+        return model_extra[key]
+    extra = getattr(delta, "__dict__", None)
+    if isinstance(extra, dict) and key in extra:
+        return extra[key]
+    return None
+
+
+def _coerce_delta_segments(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        segments: list[str] = []
+        for item in value:
+            segments.extend(_coerce_delta_segments(item))
+        return segments
+    if isinstance(value, dict):
+        for key in ("text", "content", "value"):
+            nested = value.get(key)
+            if isinstance(nested, str):
+                return [nested]
+            if nested is not None:
+                nested_segments = _coerce_delta_segments(nested)
+                if nested_segments:
+                    return nested_segments
+        return []
+    for key in ("text", "content", "value"):
+        nested = getattr(value, key, None)
+        if isinstance(nested, str):
+            return [nested]
+        if nested is not None:
+            nested_segments = _coerce_delta_segments(nested)
+            if nested_segments:
+                return nested_segments
+    return []

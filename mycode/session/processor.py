@@ -22,7 +22,16 @@ from typing import TYPE_CHECKING, Any, Literal
 from mycode.bus.events import PART_DELTA, PART_UPDATED
 from mycode.session import llm as llmmod
 from mycode.session.loop_guard import MUTATING_TOOLS, LoopGuard
-from mycode.session.message import AssistantMessage, Part, TextPart, ToolPart, create_text_part, create_tool_part
+from mycode.session.message import (
+    AssistantMessage,
+    Part,
+    ReasoningPart,
+    TextPart,
+    ToolPart,
+    create_reasoning_part,
+    create_text_part,
+    create_tool_part,
+)
 from mycode.tool import registry as tool_registry
 from mycode.tool.base import (
     ToolBaseError,
@@ -86,13 +95,28 @@ async def process_stream(
     messages_for_tools: list[Any] | None = None,
 ) -> AsyncGenerator[ProcessorEvent, None]:
     """Run one iteration of the agentic loop, yielding events in real time."""
+    current_reasoning: ReasoningPart | None = None
     current_text: TextPart | None = None
     tool_calls_pending: list[ToolPart] = []
     parts: list[Part] = []
     text_length = 0
 
     async for event in llmmod.stream(stream_input):
-        if isinstance(event, llmmod.TextDelta):
+        if isinstance(event, llmmod.ReasoningDelta):
+            if current_reasoning is None:
+                current_reasoning = create_reasoning_part(ctx.session_id, ctx.assistant_message.id)
+                parts.append(current_reasoning)
+            current_reasoning.content += event.text
+            await ctx.bus.publish(PART_DELTA, {
+                "session_id": ctx.session_id,
+                "message_id": ctx.assistant_message.id,
+                "part_id": current_reasoning.id,
+                "field": "content",
+                "delta": event.text,
+            })
+            yield ProcessorEvent(type="reasoning_delta", data={"content": event.text})
+
+        elif isinstance(event, llmmod.TextDelta):
             if current_text is None:
                 current_text = create_text_part(ctx.session_id, ctx.assistant_message.id)
                 parts.append(current_text)
@@ -112,6 +136,7 @@ async def process_stream(
             tp.state = {"status": "pending", "input": {}}
             ctx.toolcalls[event.tool_call_id] = tp
             parts.append(tp)
+            current_reasoning = None
             current_text = None
             yield ProcessorEvent(type="tool_start", data={
                 "tool": event.tool_name,
