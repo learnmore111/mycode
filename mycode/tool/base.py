@@ -26,6 +26,46 @@ from pydantic import BaseModel, ValidationError
 # Tool context
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Session-level file-read tracking (for read-before-edit guard)
+# ---------------------------------------------------------------------------
+
+_session_read_files: dict[str, dict[str, float]] = {}
+"""Maps session_id -> {absolute_path: mtime_at_read}."""
+
+
+def _record_file_read(session_id: str, absolute_path: str) -> None:
+    """Record that a file was read in this session."""
+    import os as _os
+    try:
+        mtime = _os.path.getmtime(absolute_path)
+    except OSError:
+        mtime = 0.0
+    _session_read_files.setdefault(session_id, {})[absolute_path] = mtime
+
+
+def _assert_file_read(session_id: str, absolute_path: str) -> str | None:
+    """Return error message if file was not read in this session or was modified externally."""
+    import os as _os
+    reads = _session_read_files.get(session_id, {})
+    if absolute_path not in reads:
+        return (
+            f"You must read this file before editing it. "
+            f"Use the read tool first to get the exact content."
+        )
+    last_mtime = reads[absolute_path]
+    try:
+        current_mtime = _os.path.getmtime(absolute_path)
+    except OSError:
+        return None  # File gone — let the tool handle it
+    if current_mtime != last_mtime:
+        return (
+            f"File has been modified since it was last read. "
+            f"Please read the file again before editing it."
+        )
+    return None
+
+
 @dataclass
 class ToolContext:
     """Execution context passed to every tool call."""

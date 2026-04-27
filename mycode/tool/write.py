@@ -24,6 +24,7 @@ from mycode.tool.base import (
     ToolResult,
     atomic_write,
     resolve_tool_path,
+    _assert_file_read,
 )
 
 _PREVIEW_LINES = 10
@@ -68,8 +69,15 @@ class WriteTool(CallableTool[WriteParams]):
         if path_error:
             return ToolError(path_error, title=f"Write {file_path}", metadata={"success": False})
 
+        existed = os.path.exists(full)
+
+        # --- Read-before-edit guard (only for overwrites) ---
+        if existed:
+            read_err = _assert_file_read(ctx.session_id, full)
+            if read_err:
+                return ToolError(read_err, title=f"Write {file_path}", metadata={"success": False})
+
         try:
-            existed = os.path.exists(full)
             old_lines = 0
             if existed:
                 old_lines = Path(full).read_text(encoding="utf-8", errors="replace").count("\n") + 1
@@ -95,7 +103,7 @@ class WriteTool(CallableTool[WriteParams]):
                 )
                 preview = f"{head}\n   ...({new_lines - _PREVIEW_LINES * 2} lines omitted)...\n{tail}"
 
-            return ToolOk(
+            result = ToolOk(
                 f"{msg}\n\n{preview}",
                 title=f"Write {file_path}",
                 metadata={
@@ -105,8 +113,42 @@ class WriteTool(CallableTool[WriteParams]):
                     "created": not existed,
                 },
             )
+            await _append_lsp_diagnostics(full, result)
+            return result
         except Exception as e:
             return ToolError(f"Error: {e}", title=f"Write {file_path}", metadata={"success": False})
+
+
+async def _append_lsp_diagnostics(file_path: str, result: ToolResult) -> None:
+    """Touch file with LSP and append any diagnostics to the result output."""
+    try:
+        from mycode.lsp.lsp import get_lsp_manager
+        lsp = get_lsp_manager()
+        await lsp.touch_file(file_path)
+        import asyncio
+        await asyncio.sleep(0.3)
+        diagnostics = await lsp.diagnostics()
+        normalized = os.path.normpath(file_path)
+        issues = diagnostics.get(normalized, [])
+        errors = [d for d in issues if d.get("severity") == 1]
+        if errors:
+            MAX_DIAGNOSTICS_PER_FILE = 20
+            limited = errors[:MAX_DIAGNOSTICS_PER_FILE]
+            suffix = f"\n... and {len(errors) - len(limited)} more" if len(errors) > len(limited) else ""
+            diag_lines = []
+            for d in limited:
+                line = d.get("range", {}).get("start", {}).get("line", 0) + 1
+                col = d.get("range", {}).get("start", {}).get("character", 0) + 1
+                msg = d.get("message", "")
+                diag_lines.append(f"ERROR [{line}:{col}] {msg}")
+            result.output += (
+                f"\n\nLSP errors detected in this file, please fix:\n"
+                f"<diagnostics file=\"{file_path}\">\n"
+                f"{chr(10).join(diag_lines)}{suffix}\n"
+                f"</diagnostics>"
+            )
+    except Exception:
+        pass  # LSP diagnostics are best-effort
 
 
 def _human_size(size: int) -> str:

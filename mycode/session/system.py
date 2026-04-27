@@ -55,6 +55,20 @@ def provider_prompt(model: Model) -> list[str]:
     return [PROMPT_DEFAULT] if PROMPT_DEFAULT else []
 
 
+def _load_project_guidance(worktree: str) -> str | None:
+    """Load project guidance file if present.
+
+    Looks for codebuddy.md or CLAUDE.md in the project root.
+    """
+    for name in ("codebuddy.md", "CLAUDE.md", "Claude.md"):
+        path = Path(worktree) / name
+        if path.exists():
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+    return None
+
+
 def environment(model: Model) -> list[str]:
     """Build environment info system prompt."""
     ctx = current_or_none()
@@ -105,6 +119,14 @@ def build(
 
     if agent_prompt:
         parts.append(agent_prompt)
+
+    # Project guidance (e.g. codebuddy.md / CLAUDE.md)
+    ctx = current_or_none()
+    worktree = ctx.worktree if ctx else os.getcwd()
+    guidance = _load_project_guidance(worktree)
+    if guidance:
+        parts.append(f"<project_guidance>\n{guidance}\n</project_guidance>")
+
     if instructions:
         parts.extend(instructions)
     return parts

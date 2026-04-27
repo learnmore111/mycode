@@ -127,3 +127,16 @@ class LspManager:
         for client in self._clients:
             await client.shutdown()
         self._clients.clear()
+
+
+# Global singleton — lazily initialized on first use so import-time
+# side effects are avoided.
+_lsp_manager: LspManager | None = None
+
+
+def get_lsp_manager() -> LspManager:
+    """Return the global LspManager singleton."""
+    global _lsp_manager
+    if _lsp_manager is None:
+        _lsp_manager = LspManager()
+    return _lsp_manager

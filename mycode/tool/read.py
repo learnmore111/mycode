@@ -217,6 +217,9 @@ class ReadTool(CallableTool[ReadParams]):
                 builder.add(f"\n\n... truncated (showing {_MAX_LINES} of {total} lines). "
                             f"Use line_offset and line_count to view specific ranges.")
 
+            from mycode.tool.base import _record_file_read
+            _record_file_read(ctx.session_id, full)
+
             return ToolOk(
                 builder.build(),
                 title=f"Read {file_path}",
