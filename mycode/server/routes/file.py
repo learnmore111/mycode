@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import platform
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,60 @@ from mycode.file import file as filemod
 from mycode.project.instance import InstanceContext, ProjectInfo, set_context
 
 router = APIRouter(prefix="/file", tags=["file"])
+
+
+@router.get("/system-paths")
+async def system_paths() -> Any:
+    """Return quick-access system paths (home, desktop, documents, downloads)."""
+    home = Path.home()
+    info: dict[str, Any] = {
+        "home": str(home),
+        "desktop": str(home / "Desktop"),
+        "documents": str(home / "Documents"),
+        "downloads": str(home / "Downloads"),
+    }
+    if platform.system() == "Darwin":
+        info["desktop"] = str(home / "Desktop")
+        info["documents"] = str(home / "Documents")
+        info["downloads"] = str(home / "Downloads")
+    elif platform.system() == "Windows":
+        info["desktop"] = str(home / "Desktop")
+        info["documents"] = str(home / "Documents")
+        info["downloads"] = str(home / "Downloads")
+    else:
+        info["desktop"] = str(home)
+        info["documents"] = str(home)
+        info["downloads"] = str(home / "Downloads")
+    # Only include paths that exist
+    return {k: v for k, v in info.items() if Path(v).exists()}
+
+
+@router.get("/browse")
+async def browse_directory(path: str = Query(default=".")) -> Any:
+    """Browse any local directory, not just the project directory."""
+    target = Path(path).expanduser().resolve()
+    if not target.exists():
+        raise HTTPException(404, f"Path does not exist: {path}")
+    if not target.is_dir():
+        raise HTTPException(400, f"Path is not a directory: {path}")
+
+    entries: list[dict[str, Any]] = []
+    try:
+        for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            entries.append({
+                "name": child.name,
+                "type": "directory" if child.is_dir() else "file",
+                "path": str(child),
+                "size": child.stat().st_size if child.is_file() else None,
+            })
+    except PermissionError:
+        raise HTTPException(403, f"Permission denied: {path}")
+
+    return {
+        "path": str(target),
+        "parent": str(target.parent) if target.parent != target else None,
+        "entries": entries,
+    }
 
 
 def _ensure_ctx(directory: str) -> Any:
