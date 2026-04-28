@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, Field
 
-from opencode.tool import registry
-from opencode.tool.base import (
+from mycode.tool import registry
+from mycode.tool.base import (
     CallableTool,
     ToolContext,
     ToolError,
@@ -213,7 +213,7 @@ def test_tool_runtime_error():
 
 def test_error_hierarchy_is_consistent():
     """All tool errors inherit from ToolBaseError."""
-    from opencode.tool.base import ToolBaseError
+    from mycode.tool.base import ToolBaseError
     assert issubclass(ToolNotFoundError, ToolBaseError)
     assert issubclass(ToolParseError, ToolBaseError)
     assert issubclass(ToolValidateError, ToolBaseError)

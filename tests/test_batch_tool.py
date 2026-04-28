@@ -3,11 +3,11 @@ import os
 
 import pytest
 
-import opencode.project.instance as inst
-from opencode.tool import registry as tool_registry
-from opencode.tool.base import ToolContext, ToolValidateError
-from opencode.tool.batch import _EXCLUDED_TOOLS, MAX_BATCH_SIZE
-from opencode.tool.batch import tool as batch_tool
+import mycode.project.instance as inst
+from mycode.tool import registry as tool_registry
+from mycode.tool.base import ToolContext, ToolValidateError
+from mycode.tool.batch import _EXCLUDED_TOOLS, MAX_BATCH_SIZE
+from mycode.tool.batch import tool as batch_tool
 
 
 def _ctx() -> ToolContext:

@@ -97,6 +97,42 @@ function StatCard({
   )
 }
 
+function JsonViewer({
+  title,
+  data,
+  defaultOpen = false,
+}: {
+  title: string
+  data: unknown
+  defaultOpen?: boolean
+}) {
+  const [expanded, setExpanded] = useState(defaultOpen)
+
+  if (data == null) return null
+
+  return (
+    <div className="rounded-xl border border-line bg-surface-2 overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-surface-hover transition-colors"
+      >
+        <div className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>
+          <ChevronRight size={12} className="text-ink-muted" />
+        </div>
+        <Database size={12} className="text-status-info" />
+        <span className="text-xs font-semibold text-ink-strong">{title}</span>
+      </button>
+      {expanded && (
+        <div className="border-t border-line px-3 py-3">
+          <pre className="text-xs bg-surface-1 rounded-lg p-3 border border-line overflow-auto max-h-72 whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
+            {JSON.stringify(data, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── Token Distribution Bar ── */
 function TokenDistribution({
   system,
@@ -389,6 +425,13 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
   const { system, tools, messages, summary, actual_usage, iteration, model } = snapshot
   const [compactionEvents, setCompactionEvents] = useState<CompactionEvent[]>([])
   const [loadingCompaction, setLoadingCompaction] = useState(false)
+  const actualInputTokens = actual_usage?.input_tokens ?? 0
+  const cacheReadTokens = actual_usage?.cache_read_tokens ?? 0
+  const cacheHitRate =
+    actualInputTokens > 0 ? (100 * cacheReadTokens) / actualInputTokens : 0
+  const uncachedInputTokens =
+    actualInputTokens > 0 ? Math.max(0, actualInputTokens - cacheReadTokens) : 0
+  const rawUsage = actual_usage?.raw_usage ?? null
 
   useEffect(() => {
     if (!sessionId) return
@@ -437,8 +480,9 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             <div className="flex-1 grid grid-cols-2 gap-2">
               <StatCard
                 icon={<BarChart3 size={13} />}
-                label="总 Token"
+                label="估算上下文"
                 value={summary.total_estimated_tokens.toLocaleString()}
+                sub={summary.context_limit > 0 ? `${summary.usage_percent.toFixed(1)}%` : undefined}
                 color="text-accent"
               />
               <StatCard
@@ -450,9 +494,17 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
               {actual_usage ? (
                 <>
                   <StatCard
+                    icon={<ArrowDown size={13} />}
+                    label="实际输入"
+                    value={actualInputTokens.toLocaleString()}
+                    sub={uncachedInputTokens > 0 ? `新 ${uncachedInputTokens.toLocaleString()}` : '全量命中'}
+                    color="text-status-info"
+                  />
+                  <StatCard
                     icon={<Zap size={13} />}
                     label="缓存命中"
-                    value={actual_usage.cache_read_tokens.toLocaleString()}
+                    value={cacheReadTokens.toLocaleString()}
+                    sub={`${cacheHitRate.toFixed(1)}%`}
                     color="text-status-success"
                   />
                   <StatCard
@@ -487,6 +539,11 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             tools={tools.estimated_tokens}
             messages={msgTokens}
             total={summary.total_estimated_tokens}
+          />
+
+          <JsonViewer
+            title="原始 Usage"
+            data={rawUsage}
           />
         </div>
 

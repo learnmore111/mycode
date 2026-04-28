@@ -1,7 +1,7 @@
 # Changelog: Context Compression & Memory System Fixes
 
 **Date:** 2026-04-17  
-**Scope:** `opencode/session/compaction.py`, `opencode/session/memory/`, `opencode/session/message.py`, `opencode/session/prompt.py`
+**Scope:** `mycode/session/compaction.py`, `mycode/session/memory/`, `mycode/session/message.py`, `mycode/session/prompt.py`
 
 ---
 
@@ -13,7 +13,7 @@
 
 ## Fix 1: Summary Extraction Fallback Hardening
 
-**文件:** `opencode/session/compaction.py` — `_extract_summary()`  
+**文件:** `mycode/session/compaction.py` — `_extract_summary()`  
 **严重度:** Medium  
 **问题:** 当 LLM 未输出 `<summary>` 或 `<analysis>` 标签时，整个原始响应（包括推理/scratchpad 内容）会被直接作为摘要使用，导致后续上下文中包含不相关的 LLM 内部思考过程。
 
@@ -32,7 +32,7 @@
 
 ## Fix 2: Post-Compaction Validation
 
-**文件:** `opencode/session/compaction.py` — `compact()`  
+**文件:** `mycode/session/compaction.py` — `compact()`  
 **严重度:** Low  
 **问题:** 压缩后的结果未校验是否仍然超出上下文窗口阈值。如果 LLM 生成的摘要过长，要到下一次迭代才能发现问题。
 
@@ -45,7 +45,7 @@
 
 ## Fix 3: Reduce Deep Copy Cost in Truncation
 
-**文件:** `opencode/session/compaction.py` — `_truncate_tool_outputs_for_summary()`  
+**文件:** `mycode/session/compaction.py` — `_truncate_tool_outputs_for_summary()`  
 **严重度:** Medium  
 **问题:** 原实现使用 `copy.deepcopy(messages)` 对整个消息列表做深拷贝。在大上下文（10K+ 消息，每条含大量工具输出）场景下，可能导致 ~1GB 的临时内存分配。
 
@@ -58,13 +58,13 @@
 
 ## Fix 4: Remove Dead Code `get_messages_after_compact_boundary`
 
-**文件:** `opencode/session/message.py`, `opencode/session/__init__.py`  
+**文件:** `mycode/session/message.py`, `mycode/session/__init__.py`  
 **严重度:** Low  
 **问题:** `get_messages_after_compact_boundary()` 函数已定义但从未被调用。`compact_boundary` subtype 在 `SystemMessage` 中声明但从未被创建。属于未完成的基础设施代码。
 
 **修复:**
 - 删除 `get_messages_after_compact_boundary()` 函数
-- 从 `opencode/session/__init__.py` 的导出列表中移除
+- 从 `mycode/session/__init__.py` 的导出列表中移除
 - `normalize_messages_for_api()` 中保留对 `compact_boundary` 的过滤（标记为 "reserved for future use"）
 - `SystemMessage.subtype` 中保留 `compact_boundary` 枚举值
 - 删除 `tests/test_module_enhancements.py` 中的相关测试（`test_get_messages_after_compact_boundary`, `test_get_messages_no_boundary`）
@@ -91,7 +91,7 @@
 
 ## Fix 6: LLM Call Retry for Memory System
 
-**文件:** `opencode/session/memory/memory.py` — `_call_llm_combined()`  
+**文件:** `mycode/session/memory/memory.py` — `_call_llm_combined()`  
 **严重度:** Medium  
 **问题:** 内存系统的 LLM 调用（用于生成滚动摘要和精炼 turn summary）在任何错误时立即 fallback 到启发式摘要，包括限流（429）、超时等瞬时错误。
 
@@ -107,7 +107,7 @@
 
 ## Fix 7: Token Estimation Telemetry
 
-**文件:** `opencode/session/compaction.py`, `opencode/session/prompt.py`  
+**文件:** `mycode/session/compaction.py`, `mycode/session/prompt.py`  
 **严重度:** Low  
 **问题:** Token 估算使用 `byte_len // 3 + 15%` 的启发式方法，但缺乏与实际 API 用量的对比数据，无法判断估算是否准确或需要调优。
 
@@ -121,7 +121,7 @@
 
 ## Fix 8: Extractor `_format_conversation` Defensive Type Handling
 
-**文件:** `opencode/session/memory/extractor.py` — `_format_conversation()`  
+**文件:** `mycode/session/memory/extractor.py` — `_format_conversation()`  
 **严重度:** Low  
 **问题:** 原实现对非字符串 `content` 使用 `str(content)[:200]`，可能将 dict/list 的 repr 注入提取 prompt。例如多模态 API 的 content blocks（`[{"type": "text", "text": "..."}, {"type": "image", ...}]`）会被序列化为不可读的字符串。
 
@@ -134,7 +134,7 @@
 
 ## Fix 9: FileLock Fallback Lock Per-Path Isolation
 
-**文件:** `opencode/session/memory/filelock.py`  
+**文件:** `mycode/session/memory/filelock.py`  
 **严重度:** Medium  
 **问题:** 每个 `FileLock` 实例创建自己的 `asyncio.Lock()` 作为 OS 锁失败时的 fallback。但同一文件路径的不同 `FileLock` 实例会使用不同的内存锁，导致 fallback 场景下无法实现互斥。
 
@@ -159,12 +159,12 @@
 
 | File | Type | Lines Changed |
 |------|------|---------------|
-| `opencode/session/compaction.py` | Modified | +60 |
-| `opencode/session/memory/memory.py` | Modified | +30 |
-| `opencode/session/memory/filelock.py` | Modified | +20 |
-| `opencode/session/memory/extractor.py` | Modified | +8, -3 |
-| `opencode/session/message.py` | Modified | -20 |
-| `opencode/session/__init__.py` | Modified | -2 |
-| `opencode/session/prompt.py` | Modified | +7 |
+| `mycode/session/compaction.py` | Modified | +60 |
+| `mycode/session/memory/memory.py` | Modified | +30 |
+| `mycode/session/memory/filelock.py` | Modified | +20 |
+| `mycode/session/memory/extractor.py` | Modified | +8, -3 |
+| `mycode/session/message.py` | Modified | -20 |
+| `mycode/session/__init__.py` | Modified | -2 |
+| `mycode/session/prompt.py` | Modified | +7 |
 | `tests/test_session_memory.py` | Modified | +12, -6 |
 | `tests/test_module_enhancements.py` | Modified | -15 |

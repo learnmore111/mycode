@@ -3,7 +3,7 @@
 - **日期**: 2026-03-31
 - **状态**: ✅ 已修复
 - **提交**: `41129d1`
-- **影响范围**: `opencode/session/prompt.py`、`opencode/cli/main.py`
+- **影响范围**: `mycode/session/prompt.py`、`mycode/cli/main.py`
 
 ---
 

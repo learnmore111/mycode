@@ -1,10 +1,10 @@
 """Tests for bash and grep tools."""
 import os
 import pytest
-import opencode.project.instance as inst
-from opencode.tool.base import ToolContext
-from opencode.tool.bash import tool as bash_tool
-from opencode.tool.grep import tool as grep_tool
+import mycode.project.instance as inst
+from mycode.tool.base import ToolContext
+from mycode.tool.bash import tool as bash_tool
+from mycode.tool.grep import tool as grep_tool
 
 
 def _ctx() -> ToolContext:

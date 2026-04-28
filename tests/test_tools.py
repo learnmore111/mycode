@@ -4,12 +4,12 @@ import tempfile
 
 import pytest
 
-from opencode.tool.base import ToolContext
-from opencode.tool.edit import tool as edit_tool
-from opencode.tool.glob_tool import tool as glob_tool
-from opencode.tool.read import tool as read_tool
-from opencode.tool.registry import all_tools, to_llm_tools
-from opencode.tool.write import tool as write_tool
+from mycode.tool.base import ToolContext
+from mycode.tool.edit import tool as edit_tool
+from mycode.tool.glob_tool import tool as glob_tool
+from mycode.tool.read import tool as read_tool
+from mycode.tool.registry import all_tools, to_llm_tools
+from mycode.tool.write import tool as write_tool
 
 
 def _ctx() -> ToolContext:
@@ -19,7 +19,7 @@ def _ctx() -> ToolContext:
 async def test_write_and_read():
     with tempfile.TemporaryDirectory() as d:
         # Patch instance
-        import opencode.project.instance as inst
+        import mycode.project.instance as inst
         token = inst.set_context(inst.InstanceContext(
             directory=d, worktree=d, project=inst.ProjectInfo(id="test", worktree=d),
         ))
@@ -35,7 +35,7 @@ async def test_write_and_read():
 @pytest.mark.asyncio
 async def test_edit():
     with tempfile.TemporaryDirectory() as d:
-        import opencode.project.instance as inst
+        import mycode.project.instance as inst
         token = inst.set_context(inst.InstanceContext(
             directory=d, worktree=d, project=inst.ProjectInfo(id="test", worktree=d),
         ))
@@ -53,7 +53,7 @@ async def test_edit():
 @pytest.mark.asyncio
 async def test_glob():
     with tempfile.TemporaryDirectory() as d:
-        import opencode.project.instance as inst
+        import mycode.project.instance as inst
         token = inst.set_context(inst.InstanceContext(
             directory=d, worktree=d, project=inst.ProjectInfo(id="test", worktree=d),
         ))
@@ -68,7 +68,7 @@ async def test_glob():
             token.reset()
 
 def test_registry():
-    from opencode.tool.registry import clear, register_builtins
+    from mycode.tool.registry import clear, register_builtins
     clear()  # Reset for clean test
     register_builtins()
     tools = all_tools()

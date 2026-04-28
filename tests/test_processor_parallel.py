@@ -15,14 +15,14 @@ from typing import Any
 
 import pytest
 
-from opencode.bus.bus import Bus
-from opencode.bus.events import PART_UPDATED
-from opencode.provider.schema import Model, ModelApi
-from opencode.session import llm as llmmod
-from opencode.session.message import AssistantMessage, ToolPart, create_tool_part
-from opencode.session.processor import DOOM_LOOP_THRESHOLD, ProcessorContext, process
-from opencode.tool import registry as tool_registry
-from opencode.tool.base import ToolContext, ToolInfo, ToolOk, ToolResult
+from mycode.bus.bus import Bus
+from mycode.bus.events import PART_UPDATED
+from mycode.provider.schema import Model, ModelApi
+from mycode.session import llm as llmmod
+from mycode.session.message import AssistantMessage, ReasoningPart, ToolPart, create_tool_part
+from mycode.session.processor import DOOM_LOOP_THRESHOLD, ProcessorContext, process
+from mycode.tool import registry as tool_registry
+from mycode.tool.base import ToolContext, ToolInfo, ToolOk, ToolResult
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -370,6 +370,33 @@ async def test_no_tool_calls_stops(monkeypatch):
 
     assert result == "stop"
     assert len(parts) == 1  # one text part
+
+
+@pytest.mark.asyncio
+async def test_reasoning_part_is_streamed_and_persisted_in_parts(monkeypatch):
+    """Reasoning deltas should produce a dedicated reasoning part before text."""
+    bus = Bus()
+    ctx = ProcessorContext(
+        session_id="s1", model=_model(),
+        assistant_message=_assistant_msg(), bus=bus,
+    )
+
+    async def _reasoning_stream(_):
+        yield llmmod.ReasoningDelta(text="先检查前端状态。")
+        yield llmmod.ReasoningDelta(text="再确认后端事件。")
+        yield llmmod.TextDelta(text="最终答复")
+        yield llmmod.FinishEvent(usage={}, cost=0.0)
+
+    monkeypatch.setattr(llmmod, "stream", _reasoning_stream)
+
+    result, parts = await process(ctx, llmmod.StreamInput(
+        model="test", messages=[], tools=[],
+    ))
+
+    assert result == "stop"
+    assert isinstance(parts[0], ReasoningPart)
+    assert parts[0].content == "先检查前端状态。再确认后端事件。"
+    assert len(parts) == 2
 
 
 @pytest.mark.asyncio

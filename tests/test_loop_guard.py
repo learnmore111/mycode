@@ -1,5 +1,5 @@
 """Tests for the three-layer loop guard system."""
-from opencode.session.loop_guard import (
+from mycode.session.loop_guard import (
     GuardAction,
     LoopGuard,
     LoopGuardConfig,
@@ -119,6 +119,44 @@ class TestToolResultCache:
         cache.put("read", {"file_path": "test.py"}, "content")
         cache.invalidate()
         assert cache.get("read", {"file_path": "test.py"}) is None
+
+    def test_targeted_invalidation_keeps_unrelated(self):
+        """Editing one file should NOT wipe caches for unrelated files."""
+        cache = ToolResultCache()
+        cache.put("read", {"file_path": "a.py"}, "a")
+        cache.put("read", {"file_path": "b.py"}, "b")
+        cache.invalidate(files={"a.py"})
+        assert cache.get("read", {"file_path": "a.py"}) is None
+        assert cache.get("read", {"file_path": "b.py"}) == "b"
+
+    def test_targeted_invalidation_matches_dir_prefix(self):
+        """Editing src/foo.py invalidates a grep cached under scope 'src'."""
+        cache = ToolResultCache()
+        cache.put("grep", {"path": "src"}, "match")
+        cache.invalidate(files={"src/foo.py"})
+        assert cache.get("grep", {"path": "src"}) is None
+
+    def test_targeted_invalidation_reverse_prefix(self):
+        """Editing the parent dir invalidates cached reads of its files."""
+        cache = ToolResultCache()
+        cache.put("read", {"file_path": "src/foo.py"}, "content")
+        cache.invalidate(files={"src"})
+        assert cache.get("read", {"file_path": "src/foo.py"}) is None
+
+    def test_lru_eviction(self):
+        """Oldest-used entries are evicted first, not randomly."""
+        cache = ToolResultCache(max_size=3)
+        cache.put("read", {"file_path": "a.py"}, "a")
+        cache.put("read", {"file_path": "b.py"}, "b")
+        cache.put("read", {"file_path": "c.py"}, "c")
+        # Touch `a` so it becomes the most recently used.
+        assert cache.get("read", {"file_path": "a.py"}) == "a"
+        # Adding `d` should evict the oldest remaining (which is now `b`).
+        cache.put("read", {"file_path": "d.py"}, "d")
+        assert cache.get("read", {"file_path": "a.py"}) == "a"
+        assert cache.get("read", {"file_path": "b.py"}) is None
+        assert cache.get("read", {"file_path": "c.py"}) == "c"
+        assert cache.get("read", {"file_path": "d.py"}) == "d"
 
 
 class TestStepState:

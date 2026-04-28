@@ -1,0 +1,43 @@
+# Built-in "pair-review" swarm.
+#
+# Three peer reviewers coordinate via named mailboxes. Swarm mode is
+# **decentralized / peer-to-peer** — the ``entry`` field below just marks
+# which agent receives the initial user task; it is *not* a central
+# controller.  All peers can ``send_message`` to each other freely.
+#
+# ``entry`` is the canonical field; ``lead`` is retained as a deprecated
+# alias for backward compatibility with flows authored pre-v0.x.
+name: pair-review
+description: Security + performance + general code review via swarm mailboxes
+mode: swarm
+entry: reviewer-lead
+
+agents:
+  - name: reviewer-lead
+    extends: build
+    role: entry
+    tools: [send_message, team_create, read, grep, task_stop]
+    prompt: |
+      You are the review entry point. Delegate security concerns to
+      `security-reviewer` and performance concerns to `perf-reviewer`
+      via `send_message`. Collect responses and produce the final report.
+
+  - name: security-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, send_message]
+    prompt: |
+      You are a security specialist. Focus on injection, auth, secrets, and
+      unsafe deserialization. Report findings back to reviewer-lead via
+      `send_message` (plain text is not visible to teammates).
+
+  - name: perf-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, bash, send_message]
+    prompt: |
+      You are a performance specialist. Focus on N+1 queries, hot loops, and
+      unnecessary I/O. Report findings to reviewer-lead via `send_message`.
+
+backend:
+  prefer: auto

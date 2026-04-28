@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from opencode.project.instance import provide
-from opencode.tool.create_skill import CreateSkillParams, CreateSkillTool
+from mycode.project.instance import provide
+from mycode.tool.create_skill import CreateSkillParams, CreateSkillTool
 
 
 @pytest.mark.asyncio
@@ -25,10 +25,10 @@ async def test_create_skill_basic():
 
             assert not result.is_error
             assert "Created skill 'test-skill'" in result.output
-            assert ".opencode/skills/test-skill.md" in result.output
+            assert ".mycode/skills/test-skill.md" in result.output
 
             # Verify file was created
-            skill_path = Path(tmpdir) / ".opencode" / "skills" / "test-skill.md"
+            skill_path = Path(tmpdir) / ".mycode" / "skills" / "test-skill.md"
             assert skill_path.exists()
             assert skill_path.read_text() == "# Test Skill\n\nThis is a test skill."
 
@@ -51,7 +51,7 @@ async def test_create_skill_global():
     assert not result.is_error
 
     # Verify file was created in home directory
-    skill_path = Path.home() / ".opencode" / "skills" / "global-test-skill.md"
+    skill_path = Path.home() / ".mycode" / "skills" / "global-test-skill.md"
     assert skill_path.exists()
 
     # Cleanup
@@ -121,7 +121,7 @@ async def test_create_skill_overwrite():
             assert "Overwrote skill" in result2.output
 
             # Verify content was updated
-            skill_path = Path(tmpdir) / ".opencode" / "skills" / "overwrite-test.md"
+            skill_path = Path(tmpdir) / ".mycode" / "skills" / "overwrite-test.md"
             assert skill_path.read_text() == "# Version 2\n\nUpdated content."
 
         await provide(tmpdir, _overwrite_skill)

@@ -4,7 +4,7 @@
 
 一个不绑定特定 AI 提供商的开源编程 Agent 平台。支持 CLI、HTTP API 和 Web UI 三种交互方式。
 
-> **架构说明**：初始版本根据 [OpenCode](https://github.com/anomalyco/opencode)（TypeScript 版）架构使用 Python 重写，涵盖 session/processor agentic loop、tool 系统、permission 模型、memory 系统、event bus、config 多层合并等核心设计，使用 Python 生态工具链（litellm、FastAPI、SQLAlchemy、Click+Rich 等）实现。后续参考 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 的设计理念进行了改进，包括 system-reminder 动态注入（将 skills 列表和 memory 从 system prompt 迁移到 messages 尾部以复用 prefix cache）、三层循环保护、读写分离工具执行、两层记忆系统等增强特性。
+> **架构说明**：初始版本根据 [OpenCode](https://github.com/anomalyco/opencode)（TypeScript 版）架构使用 Python 重写，涵盖 session/processor agentic loop、tool 系统、permission 模型、memory 系统、event bus、config 多层合并等核心设计，使用 Python 生态工具链（litellm、FastAPI、SQLAlchemy、Click+Rich 等）实现。后续参考 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 的设计理念进行了改进，包括 system-reminder 动态注入（将 skills 列表和 memory 从 system prompt 迁移到 messages 尾部以复用 prefix cache）、三层循环保护、读写分离工具执行、两层记忆系统、增量式 reminder（history-aware state extraction）、统一的子代理工具（delegate/parallel/isolated 三种模式）、会话暂停/恢复、文件变更暂存与批量回退、Git 集成等增强特性。
 
 ---
 
@@ -15,31 +15,31 @@
 uv sync
 
 # 查看帮助
-uv run opencode --help
+uv run mycode --help
 
 # 设置 API Key（任意 OpenAI 兼容接口）
 export OPENAI_API_KEY="your-token"
 export OPENAI_API_BASE="https://your-endpoint.com/v1"  # 可选，默认 OpenAI 官方
 
 # 交互式模式（Rich UI + Markdown 渲染 + 上下文进度条）
-uv run opencode run
+uv run mycode run
 
 # Headless 模式（单次执行，适合脚本/CI）
-uv run opencode run --message "列出当前目录的文件"
+uv run mycode run --message "列出当前目录的文件"
 
 # 启动 API Server
-uv run opencode serve --port 4096
+uv run mycode serve --port 4096
 
 # 一键启动后端 + 前端开发服务器
-uv run opencode dev                            # 后端 :4096 + 前端 :3000
-uv run opencode dev --port 8080 --frontend-port 5173  # 自定义端口
+uv run mycode dev                            # 后端 :4096 + 前端 :3000
+uv run mycode dev --port 8080 --frontend-port 5173  # 自定义端口
 
 # 启动 Web UI（手动分别启动）
 cd web && npm install && npm run dev   # :3000，代理 API 到 :4096
 
 # 构建 Web UI 后单端口运行
 cd web && npm run build
-uv run opencode serve --port 4096      # 打开 http://localhost:4096
+uv run mycode serve --port 4096      # 打开 http://localhost:4096
 
 # 运行测试
 uv run pytest tests/ -v
@@ -97,36 +97,40 @@ uv run pytest tests/ -v
 
 | 模块 | 说明 |
 |------|------|
-| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + system-reminder 注入（skills 列表 + memory → messages 尾部，system prompt 保持固定以复用 prefix cache）+ 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + 读写分离（基于能力声明）+ doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`loop_guard.py` 三层循环保护（硬限制 + 模式检测 + 智能判断）+ 结果缓存 + 重试逻辑，`llm.py` litellm 流式调用 + token 统计 + cost 计算 |
+| **`session/`** | **核心 agentic loop**。`prompt.py` 消息入口 + system-reminder 增量注入（skills 列表 + memory + history-aware state → messages 尾部，system prompt 保持固定以复用 prefix cache）+ 消息持久化，`processor.py` LLM→Tool 循环 + 权限检查 + 读写分离（基于能力声明）+ doom loop 检测，`compaction.py` 上下文压缩（token 估算 + LLM 摘要），`loop_guard.py` 三层循环保护（硬限制 + 模式检测 + 智能判断）+ 结果缓存 + 重试逻辑，`llm.py` litellm 流式调用 + token 统计 + cost 计算，`session.py` 会话暂停/恢复 + 代码变更查询 |
 | **`session/memory/`** | **两层记忆系统**。`memory.py` 会话级记忆（JSONL 滚动摘要 + 每轮记录 + LLM 精炼），`memdir.py` 结构化长期记忆（四类：user/feedback/project/reference + frontmatter 格式 + MEMORY.md 索引），`retrieval.py` 相关记忆检索（关键词 + LLM 辅助），`extractor.py` 后台自动记忆提取 + 新鲜度管理 |
 | **`provider/`** | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，`transform.py` 按模型类型调整参数（temperature/reasoning/max_tokens），通过 litellm 统一调用 14+ 种 LLM |
 | **`agent/`** | Agent 系统。内置 7 个 agent：`build`(默认全权限)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
-| **`tool/`** | **14 个内置工具** + 注册表。所有工具具有能力声明（`is_read_only`/`is_destructive`/`is_concurrency_safe`），路径安全验证（防目录逃逸），原子写入。按名称排序保证 prompt cache 稳定性 |
+| **`tool/`** | **15 个内置工具** + 注册表。所有工具具有能力声明（`is_read_only`/`is_destructive`/`is_concurrency_safe`），路径安全验证（防目录逃逸），原子写入。按名称排序保证 prompt cache 稳定性。新增统一 `subagent` 工具（delegate/parallel/isolated 三模式）和 `create_skill` 工具 |
 
 ### 工具系统
+
+15 个内置工具（含 `subagent` 统一子代理工具与 `create_skill` 技能创建工具）：
 
 | 工具 | 说明 | 特性 |
 |------|------|------|
 | `bash` | Shell 命令执行 | stderr 分离、自定义环境变量、cwd 安全验证 |
 | `read` | 文件读取 | 编码自动检测、图片/PDF 识别、二进制文件检测、路径安全 |
-| `edit` | 文件编辑（搜索替换） | 原子写入、路径安全、文件不存在提示用 write |
-| `write` | 文件写入 | 原子写入、路径安全、标记为 destructive |
+| `edit` | 文件编辑(搜索替换) | 原子写入、路径安全、变更暂存(可批量回退)、文件不存在提示用 write |
+| `write` | 文件写入 | 原子写入、路径安全、变更暂存、标记为 destructive |
 | `glob` | 文件名匹配搜索 | 忽略 .gitignore 模式 |
 | `grep` | 内容正则搜索 (ripgrep) | 二进制排除 (`--no-binary`)、文件大小限制 |
 | `listdir` | 目录列表 | 树形结构输出 |
-| `task` | 子 Agent 任务 | abort 信号支持、独立工具集 |
+| `task` | 旧版子 Agent 任务 (legacy) | abort 信号支持、独立工具集 |
+| `subagent` | **统一子代理工具** | 三种模式：`delegate`（上下文传递 + 可配置轮次）、`parallel`（asyncio.gather 并行）、`isolated`（git worktree 隔离执行）、每种模式独立默认轮次、权限与 loop guard 贯通 |
 | `webfetch` | URL 内容获取 | JSON/XML content-type 自动格式化 |
 | `websearch` | 网页搜索 | 多引擎支持 |
 | `question` | 向用户提问 | 阻塞等待回复 |
 | `todo` | 任务列表管理 | 会话内 in-memory 状态 |
-| `skill` | 技能文件加载 | 项目 + `~/.opencode/skills/` 搜索、列出可用技能、自动注入 skills 列表到 system-reminder |
+| `skill` | 技能文件加载 | 项目 + `~/.mycode/skills/` 搜索、列出可用技能、自动注入 skills 列表到 system-reminder |
+| `create_skill` | **新增技能文件** | 支持项目本地 / 全局目录、校验 skill 名称与内容、返回写入路径与使用说明 |
 | `batch` | 并行工具执行 (实验性) | 多工具同时调用 |
 
 ### 基础设施 (Infrastructure)
 
 | 模块 | 说明 |
 |------|------|
-| **`config/`** | JSONC 配置解析 + Pydantic v2 模型 + 多层合并（全局→环境→项目→.opencode）|
+| **`config/`** | JSONC 配置解析 + Pydantic v2 模型 + 多层合并（全局→环境→项目→.mycode）|
 | **`storage/`** | SQLAlchemy 表定义（5 表：Project/Session/Message/Part/Permission）+ SQLite + JSON 文件存储 |
 | **`bus/`** | asyncio pub/sub 事件总线，17 种事件类型，支持类型化订阅、通配符订阅和全局广播 |
 | **`permission/`** | 权限系统。Wildcard 规则评估 + ask/reply 阻塞流（allow/deny/ask），集成到 processor 的 tool 执行中 |
@@ -173,7 +177,7 @@ uv run pytest tests/ -v
 Python 文件:      104
 代码行数:      13,558
 单元测试:        373 (全部通过)
-内置工具:         14
+内置工具:         15
 API 路由:         26
 LSP 语言:         26
 CLI 命令:         13
@@ -202,22 +206,22 @@ Lint 错误:         0
 ## CLI 命令
 
 ```bash
-opencode --help                     # 查看所有命令
-opencode serve [--port 4096]        # 启动 API 服务器
-opencode dev [--port --frontend-port] # 一键启动后端 + 前端开发服务器
-opencode run [DIR]                  # 交互式模式（默认）
-opencode run [DIR] -p "message"     # Headless 模式运行
-opencode run [DIR] -a plan          # 指定 agent 模式
-opencode providers                  # 列出可用 AI 提供商
-opencode models                     # 列出可用模型
-opencode config show [DIR]          # 查看合并后配置
-opencode config path                # 查看全局配置路径
-opencode config set KEY VALUE       # 设置全局配置项
-opencode session list [-n 20]       # 列出最近会话
-opencode session delete ID          # 删除会话
-opencode mcp list                   # 列出 MCP 服务器
-opencode snapshot track [DIR]       # 创建快照
-opencode snapshot diff HASH [DIR]   # 查看快照 diff
+mycode --help                     # 查看所有命令
+mycode serve [--port 4096]        # 启动 API 服务器
+mycode dev [--port --frontend-port] # 一键启动后端 + 前端开发服务器
+mycode run [DIR]                  # 交互式模式（默认）
+mycode run [DIR] -p "message"     # Headless 模式运行
+mycode run [DIR] -a plan          # 指定 agent 模式
+mycode providers                  # 列出可用 AI 提供商
+mycode models                     # 列出可用模型
+mycode config show [DIR]          # 查看合并后配置
+mycode config path                # 查看全局配置路径
+mycode config set KEY VALUE       # 设置全局配置项
+mycode session list [-n 20]       # 列出最近会话
+mycode session delete ID          # 删除会话
+mycode mcp list                   # 列出 MCP 服务器
+mycode snapshot track [DIR]       # 创建快照
+mycode snapshot diff HASH [DIR]   # 查看快照 diff
 ```
 
 ### 交互式模式特性
@@ -246,7 +250,7 @@ opencode snapshot diff HASH [DIR]   # 查看快照 diff
 | Cost 计算 | 基于 litellm 定价数据自动计算费用 |
 | 上下文进度条 | 颜色编码显示当前消息列表的上下文窗口占用率（绿→黄→橙→红）|
 | 斜杠命令 | `/help` `/clear` `/model` `/history` `/steps` `/debug` `/memory` `/quit` |
-| Debug 模式 | `/debug` 将每轮 LLM 输入输出 dump 到 `.opencode/debug/` |
+| Debug 模式 | `/debug` 将每轮 LLM 输入输出 dump 到 `.mycode/debug/` |
 | 会话记忆 | `/memory` 查看结构化记忆 + 会话笔记 |
 
 ## API 端点
@@ -321,7 +325,7 @@ POST   /log                        # 写日志
 
 ### 自定义 Provider
 
-如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），在项目根目录创建 `opencode.json`：
+如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），在项目根目录创建 `mycode.json`：
 
 ```jsonc
 {
@@ -354,7 +358,7 @@ POST   /log                        # 写日志
 ```bash
 export OPENAI_API_BASE=https://your-proxy.com/v1
 export OPENAI_API_KEY=sk-xxx
-uv run opencode run --message "hello"
+uv run mycode run --message "hello"
 ```
 
 ## Web UI
@@ -365,32 +369,34 @@ uv run opencode run --message "hello"
 
 | 特性 | 说明 |
 |------|------|
-| 会话管理 | 侧边栏会话列表，新建 / 删除会话 |
-| 流式响应 | SSE 实时流式显示 AI 回复（POST + ReadableStream） |
+| 会话管理 | 侧边栏会话列表,新建 / 删除会话,**宽度可拖拽调整** |
+| 流式响应 | SSE 实时流式显示 AI 回复(POST + ReadableStream) |
 | Markdown 渲染 | react-markdown + remark-gfm + highlight.js 代码高亮 |
 | 工具调用卡片 | 可折叠展示工具名称、输入、输出、状态 |
 | 权限弹窗 | 工具执行权限请求的 Allow / Deny / Always 交互 |
 | 模型/Agent 切换 | 下拉选择可用的 Provider 模型和 Agent |
 | Token/Cost 统计 | 每条 AI 回复显示 token 用量和费用 |
-| 深色主题 | 全局深色配色（gray-950 背景 + blue-600 用户消息）|
-| 单端口部署 | 构建后静态文件集成到 FastAPI，API + UI 同一端口 |
+| 深色主题 | 全局深色配色(gray-950 背景 + blue-600 用户消息) |
+| 技能与 MCP 侧边栏 | 可视化创建/删除 skill 与查看 MCP 服务器状态 |
+| 文件变更管理 | 暂存 AI 修改的文件 + 批量确认/回退 |
+| 单端口部署 | 构建后静态文件集成到 FastAPI,API + UI 同一端口 |
 
 ### 使用方式
 
 ```bash
 # 一键启动（推荐）
-uv run opencode dev                              # 后端 :4096 + 前端 :3000
+uv run mycode dev                              # 后端 :4096 + 前端 :3000
 
 # 自定义端口
-uv run opencode dev --port 8080 --frontend-port 5173
+uv run mycode dev --port 8080 --frontend-port 5173
 
 # 手动分别启动（开发模式）
 cd web && npm install && npm run dev             # Vite :3000，代理到 :4096
-uv run opencode serve --port 4096                # 后端 API
+uv run mycode serve --port 4096                # 后端 API
 
 # 生产模式（单端口）
 cd web && npm run build                          # 构建到 web/dist/
-uv run opencode serve --port 4096                # 打开 http://localhost:4096
+uv run mycode serve --port 4096                # 打开 http://localhost:4096
 ```
 
 ### 前端技术栈
@@ -450,19 +456,25 @@ web/
 | 交互式 CLI (Rich + prompt_toolkit) | ✅ 已完成 |
 | Token 统计 + Cost 计算 + 上下文进度条 | ✅ 已完成 |
 | 三层循环保护 (Loop Guard) | ✅ 已完成 |
-| 工具读写分离（R/O 并行，Mutating 串行）| ✅ 已完成 |
+| 工具读写分离（R/O 并行,Mutating 串行）| ✅ 已完成 |
 | 结果缓存 + 重试逻辑 | ✅ 已完成 |
 | 工具能力声明 + 路径安全 + 原子写入 | ✅ 已完成 |
 | 两层记忆系统（会话 JSONL + 结构化 memdir）| ✅ 已完成 |
 | 消息类型系统（System/Meta/Origin）| ✅ 已完成 |
 | 认证增强（Token 过期、环境变量发现）| ✅ 已完成 |
 | Debug 模式 (`/debug` dump LLM I/O) | ✅ 已完成 |
-| System-Reminder 注入（Skills + Memory → messages，prefix cache 跨 session 复用）| ✅ 已完成 |
+| System-Reminder 注入（Skills + Memory → messages,prefix cache 跨 session 复用）| ✅ 已完成 |
+| 增量式 Reminder（history-aware state extraction，避免重复注入） | ✅ 已完成 |
 | Web UI（React + TypeScript + Vite + TailwindCSS） | ✅ 已完成 |
-| 会话恢复（从 DB 加载历史继续对话） | 待实现 |
+| 统一子代理工具 `subagent`（delegate/parallel/isolated 三模式） | ✅ 已完成 |
+| 技能管理（`skill` + `create_skill` 工具 + MCP 侧边栏界面） | ✅ 已完成 |
+| 会话暂停/恢复（从 DB 加载历史继续对话） | ✅ 已完成 |
+| 文件变更暂存与批量确认/回退 | ✅ 已完成 |
+| Git 集成（代理配置、变更查询） | ✅ 已完成 |
+| Web UI 侧边栏宽度可拖拽调整 | ✅ 已完成 |
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
 | LSP didChange 通知 | 待实现 |
-| Python SDK (`opencode-sdk`) | 待评估 |
+| Python SDK (`mycode-sdk`) | 待评估 |
 
 ---
 
@@ -476,22 +488,22 @@ uv sync --extra dev
 uv run pytest tests/ -v
 
 # 运行测试 (带覆盖率)
-uv run pytest tests/ --cov=opencode --cov-report=term-missing
+uv run pytest tests/ --cov=mycode --cov-report=term-missing
 
 # Lint
-uv run ruff check opencode/
+uv run ruff check mycode/
 
 # 自动修复 Lint
-uv run ruff check opencode/ --fix
+uv run ruff check mycode/ --fix
 
 # 类型检查
-uv run mypy opencode/
+uv run mypy mycode/
 ```
 
 ### 项目结构
 
 ```
-opencode/
+mycode/
 ├── agent/          # Agent 定义 (7 内置 agent)
 ├── auth/           # 认证持久化 + Token 过期检测 + 环境变量发现
 ├── bus/            # 事件总线 (asyncio pub/sub, 17 种事件)

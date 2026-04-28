@@ -15,7 +15,7 @@ Session Memory 是 OpenCode 的一个可选功能，可以在每次对话结束�
 
 在配置文件中添加以下配置来启用 Session Memory：
 
-### 全局配置 (`~/.config/opencode/opencode.json`)
+### 全局配置 (`~/.config/mycode/mycode.json`)
 
 ```json
 {
@@ -35,7 +35,7 @@ Session Memory 是 OpenCode 的一个可选功能，可以在每次对话结束�
 }
 ```
 
-### 项目级配置 (`.opencode/opencode.json`)
+### 项目级配置 (`.mycode/mycode.json`)
 
 ```json
 {
@@ -108,10 +108,10 @@ Session Memory 是 OpenCode 的一个可选功能，可以在每次对话结束�
 
 ## 存储位置
 
-笔记存储在 `~/.local/share/opencode/memory/` 目录下：
+笔记存储在 `~/.local/share/mycode/memory/` 目录下：
 
 ```
-~/.local/share/opencode/memory/
+~/.local/share/mycode/memory/
 ├── notes/
 │   ├── 2024-01-15/
 │   │   ├── 14-30-00_abc123.md
@@ -151,7 +151,7 @@ This session focused on implementing a new authentication module...
 - `src/routes/user.py`
 
 ---
-*auto-saved by opencode session-memory at 2024-01-15T15:15:32*
+*auto-saved by mycode session-memory at 2024-01-15T15:15:32*
 ```
 
 ## CLI 命令
@@ -282,8 +282,8 @@ This session focused on implementing a new authentication module...
 
 | 文件 | 说明 |
 |------|------|
-| `opencode/session/memory/__init__.py` | 模块入口 |
-| `opencode/session/memory/memory.py` | 核心实现 |
-| `opencode/config/models.py` | 配置模型定义 |
-| `opencode/cli/main.py` | CLI 集成 |
+| `mycode/session/memory/__init__.py` | 模块入口 |
+| `mycode/session/memory/memory.py` | 核心实现 |
+| `mycode/config/models.py` | 配置模型定义 |
+| `mycode/cli/main.py` | CLI 集成 |
 | `tests/test_session_memory.py` | 单元测试 |

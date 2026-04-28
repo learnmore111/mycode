@@ -4,15 +4,15 @@
 **Severity**: Critical (security), Medium (robustness)
 **Status**: Fixed
 **Files Modified**:
-- `opencode/session/prompt.py`
-- `opencode/session/processor.py`
-- `opencode/tool/task.py`
-- `opencode/tool/batch.py`
-- `opencode/tool/base.py`
-- `opencode/server/app.py`
-- `opencode/server/routes/session.py`
-- `opencode/server/routes/permission.py`
-- `opencode/permission/permission.py`
+- `mycode/session/prompt.py`
+- `mycode/session/processor.py`
+- `mycode/tool/task.py`
+- `mycode/tool/batch.py`
+- `mycode/tool/base.py`
+- `mycode/server/app.py`
+- `mycode/server/routes/session.py`
+- `mycode/server/routes/permission.py`
+- `mycode/permission/permission.py`
 - `web/src/hooks/usePermission.ts`
 
 ---
@@ -27,7 +27,7 @@ A comprehensive audit of the tool system, sub-agent system, and frontend permiss
 
 ### 1. [CRITICAL] `permission_manager` Never Wired into Processor
 
-**Location**: `opencode/session/prompt.py` — `ProcessorContext` construction
+**Location**: `mycode/session/prompt.py` — `ProcessorContext` construction
 
 **Problem**: `ProcessorContext.permission_manager` defaulted to `None` and was never set when creating the context in `prompt()`. The permission check in `processor.py:191` (`if ctx.permission_manager:`) was therefore always skipped. The entire permission system — including agent-specific rules like "explore agent can only use read-only tools" — was completely inert.
 
@@ -45,7 +45,7 @@ A comprehensive audit of the tool system, sub-agent system, and frontend permiss
 
 ### 2. [CRITICAL] Task Tool Bypassed All Permission Checks
 
-**Location**: `opencode/tool/task.py` — inner tool execution loop
+**Location**: `mycode/tool/task.py` — inner tool execution loop
 
 **Problem**: The task tool (sub-agent spawner) directly called `tool_impl.execute()` without any permission checking. This meant:
 - The `explore` agent could execute `write`/`edit`/`bash` despite its permission rules restricting it to read-only tools
@@ -61,7 +61,7 @@ A comprehensive audit of the tool system, sub-agent system, and frontend permiss
 
 ### 3. [CRITICAL] Frontend-Backend Permission Link Was Broken
 
-**Location**: `opencode/server/app.py`, `opencode/server/routes/session.py`, `opencode/server/routes/permission.py`
+**Location**: `mycode/server/app.py`, `mycode/server/routes/session.py`, `mycode/server/routes/permission.py`
 
 **Problem**: The entire frontend ↔ backend permission chain was disconnected:
 
@@ -100,7 +100,7 @@ Even if a tool hit an "ask" rule, the permission request would hang forever beca
 
 ### 5. [MEDIUM] Batch Tool Bypassed All Protections
 
-**Location**: `opencode/tool/batch.py`
+**Location**: `mycode/tool/batch.py`
 
 **Problem**: Similar to the task tool, the batch tool directly called `tool_impl.execute()` without permission checks, doom loop detection, or cache recording.
 
@@ -113,7 +113,7 @@ Even if a tool hit an "ask" rule, the permission request would hang forever beca
 
 ### 6. [MEDIUM] Sub-Agent Had No Loop Guard Protection
 
-**Location**: `opencode/tool/task.py`
+**Location**: `mycode/tool/task.py`
 
 **Problem**: The sub-agent loop only had a simple `MAX_TURNS = 8` counter. It lacked:
 - Pattern detection (repeated identical calls)
@@ -135,7 +135,7 @@ Even if a tool hit an "ask" rule, the permission request would hang forever beca
 
 ### 7. [MEDIUM] Sub-Agent Returned `ToolOk` on LLM Errors
 
-**Location**: `opencode/tool/task.py:120-124`
+**Location**: `mycode/tool/task.py:120-124`
 
 **Problem**: When the LLM stream emitted an `ErrorEvent`, the sub-agent returned `ToolOk(...)`. This caused the main loop to treat the failure as success, preventing doom loop detection from triggering.
 
@@ -145,7 +145,7 @@ Even if a tool hit an "ask" rule, the permission request would hang forever beca
 
 ### 8. [LOW] `ToolResultBuilder` Truncation Counter Inaccurate
 
-**Location**: `opencode/tool/base.py:148-156`
+**Location**: `mycode/tool/base.py:148-156`
 
 **Problem**: When output truncation occurred, `self._total` was not updated with the actual number of characters written (the `remaining` portion). The truncation message displayed an inaccurate character count.
 
@@ -155,7 +155,7 @@ Even if a tool hit an "ask" rule, the permission request would hang forever beca
 
 ## Type Safety Improvements
 
-**Location**: `opencode/session/processor.py`
+**Location**: `mycode/session/processor.py`
 
 Changed `ProcessorContext` field types from `Any` to proper types:
 ```python
@@ -168,7 +168,7 @@ permission_manager: PermissionManager | None = None
 agent_permission: list[Rule] = field(default_factory=list)
 ```
 
-**Location**: `opencode/permission/permission.py`
+**Location**: `mycode/permission/permission.py`
 
 Removed duplicate `self._lock = asyncio.Lock()` line.
 

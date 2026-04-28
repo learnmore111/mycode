@@ -8,6 +8,21 @@ export interface TimeInfo {
 }
 
 // ---- Session ----
+export interface SessionSummaryDiffItem {
+  file?: string
+  path?: string
+  label?: string
+}
+
+export type SessionSummaryDiff = string | SessionSummaryDiffItem
+
+export interface SessionSummary {
+  additions?: number
+  deletions?: number
+  files?: number
+  diffs?: SessionSummaryDiff[]
+}
+
 export interface Session {
   id: string
   slug: string
@@ -16,7 +31,7 @@ export interface Session {
   title: string
   version: string
   parentID?: string
-  summary?: string
+  summary?: SessionSummary
   share?: string
   visible?: boolean
   time: TimeInfo
@@ -57,6 +72,8 @@ export interface Message {
   sessionId: string
   role: 'user' | 'assistant'
   parentId?: string
+  turnNumber?: number | null
+  snapshotRef?: string | null
   modelId?: string
   providerId?: string
   agent?: string
@@ -100,6 +117,7 @@ export interface PermissionRequest {
 // ---- SSE Events ----
 export type SSEEventType =
   | 'started'
+  | 'reasoning_delta'
   | 'text_delta'
   | 'tool_start'
   | 'tool_running'
@@ -163,6 +181,7 @@ export interface ContextSnapshot {
     cache_write_tokens: number
     reasoning_tokens: number
     total_cost: number
+    raw_usage?: Record<string, unknown> | null
   } | null
   iteration: number
   model: string
@@ -183,6 +202,83 @@ export interface StreamingState {
   text: string
   parts: StreamingPart[]
   sessionId?: string
+}
+
+export interface PausedRun {
+  sessionId: string
+  lastUserText: string
+  partialText?: string
+  pausedAt: number
+  model?: string
+  agent?: string
+}
+
+export interface SessionCodeChange {
+  id: string
+  tool: string
+  filePath: string | null
+  time: number
+  preview?: string
+}
+
+export type GitFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted'
+
+export interface GitChangedFile {
+  path: string
+  oldPath?: string | null
+  indexStatus: string
+  worktreeStatus: string
+  status: GitFileStatus
+  staged: boolean
+  unstaged: boolean
+}
+
+export interface GitStatusSummary {
+  changed: number
+  staged: number
+  unstaged: number
+  untracked: number
+  conflicted: number
+  modified: number
+  added: number
+  deleted: number
+  renamed: number
+}
+
+export interface GitStatus {
+  available: boolean
+  reason?: string | null
+  worktree?: string
+  branch?: string | null
+  upstream?: string | null
+  head?: string | null
+  ahead: number
+  behind: number
+  clean: boolean
+  summary: GitStatusSummary
+  files: GitChangedFile[]
+  lastUpdated: number
+}
+
+export interface GitDiffStats {
+  additions: number
+  deletions: number
+  isBinary?: boolean
+}
+
+export interface GitDiffDetail {
+  available: boolean
+  path: string
+  oldPath?: string | null
+  status: GitFileStatus
+  staged: boolean
+  unstaged: boolean
+  branch?: string | null
+  head?: string | null
+  diff: string
+  tooLarge: boolean
+  stats: GitDiffStats
+  lastUpdated: number
 }
 
 // ---- Compaction Events ----
