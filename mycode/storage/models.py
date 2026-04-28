@@ -134,6 +134,7 @@ class MessageTable(Base):
     tokens_cache_read: Mapped[int | None] = mapped_column(nullable=True)
     tokens_cache_write: Mapped[int | None] = mapped_column(nullable=True)
     cost: Mapped[float | None] = mapped_column(nullable=True)
+    raw_usage: Mapped[str | None] = mapped_column(Text, nullable=True)
     time_created: Mapped[int] = mapped_column(nullable=False)
     time_completed: Mapped[int | None] = mapped_column(nullable=True)
 

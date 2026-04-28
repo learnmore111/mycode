@@ -30,6 +30,7 @@ def build_context_snapshot(
     iteration: int,
     has_history: bool,
     actual_usage: dict[str, int | float] | None = None,
+    raw_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a context snapshot for the UI context viewer.
 
@@ -204,6 +205,8 @@ def build_context_snapshot(
             "reasoning_tokens": actual_usage.get("reasoning_tokens", 0),
             "total_cost": actual_usage.get("total_cost", 0.0),
         }
+        if raw_usage:
+            actual_info["raw_usage"] = raw_usage
     else:
         actual_info = None
 

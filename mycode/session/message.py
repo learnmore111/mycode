@@ -417,6 +417,7 @@ def _build_message_row(msg: MessageInfo) -> Any:
         row.tokens_cache_read = msg.tokens_cache_read
         row.tokens_cache_write = msg.tokens_cache_write
         row.cost = msg.cost
+        row.raw_usage = json.dumps(msg.raw_usage, ensure_ascii=False) if msg.raw_usage else None
         row.time_completed = msg.time_completed
     return row
 

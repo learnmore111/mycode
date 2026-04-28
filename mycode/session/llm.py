@@ -427,9 +427,16 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             # Collect usage from any chunk that has it
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage
-                # Debug: log raw usage object to verify cache fields
-                logger.debug("usage", usage_raw=str(u))
                 raw_usage_payload = _serialize_usage(u)
+                logger.info(
+                    "usage_received",
+                    usage_type=type(u).__name__,
+                    raw_usage=raw_usage_payload,
+                    input_tokens=_usage_get(u, "prompt_tokens", 0) or _usage_get(u, "input_tokens", 0) or 0,
+                    output_tokens=_usage_get(u, "completion_tokens", 0) or _usage_get(u, "output_tokens", 0) or 0,
+                    cache_read=_get_cache_read_tokens(u),
+                    cache_write=_get_cache_write_tokens(u),
+                )
                 accumulated_usage = {
                     "input_tokens": _usage_get(u, "prompt_tokens", 0) or _usage_get(u, "input_tokens", 0) or 0,
                     "output_tokens": _usage_get(u, "completion_tokens", 0) or _usage_get(u, "output_tokens", 0) or 0,
@@ -499,10 +506,13 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         if pending_finish_reason:
             cost = _calc_cost(model_name, accumulated_usage)
             metrics.counter("llm_request_total", model=model_name, outcome="ok")
+            # Fallback: if provider didn't send raw usage, synthesise from accumulated
+            # so the frontend always has something to display.
+            final_raw_usage = raw_usage_payload if raw_usage_payload is not None else dict(accumulated_usage)
             yield FinishEvent(
                 reason=_map_finish_reason(pending_finish_reason),
                 usage=accumulated_usage,
-                raw_usage=raw_usage_payload,
+                raw_usage=final_raw_usage,
                 cost=cost,
             )
 
@@ -702,7 +712,10 @@ def _coerce_delta_segments(value: Any) -> list[str]:
 def _serialize_usage(value: Any) -> dict[str, Any] | None:
     """Convert provider usage payloads into plain JSON-safe objects."""
     serialized = _serialize_jsonable(value)
-    return serialized if isinstance(serialized, dict) else None
+    if isinstance(serialized, dict):
+        return serialized
+    # Fallback: wrap string representation so we never lose data entirely
+    return {"_raw": str(value)} if value is not None else None
 
 
 def _serialize_jsonable(value: Any) -> Any:
@@ -712,12 +725,21 @@ def _serialize_jsonable(value: Any) -> Any:
         return {str(k): _serialize_jsonable(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_serialize_jsonable(v) for v in value]
+    # pydantic v2
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
             return _serialize_jsonable(model_dump())
         except Exception:
             pass
+    # pydantic v1
+    dict_method = getattr(value, "dict", None)
+    if callable(dict_method):
+        try:
+            return _serialize_jsonable(dict_method())
+        except Exception:
+            pass
+    # dataclass / plain object
     as_dict = getattr(value, "__dict__", None)
     if isinstance(as_dict, dict) and as_dict:
         return {
@@ -725,4 +747,12 @@ def _serialize_jsonable(value: Any) -> Any:
             for k, v in as_dict.items()
             if not str(k).startswith("_")
         }
+    # Some litellm internals expose .json()
+    json_method = getattr(value, "json", None)
+    if callable(json_method):
+        try:
+            import json as _json
+            return _serialize_jsonable(_json.loads(json_method()))
+        except Exception:
+            pass
     return str(value)

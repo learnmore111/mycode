@@ -86,7 +86,20 @@ export function useChat(sessionId: string | null) {
     setCodeChanges(changes)
     setStatus(paused ? 'paused' : 'idle')
     if (snapshot) {
-      setContextSnapshot(snapshot)
+      setContextSnapshot((prev) => {
+        // Preserve raw_usage from the live SSE done-event if the reloaded
+        // snapshot hasn't been persisted with it yet (race condition).
+        if (prev?.actual_usage?.raw_usage && !snapshot.actual_usage?.raw_usage) {
+          return {
+            ...snapshot,
+            actual_usage: {
+              ...snapshot.actual_usage,
+              raw_usage: prev.actual_usage.raw_usage,
+            },
+          }
+        }
+        return snapshot
+      })
     }
   }, [sessionId])
 
