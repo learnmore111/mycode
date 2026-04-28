@@ -2,7 +2,7 @@
 
 - **日期**: 2026-03-31
 - **状态**: ✅ 已完成
-- **影响范围**: `opencode/session/loop_guard.py`（新增）、`opencode/session/processor.py`、`opencode/session/prompt.py`、`opencode/cli/main.py`
+- **影响范围**: `mycode/session/loop_guard.py`（新增）、`mycode/session/processor.py`、`mycode/session/prompt.py`、`mycode/cli/main.py`
 - **参考**: PraisonAI doom loop detection、reivo-guard EWMA、Claude SDK agent loop、ToolCacheAgent 论文
 
 ---
@@ -114,10 +114,10 @@ def should_retry(tool_name, error, retry_count):
 
 | 文件 | 类型 | 说明 |
 |---|---|---|
-| `opencode/session/loop_guard.py` | **新增** | 三层防护引擎 + 结果缓存 + 步骤状态（~350 行） |
-| `opencode/session/processor.py` | **重写** | 集成缓存查找、读写分离、重试逻辑、步骤记录 |
-| `opencode/session/prompt.py` | **重写** | 集成 LoopGuard、每步前检查 verdict、步骤原子化 |
-| `opencode/cli/main.py` | **修改** | 处理 `guard_warn` / `guard_stop` 事件显示 |
+| `mycode/session/loop_guard.py` | **新增** | 三层防护引擎 + 结果缓存 + 步骤状态（~350 行） |
+| `mycode/session/processor.py` | **重写** | 集成缓存查找、读写分离、重试逻辑、步骤记录 |
+| `mycode/session/prompt.py` | **重写** | 集成 LoopGuard、每步前检查 verdict、步骤原子化 |
+| `mycode/cli/main.py` | **修改** | 处理 `guard_warn` / `guard_stop` 事件显示 |
 | `tests/test_loop_guard.py` | **新增** | 21 个单元测试覆盖所有防护层和缓存逻辑 |
 
 ---

@@ -3,7 +3,7 @@
 - **日期**: 2026-03-31
 - **状态**: ✅ 已修复
 - **提交**: `3f9ee35`
-- **影响范围**: `opencode/session/prompts/*.txt`、`opencode/cli/main.py`
+- **影响范围**: `mycode/session/prompts/*.txt`、`mycode/cli/main.py`
 
 ---
 
@@ -13,11 +13,11 @@
 
 ```
 ✗ skill
-  Skill 'opencode' not found. Searched in .opencode/skills/
+  Skill 'mycode' not found. Searched in .mycode/skills/
 ✓ listdir
   [dir]  agent-mem-note/
 ✓ Grep class Edit|def edit
-  ./opencode/tool/edit.py:nParams(BaseModel):
+  ./mycode/tool/edit.py:nParams(BaseModel):
 ─ 50.8s · in:15.8K out:148 · reasoning:146
 ```
 

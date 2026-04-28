@@ -13,9 +13,9 @@ import time
 
 import pytest
 
-from opencode.auth.auth import OAuthAuth, auth_source, get_env_key
-from opencode.session.memory.memory import memory_age_days, memory_age_text, memory_freshness_note
-from opencode.session.message import (
+from mycode.auth.auth import OAuthAuth, auth_source, get_env_key
+from mycode.session.memory.memory import memory_age_days, memory_age_text, memory_freshness_note
+from mycode.session.message import (
     SystemMessage,
     UserMessage,
     create_system_message,
@@ -186,9 +186,9 @@ def test_auth_source_none(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_skill_home_dir_search(tmp_path, monkeypatch):
-    import opencode.project.instance as inst
-    from opencode.tool.base import ToolContext
-    from opencode.tool.skill import tool as skill_tool
+    import mycode.project.instance as inst
+    from mycode.tool.base import ToolContext
+    from mycode.tool.skill import tool as skill_tool
 
     # Create skill in home directory
     home_skills = tmp_path / "home_skills"
@@ -207,9 +207,9 @@ async def test_skill_home_dir_search(tmp_path, monkeypatch):
         project=inst.ProjectInfo(id="t", worktree=str(project)),
     ))
     try:
-        # The skill should NOT be found because home_skills != ~/.opencode/skills
+        # The skill should NOT be found because home_skills != ~/.mycode/skills
         # Create proper path
-        proper_home = tmp_path / ".opencode" / "skills"
+        proper_home = tmp_path / ".mycode" / "skills"
         proper_home.mkdir(parents=True)
         (proper_home / "python.md").write_text("# Python\nUse type hints.")
 
@@ -223,12 +223,12 @@ async def test_skill_home_dir_search(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_skill_lists_available(tmp_path):
-    import opencode.project.instance as inst
-    from opencode.tool.base import ToolContext
-    from opencode.tool.skill import tool as skill_tool
+    import mycode.project.instance as inst
+    from mycode.tool.base import ToolContext
+    from mycode.tool.skill import tool as skill_tool
 
     # Create project with skills
-    skills_dir = tmp_path / ".opencode" / "skills"
+    skills_dir = tmp_path / ".mycode" / "skills"
     skills_dir.mkdir(parents=True)
     (skills_dir / "python.md").write_text("py")
     (skills_dir / "rust.md").write_text("rs")

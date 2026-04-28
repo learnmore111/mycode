@@ -1,6 +1,6 @@
 """Tests for the plugin system."""
 import pytest
-from opencode.plugin.plugin import PluginManager
+from mycode.plugin.plugin import PluginManager
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 import type { StreamingPart } from '../types'
 import TextContent from './TextContent'
 import ToolExecution from './ToolExecution'
+import ReasoningBlock from './ReasoningBlock'
 
 interface Props {
   text: string
@@ -24,26 +25,45 @@ export default function StreamingIndicator({ text, parts }: Props) {
 
       {/* Content */}
       <div className="pl-7 text-ink">
-        {text ? (
-          <div className="streaming-cursor">
-            <TextContent content={text} />
-          </div>
-        ) : null}
+        {parts.map((part, index) => {
+          if (part.type === 'reasoning') {
+            return (
+              <ReasoningBlock
+                key={part.id}
+                content={part.content}
+                streaming
+              />
+            )
+          }
 
-        {parts.map((part) => (
-          <ToolExecution
-            key={part.id}
-            part={{
-              id: part.id,
-              type: part.type,
-              content: part.content,
-              tool: part.tool,
-              toolCallId: part.toolCallId,
-              state: part.state,
-              time: { created: Date.now() },
-            }}
-          />
-        ))}
+          if (part.type === 'tool') {
+            return (
+              <ToolExecution
+                key={part.id}
+                part={{
+                  id: part.id,
+                  type: part.type,
+                  content: part.content,
+                  tool: part.tool,
+                  toolCallId: part.toolCallId,
+                  state: part.state,
+                  time: { created: Date.now() },
+                }}
+              />
+            )
+          }
+
+          if (part.type === 'text') {
+            const isLast = index === parts.length - 1
+            return (
+              <div key={part.id} className={isLast ? 'streaming-cursor' : undefined}>
+                <TextContent content={part.content} />
+              </div>
+            )
+          }
+
+          return null
+        })}
 
         {!text && parts.length === 0 && (
           <div className="flex items-center gap-2.5 text-ink-muted text-sm py-1">

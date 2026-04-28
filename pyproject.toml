@@ -1,5 +1,5 @@
 [project]
-name = "opencode"
+name = "mycode"
 version = "0.1.0"
 description = "Open source AI coding agent - Python edition"
 readme = "README.md"
@@ -53,8 +53,8 @@ dev = [
 ]
 
 [project.scripts]
-opencode = "opencode.cli.main:cli"
-opencode-mcp = "opencode.mcp_server.server:main"
+mycode = "mycode.cli.main:cli"
+mycode-mcp = "mycode.mcp_server.server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -69,7 +69,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["opencode"]
+known-first-party = ["mycode"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -80,3 +80,9 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[dependency-groups]
+dev = [
+    "types-aiofiles>=25.1.0.20260409",
+    "types-pyyaml>=6.0.12.20260408",
+]

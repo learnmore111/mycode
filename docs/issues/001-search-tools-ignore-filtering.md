@@ -16,7 +16,7 @@ Agent 在执行搜索时，返回了不应出现的结果：
     ./.venv/lib/python3.14/site-packages/...
 
 ✓ Glob **/*edit*
-    opencode/tool/__pycache__/edit.cpython-314.pyc
+    mycode/tool/__pycache__/edit.cpython-314.pyc
 ```
 
 用户明显是想搜索项目源码中与 `edit` 相关的工具文件，却搜到了虚拟环境的第三方包和 `__pycache__` 编译缓存。
@@ -139,7 +139,7 @@ grep -rn --exclude-dir=.venv --exclude-dir=__pycache__ --exclude-dir=node_module
 
 ## 3. 修复方案
 
-### 3.1 新增统一排除模块 `opencode/file/ignore.py`
+### 3.1 新增统一排除模块 `mycode/file/ignore.py`
 
 定义了三个核心常量：
 

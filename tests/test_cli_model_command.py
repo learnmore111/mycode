@@ -5,7 +5,7 @@ import pytest
 from io import StringIO
 from unittest.mock import patch
 
-from opencode.cli.main import _handle_command
+from mycode.cli.main import _handle_command
 
 
 class TestHandleCommand:

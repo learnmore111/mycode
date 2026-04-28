@@ -12,6 +12,9 @@ build/
 opencode.json
 opencode.jsonc
 .opencode/
+mycode.json
+mycode.jsonc
+.mycode/
 kimi-cli
 agent-mem-note
 node_modules/

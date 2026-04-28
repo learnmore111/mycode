@@ -10,9 +10,10 @@ interface Props {
   streamText: string
   streamParts: StreamingPart[]
   loadingHistory: boolean
+  onRollback?: (turn: number, options?: { restoreSnapshot?: boolean }) => Promise<unknown> | void
 }
 
-export default function MessageList({ messages, streaming, streamText, streamParts, loadingHistory }: Props) {
+export default function MessageList({ messages, streaming, streamText, streamParts, loadingHistory, onRollback }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -31,7 +32,13 @@ export default function MessageList({ messages, streaming, streamText, streamPar
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-6">
+    <div
+      className="flex-1 overflow-y-auto px-4 py-6"
+      role="log"
+      aria-label="Conversation"
+      aria-live="polite"
+      aria-relevant="additions"
+    >
       <div className="max-w-3xl mx-auto">
         {messages.length === 0 && !streaming && (
           <div className="text-center py-20 text-ink-muted text-sm">
@@ -42,7 +49,7 @@ export default function MessageList({ messages, streaming, streamText, streamPar
         {messages.map((msg, i) => (
           <div key={msg.id}>
             {i > 0 && <div className="my-6" />}
-            <MessageBubble message={msg} />
+            <MessageBubble message={msg} onRollback={onRollback} streaming={false} />
           </div>
         ))}
 

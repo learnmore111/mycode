@@ -8,22 +8,22 @@ import tempfile
 
 import pytest
 
-import opencode.project.instance as inst
-from opencode.tool.base import (
+import mycode.project.instance as inst
+from mycode.tool.base import (
     ToolContext,
     ToolInfo,
     atomic_write,
     resolve_tool_path,
     validate_path_safety,
 )
-from opencode.tool.bash import tool as bash_tool
-from opencode.tool.edit import tool as edit_tool
-from opencode.tool.glob_tool import tool as glob_tool
-from opencode.tool.grep import tool as grep_tool
-from opencode.tool.read import tool as read_tool
-from opencode.tool.registry import clear, register, register_builtins, to_llm_tools
-from opencode.tool.webfetch import tool as webfetch_tool
-from opencode.tool.write import tool as write_tool
+from mycode.tool.bash import tool as bash_tool
+from mycode.tool.edit import tool as edit_tool
+from mycode.tool.glob_tool import tool as glob_tool
+from mycode.tool.grep import tool as grep_tool
+from mycode.tool.read import tool as read_tool
+from mycode.tool.registry import clear, register, register_builtins, to_llm_tools
+from mycode.tool.webfetch import tool as webfetch_tool
+from mycode.tool.write import tool as write_tool
 
 
 def _ctx() -> ToolContext:
@@ -134,7 +134,7 @@ def test_webfetch_tool_is_read_only():
 
 def test_default_tool_info_capabilities():
     """Default ToolInfo: not read-only, not destructive, concurrency-safe."""
-    from opencode.tool.base import CallableTool, ToolResult
+    from mycode.tool.base import CallableTool, ToolResult
     from pydantic import BaseModel
 
     class P(BaseModel):
@@ -191,7 +191,7 @@ async def test_bash_no_stderr_metadata(_project):
 @pytest.mark.asyncio
 async def test_write_blocks_outside_project(_project):
     result = await write_tool.execute({
-        "file_path": "/etc/test_opencode_blocked",
+        "file_path": "/etc/test_mycode_blocked",
         "content": "should not write",
     }, _ctx())
     assert result.is_error

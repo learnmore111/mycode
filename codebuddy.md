@@ -9,18 +9,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync --extra dev
 
 # Run interactive CLI
-uv run opencode run
+uv run mycode run
 
 # Run headless (single message)
-uv run opencode run -p "your message"
+uv run mycode run -p "your message"
 
 # Start API server
-uv run opencode serve --port 4096
+uv run mycode serve --port 4096
 
 # Start both backend + frontend dev servers (one command)
-uv run opencode dev
+uv run mycode dev
 # Custom ports:
-uv run opencode dev --port 8080 --frontend-port 5173
+uv run mycode dev --port 8080 --frontend-port 5173
 
 # Run all tests
 uv run pytest tests/ -v
@@ -29,43 +29,43 @@ uv run pytest tests/ -v
 uv run pytest tests/test_foo.py -v
 
 # Run tests with coverage
-uv run pytest tests/ --cov=opencode --cov-report=term-missing
+uv run pytest tests/ --cov=mycode --cov-report=term-missing
 
 # Lint
-uv run ruff check opencode/
+uv run ruff check mycode/
 
 # Auto-fix lint issues
-uv run ruff check opencode/ --fix
+uv run ruff check mycode/ --fix
 
 # Type check
-uv run mypy opencode/
+uv run mypy mycode/
 ```
 
 ## Architecture
 
-This is a Python AI coding agent framework (reimplementation of the TypeScript [OpenCode](https://github.com/anomalyco/opencode) architecture). It exposes three interfaces: an interactive CLI (Click + Rich), an HTTP API (FastAPI + SSE), and a headless mode.
+This is a Python AI coding agent framework (reimplementation of the TypeScript [OpenCode](https://github.com/anomalyco/mycode) architecture). It exposes three interfaces: an interactive CLI (Click + Rich), an HTTP API (FastAPI + SSE), and a headless mode.
 
 ### Agentic Loop
 
-The core loop lives in `opencode/session/`:
+The core loop lives in `mycode/session/`:
 - **`prompt.py`** — entry point: selects agent, builds system prompt, loads tools, injects memory, persists messages to SQLite
 - **`processor.py`** — drives the LLM→Tool loop: streams from litellm, parses tool calls, executes tools (read-only tools run in parallel, mutating tools run sequentially based on capability declarations), checks permissions, detects doom loops
 - **`loop_guard.py`** — three-layer infinite loop protection: hard limit, pattern detection, LLM-based intelligence
 - **`compaction.py`** — context compression: token estimation → LLM summary when context window fills
 - **`llm.py`** — litellm wrapper with streaming, token counting, and cost calculation
 
-### Tools (`opencode/tool/`)
+### Tools (`mycode/tool/`)
 
 14 built-in tools, each declaring capabilities (`is_read_only`, `is_destructive`, `is_concurrency_safe`). This drives parallel vs. sequential execution in the processor. Tools are sorted by name for prompt cache stability. All file-path tools perform path safety validation to prevent directory traversal.
 
 Read-only (run in parallel): `bash` (safe commands), `read`, `glob`, `grep`, `listdir`, `webfetch`, `websearch`
 Mutating (run sequentially): `write`, `edit`, `task`, `skill`, `question`, `todo`, `batch`
 
-### Agents (`opencode/agent/`)
+### Agents (`mycode/agent/`)
 
 7 built-in agents with different tool sets and system prompts: `build` (default, full permissions), `plan` (read-only), `general` (subtasks), `explore` (search-focused), plus `compaction`/`title`/`summary` for internal use.
 
-### Memory (`opencode/session/memory/`)
+### Memory (`mycode/session/memory/`)
 
 Two-layer memory:
 1. **Session memory** (`memory.py`) — JSONL rolling summary per session, refined by LLM
@@ -76,7 +76,7 @@ Two-layer memory:
 | Module | Purpose |
 |--------|---------|
 | `provider/` | Auto-discovers 14+ AI providers from env vars; `transform.py` adjusts params per model type; routes through litellm |
-| `config/` | JSONC parsing + Pydantic v2 models + multi-layer merge (global → env → project → `.opencode`) |
+| `config/` | JSONC parsing + Pydantic v2 models + multi-layer merge (global → env → project → `.mycode`) |
 | `storage/` | SQLAlchemy + SQLite; 5 tables: Project, Session, Message, Part, Permission |
 | `bus/` | asyncio pub/sub event bus; 17 event types; supports typed, wildcard, and broadcast subscriptions |
 | `permission/` | Wildcard rule evaluation; ask/reply blocking flow (allow/deny/ask) integrated into processor |
@@ -97,7 +97,7 @@ Three message types flow through the system:
 
 ## Configuration
 
-Project config lives in `opencode.json` at the repo root (JSONC format). Custom providers/models require `limit.context` to be set manually for context bar and auto-compaction to work. Built-in providers auto-fetch limits from models.dev.
+Project config lives in `mycode.json` at the repo root (JSONC format). Custom providers/models require `limit.context` to be set manually for context bar and auto-compaction to work. Built-in providers auto-fetch limits from models.dev.
 
 ## Code Style
 
