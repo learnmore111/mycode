@@ -286,6 +286,13 @@ def _migrate(engine: Engine) -> None:
         ddl="ALTER TABLE message ADD COLUMN snapshot_ref TEXT",
     )
 
+    _add_column_if_missing(
+        engine, inspector,
+        table="message",
+        column="raw_usage",
+        ddl="ALTER TABLE message ADD COLUMN raw_usage TEXT",
+    )
+
     _add_index_if_missing(
         engine, inspector,
         table="message",

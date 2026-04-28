@@ -265,6 +265,7 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
     tools = tool_registry.to_llm_tools()
 
     actual_usage = None
+    raw_usage = None
     if last_assistant and any(
         value is not None
         for value in (
@@ -284,6 +285,11 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
             "reasoning_tokens": last_assistant.tokens_reasoning or 0,
             "total_cost": last_assistant.cost or 0.0,
         }
+        if last_assistant.raw_usage:
+            try:
+                raw_usage = json.loads(last_assistant.raw_usage)
+            except Exception:
+                pass
 
     return build_context_snapshot(
         system=system,
@@ -294,6 +300,7 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
         iteration=max(assistant_turns - 1, 0),
         has_history=bool(history),
         actual_usage=actual_usage,
+        raw_usage=raw_usage,
     )
 
 
