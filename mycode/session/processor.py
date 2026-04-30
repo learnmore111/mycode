@@ -166,11 +166,14 @@ async def process_stream(
                 tool_calls_pending.append(tp_delta)
 
         elif isinstance(event, llmmod.FinishEvent):
-            ctx.assistant_message.tokens_input += event.usage.get("input_tokens", 0)
+            # input_tokens / cache_* are absolute totals per call (contain full context),
+            # so we keep the *last* call's value rather than accumulating.
+            # output_tokens / reasoning_tokens / cost are truly additive per call.
+            ctx.assistant_message.tokens_input = event.usage.get("input_tokens", 0)
             ctx.assistant_message.tokens_output += event.usage.get("output_tokens", 0)
             ctx.assistant_message.tokens_reasoning += event.usage.get("reasoning_tokens", 0)
-            ctx.assistant_message.tokens_cache_read += event.usage.get("cache_read_tokens", 0)
-            ctx.assistant_message.tokens_cache_write += event.usage.get("cache_write_tokens", 0)
+            ctx.assistant_message.tokens_cache_read = event.usage.get("cache_read_tokens", 0)
+            ctx.assistant_message.tokens_cache_write = event.usage.get("cache_write_tokens", 0)
             ctx.assistant_message.cost += event.cost
             ctx.assistant_message.raw_usage = event.raw_usage
 
