@@ -69,7 +69,7 @@ class AgentRunner(Protocol):
 
 
 # Tools excluded from sub-agent tool lists (same policy as mycode.tool.task).
-_EXCLUDED_SUBAGENT_TOOLS = frozenset({"task", "subagent", "todo", "question", "batch"})
+_EXCLUDED_SUBAGENT_TOOLS = frozenset({"subagent", "todo", "question", "batch"})
 
 # Hard ceiling on turns for a single spawn.  Agents with a declared
 # ``max_turns`` override this downward; None inherits the ceiling.

@@ -677,6 +677,10 @@ def _get_reasoning_tokens(usage: Any) -> int:
 
 def _get_cache_read_tokens(usage: Any) -> int:
     """Extract cache read tokens."""
+    # DeepSeek: usage.prompt_cache_hit_tokens
+    val = _usage_get(usage, "prompt_cache_hit_tokens", 0)
+    if val:
+        return val
     # Anthropic: usage.cache_read_input_tokens
     val = _usage_get(usage, "cache_read_input_tokens", 0)
     if val:
@@ -697,7 +701,12 @@ def _get_cache_read_tokens(usage: Any) -> int:
 
 
 def _get_cache_write_tokens(usage: Any) -> int:
-    """Extract cache write tokens."""
+    """Extract cache write / miss tokens."""
+    # DeepSeek: usage.prompt_cache_miss_tokens
+    val = _usage_get(usage, "prompt_cache_miss_tokens", 0)
+    if val:
+        return val
+    # OpenAI/Anthropic style
     val = _usage_get(usage, "cache_creation_input_tokens", 0)
     if val:
         return val

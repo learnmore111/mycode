@@ -50,8 +50,8 @@ def _assert_file_read(session_id: str, absolute_path: str) -> str | None:
     reads = _session_read_files.get(session_id, {})
     if absolute_path not in reads:
         return (
-            f"You must read this file before editing it. "
-            f"Use the read tool first to get the exact content."
+            "You must read this file before editing it. "
+            "Use the read tool first to get the exact content."
         )
     last_mtime = reads[absolute_path]
     try:
@@ -60,8 +60,8 @@ def _assert_file_read(session_id: str, absolute_path: str) -> str | None:
         return None  # File gone — let the tool handle it
     if current_mtime != last_mtime:
         return (
-            f"File has been modified since it was last read. "
-            f"Please read the file again before editing it."
+            "File has been modified since it was last read. "
+            "Please read the file again before editing it."
         )
     return None
 
