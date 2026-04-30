@@ -259,7 +259,7 @@ class SwarmAgentRunner(Protocol):
 
 # Tools the swarm layer always strips (coordinator-only or interactive).
 _EXCLUDED_SWARM_TOOLS = frozenset({
-    "task", "subagent", "todo", "question", "batch",
+    "subagent", "todo", "question", "batch",
 })
 
 

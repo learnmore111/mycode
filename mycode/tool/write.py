@@ -22,9 +22,9 @@ from mycode.tool.base import (
     ToolError,
     ToolOk,
     ToolResult,
+    _assert_file_read,
     atomic_write,
     resolve_tool_path,
-    _assert_file_read,
 )
 
 _PREVIEW_LINES = 10

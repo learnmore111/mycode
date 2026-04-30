@@ -338,7 +338,10 @@ class _FileAction(BaseModel):
 @router.post("/stage")
 async def git_stage(body: _FileAction) -> Any:
     """Stage a file (git add)."""
-    project = await from_directory(body.directory)
+    try:
+        project = await from_directory(body.directory)
+    except Exception as exc:
+        raise HTTPException(500, f"项目初始化失败: {exc}") from exc
 
     async def _fn() -> Any:
         if project.vcs != "git":
@@ -346,9 +349,19 @@ async def git_stage(body: _FileAction) -> Any:
         if not _is_within_worktree(project.worktree, body.path):
             raise HTTPException(400, "文件路径超出 Git 工作区")
 
-        code, _, stderr = await _run_git(["add", "--", body.path], cwd=project.worktree)
+        # Handle deleted files: use git add directly (stages the deletion)
+        # For untracked directories, use git add -A for the path
+        full_path = Path(project.worktree) / body.path
+        git_args: list[str]
+
+        if full_path.is_dir():
+            git_args = ["add", "-A", "--", body.path]
+        else:
+            git_args = ["add", "--", body.path]
+
+        code, _, stderr = await _run_git(git_args, cwd=project.worktree)
         if code != 0:
-            raise HTTPException(500, stderr.strip() or "git add failed")
+            raise HTTPException(500, stderr.strip() or f"git add failed for {body.path}")
         return {"ok": True, "path": body.path}
 
     return await provide(body.directory, _fn, project=project)
