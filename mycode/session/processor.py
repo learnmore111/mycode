@@ -89,138 +89,205 @@ class ProcessorContext:
     loop_guard: LoopGuard | None = None  # Injected by prompt.py
 
 
+def _surface_llm_error(
+    ctx: ProcessorContext,
+    error_event: llmmod.ErrorEvent,
+    tool_calls_pending: list[ToolPart],
+    parts: list[Part],
+) -> None:
+    """Surface an LLM error to context after all retries are exhausted."""
+    logger.error(
+        "LLM error (all retries exhausted)",
+        error=error_event.error,
+        error_code=error_event.error_code,
+        retryable=error_event.retryable,
+        status_code=error_event.status_code,
+    )
+    ctx.assistant_message.error = {
+        "message": error_event.error,
+        "code": error_event.error_code,
+        "retryable": error_event.retryable,
+        "status_code": error_event.status_code,
+    }
+    ctx.should_break = True
+    # Any tool calls that were partially streamed before the error
+    # must be surfaced as failed so the doom-loop guard & UI see them.
+    for partial_tp in list(ctx.toolcalls.values()):
+        if partial_tp.state.get("status") in (None, "pending"):
+            partial_tp.state["status"] = "error"
+            partial_tp.state["is_error"] = True
+            partial_tp.state["output"] = f"LLM stream aborted before tool args finalised: {error_event.error}"
+            partial_tp.time_completed = int(time.time() * 1000)
+            if partial_tp not in ctx.parts:
+                ctx.parts.append(partial_tp)
+    # Drop the pending list so the executor phase does not try to run a partially-formed call.
+    tool_calls_pending.clear()
+
+
 async def process_stream(
     ctx: ProcessorContext,
     stream_input: llmmod.StreamInput,
     messages_for_tools: list[Any] | None = None,
 ) -> AsyncGenerator[ProcessorEvent, None]:
     """Run one iteration of the agentic loop, yielding events in real time."""
+    MAX_LLM_RETRIES = 3
+    LLM_RETRY_DELAY = 1.0  # seconds between retries
+
     current_reasoning: ReasoningPart | None = None
     current_text: TextPart | None = None
     tool_calls_pending: list[ToolPart] = []
     parts: list[Part] = []
     text_length = 0
 
-    async for event in llmmod.stream(stream_input):
-        if isinstance(event, llmmod.ReasoningDelta):
-            if current_reasoning is None:
-                current_reasoning = create_reasoning_part(ctx.session_id, ctx.assistant_message.id)
-                parts.append(current_reasoning)
-            current_reasoning.content += event.text
-            await ctx.bus.publish(PART_DELTA, {
-                "session_id": ctx.session_id,
-                "message_id": ctx.assistant_message.id,
-                "part_id": current_reasoning.id,
-                "field": "content",
-                "delta": event.text,
-            })
-            yield ProcessorEvent(type="reasoning_delta", data={"content": event.text})
+    last_error_event: llmmod.ErrorEvent | None = None
+    last_exception: str | None = None
 
-        elif isinstance(event, llmmod.TextDelta):
-            if current_text is None:
-                current_text = create_text_part(ctx.session_id, ctx.assistant_message.id)
-                parts.append(current_text)
-            current_text.content += event.text
-            text_length += len(event.text)
-            await ctx.bus.publish(PART_DELTA, {
-                "session_id": ctx.session_id,
-                "message_id": ctx.assistant_message.id,
-                "part_id": current_text.id,
-                "field": "content",
-                "delta": event.text,
-            })
-            yield ProcessorEvent(type="text_delta", data={"content": event.text})
-
-        elif isinstance(event, llmmod.ToolCallPartial):
-            tp = create_tool_part(ctx.session_id, ctx.assistant_message.id, event.tool_name, event.tool_call_id)
-            tp.state = {"status": "pending", "input": {}}
-            ctx.toolcalls[event.tool_call_id] = tp
-            parts.append(tp)
+    for attempt in range(1, MAX_LLM_RETRIES + 1):
+        # Reset per-attempt state on retry (attempt > 1)
+        if attempt > 1:
+            logger.info("retrying LLM stream", attempt=attempt, max_retries=MAX_LLM_RETRIES)
+            await asyncio.sleep(LLM_RETRY_DELAY)
             current_reasoning = None
             current_text = None
-            yield ProcessorEvent(type="tool_start", data={
-                "tool": event.tool_name,
-                "call_id": event.tool_call_id,
-            })
-
-        elif isinstance(event, llmmod.ToolCallArgsPartial):
-            tp_partial = ctx.toolcalls.get(event.tool_call_id)
-            if tp_partial:
-                raw = tp_partial.state.get("_raw_args", "") + event.args_delta
-                tp_partial.state["_raw_args"] = raw
-
-        elif isinstance(event, llmmod.ToolCallDelta):
-            tp_delta = ctx.toolcalls.get(event.tool_call_id)
-            if tp_delta:
-                try:
-                    parsed = json.loads(event.args) if event.args else {}
-                    if not isinstance(parsed, dict):
-                        logger.warn("tool args parsed to non-dict", tool=tp_delta.tool, type=type(parsed).__name__)
-                        tp_delta.state["input"] = {}
-                    else:
-                        tp_delta.state["input"] = parsed
-                except json.JSONDecodeError as e:
-                    logger.error("malformed tool arguments", tool=tp_delta.tool, error=str(e))
-                    tp_delta.state["input"] = {}
-                    tp_delta.state["_parse_error"] = str(e)
-                tool_calls_pending.append(tp_delta)
-
-        elif isinstance(event, llmmod.FinishEvent):
-            # input_tokens / cache_* are absolute totals per call (contain full context),
-            # so we keep the *last* call's value rather than accumulating.
-            # output_tokens / reasoning_tokens / cost are truly additive per call.
-            ctx.assistant_message.tokens_input = event.usage.get("input_tokens", 0)
-            ctx.assistant_message.tokens_output += event.usage.get("output_tokens", 0)
-            ctx.assistant_message.tokens_reasoning += event.usage.get("reasoning_tokens", 0)
-            ctx.assistant_message.tokens_cache_read = event.usage.get("cache_read_tokens", 0)
-            ctx.assistant_message.tokens_cache_write = event.usage.get("cache_write_tokens", 0)
-            ctx.assistant_message.cost += event.cost
-            ctx.assistant_message.raw_usage = event.raw_usage
-
-        elif isinstance(event, llmmod.ErrorEvent):
-            logger.error(
-                "LLM error",
-                error=event.error,
-                error_code=event.error_code,
-                retryable=event.retryable,
-            )
-            ctx.assistant_message.error = {
-                "message": event.error,
-                "code": event.error_code,
-                "retryable": event.retryable,
-                "status_code": event.status_code,
-            }
-            ctx.should_break = True
-            # Any tool calls that were partially streamed before the error
-            # must be surfaced as failed so the doom-loop guard & UI see
-            # them instead of silently discarding. They are not executed.
-            for partial_tp in list(ctx.toolcalls.values()):
-                if partial_tp.state.get("status") in (None, "pending"):
-                    partial_tp.state["status"] = "error"
-                    partial_tp.state["is_error"] = True
-                    partial_tp.state["output"] = f"LLM stream aborted before tool args finalised: {event.error}"
-                    partial_tp.time_completed = int(time.time() * 1000)
-                    if partial_tp not in ctx.parts:
-                        ctx.parts.append(partial_tp)
-                    yield ProcessorEvent(type="tool_done", data={
-                        "tool": partial_tp.tool,
-                        "call_id": partial_tp.tool_call_id,
-                        "status": "error",
-                        "output": partial_tp.state["output"],
-                        "input": partial_tp.state.get("input", {}),
-                    })
-            # Drop the pending list so the executor phase does not try to
-            # run a partially-formed call.
             tool_calls_pending.clear()
-            yield ProcessorEvent(type="error", data={
-                "message": event.error,
-                "code": event.error_code,
-                "retryable": event.retryable,
-                "status_code": event.status_code,
-            })
-            break
+            parts.clear()
+            text_length = 0
+            last_error_event = None
+            last_exception = None
+            # Clear partial tool calls from previous failed attempt in ctx
+            ctx.toolcalls.clear()
 
-    # Execute tool calls
+        try:
+            async for event in llmmod.stream(stream_input):
+                if isinstance(event, llmmod.ReasoningDelta):
+                    if current_reasoning is None:
+                        current_reasoning = create_reasoning_part(ctx.session_id, ctx.assistant_message.id)
+                        parts.append(current_reasoning)
+                    current_reasoning.content += event.text
+                    await ctx.bus.publish(PART_DELTA, {
+                        "session_id": ctx.session_id,
+                        "message_id": ctx.assistant_message.id,
+                        "part_id": current_reasoning.id,
+                        "field": "content",
+                        "delta": event.text,
+                    })
+                    yield ProcessorEvent(type="reasoning_delta", data={"content": event.text})
+
+                elif isinstance(event, llmmod.TextDelta):
+                    if current_text is None:
+                        current_text = create_text_part(ctx.session_id, ctx.assistant_message.id)
+                        parts.append(current_text)
+                    current_text.content += event.text
+                    text_length += len(event.text)
+                    await ctx.bus.publish(PART_DELTA, {
+                        "session_id": ctx.session_id,
+                        "message_id": ctx.assistant_message.id,
+                        "part_id": current_text.id,
+                        "field": "content",
+                        "delta": event.text,
+                    })
+                    yield ProcessorEvent(type="text_delta", data={"content": event.text})
+
+                elif isinstance(event, llmmod.ToolCallPartial):
+                    tp = create_tool_part(ctx.session_id, ctx.assistant_message.id, event.tool_name, event.tool_call_id)
+                    tp.state = {"status": "pending", "input": {}}
+                    ctx.toolcalls[event.tool_call_id] = tp
+                    parts.append(tp)
+                    current_reasoning = None
+                    current_text = None
+                    yield ProcessorEvent(type="tool_start", data={
+                        "tool": event.tool_name,
+                        "call_id": event.tool_call_id,
+                    })
+
+                elif isinstance(event, llmmod.ToolCallArgsPartial):
+                    tp_partial = ctx.toolcalls.get(event.tool_call_id)
+                    if tp_partial:
+                        raw = tp_partial.state.get("_raw_args", "") + event.args_delta
+                        tp_partial.state["_raw_args"] = raw
+
+                elif isinstance(event, llmmod.ToolCallDelta):
+                    tp_delta = ctx.toolcalls.get(event.tool_call_id)
+                    if tp_delta:
+                        try:
+                            parsed = json.loads(event.args) if event.args else {}
+                            if not isinstance(parsed, dict):
+                                logger.warn("tool args parsed to non-dict", tool=tp_delta.tool, type=type(parsed).__name__)
+                                tp_delta.state["input"] = {}
+                            else:
+                                tp_delta.state["input"] = parsed
+                        except json.JSONDecodeError as e:
+                            logger.error("malformed tool arguments", tool=tp_delta.tool, error=str(e))
+                            tp_delta.state["input"] = {}
+                            tp_delta.state["_parse_error"] = str(e)
+                        tool_calls_pending.append(tp_delta)
+
+                elif isinstance(event, llmmod.FinishEvent):
+                    # input_tokens / cache_* are absolute totals per call (contain full context),
+                    # so we keep the *last* call's value rather than accumulating.
+                    # output_tokens / reasoning_tokens / cost are truly additive per call.
+                    ctx.assistant_message.tokens_input = event.usage.get("input_tokens", 0)
+                    ctx.assistant_message.tokens_output += event.usage.get("output_tokens", 0)
+                    ctx.assistant_message.tokens_reasoning += event.usage.get("reasoning_tokens", 0)
+                    ctx.assistant_message.tokens_cache_read = event.usage.get("cache_read_tokens", 0)
+                    ctx.assistant_message.tokens_cache_write = event.usage.get("cache_write_tokens", 0)
+                    ctx.assistant_message.cost += event.cost
+                    ctx.assistant_message.raw_usage = event.raw_usage
+
+                elif isinstance(event, llmmod.ErrorEvent):
+                    last_error_event = event
+                    logger.error(
+                        "LLM stream error",
+                        attempt=attempt, max_retries=MAX_LLM_RETRIES,
+                        error=event.error,
+                        error_code=event.error_code,
+                        retryable=event.retryable,
+                    )
+                    # Break inner stream loop — will decide whether to retry below
+                    break
+            else:
+                # Stream completed without ErrorEvent → success
+                # Fall through to tool execution phase
+                break  # break outer retry loop
+
+            # If we got here via ErrorEvent break (not else), handle retry decision
+            if last_error_event is not None:
+                if attempt < MAX_LLM_RETRIES:
+                    continue  # retry
+                # All retries exhausted — surface the error
+                _surface_llm_error(ctx, last_error_event, tool_calls_pending, parts)
+                yield ProcessorEvent(type="error", data={
+                    "message": last_error_event.error,
+                    "code": last_error_event.error_code,
+                    "retryable": last_error_event.retryable,
+                    "status_code": last_error_event.status_code,
+                })
+                return
+
+        except Exception as e:
+            last_exception = str(e)
+            logger.error(
+                "LLM call exception",
+                attempt=attempt, max_retries=MAX_LLM_RETRIES,
+                error=last_exception,
+            )
+            if attempt < MAX_LLM_RETRIES:
+                continue  # retry
+            # All retries exhausted
+            ctx.assistant_message.error = {"message": last_exception, "retryable": True}
+            ctx.should_break = True
+            yield ProcessorEvent(type="error", data={
+                "message": last_exception,
+                "code": None,
+                "retryable": True,
+                "status_code": None,
+            })
+            return
+    else:
+        # All retries exhausted without success — already handled above, but safety net
+        return
+
+    # === Execute tool calls ===
     if tool_calls_pending:
         has_failure = False
         blocked = False
