@@ -459,15 +459,14 @@ async def prompt(
                     )
                 await _aio.to_thread(_save_compact_event)
 
-            # Build system-reminder messages (skills + memory + date)
-            # Appended directly to `messages` so they are persisted and survive
-            # history rebuild, ensuring incremental updates remain coherent.
+            # Build system-reminder (skills + memory + date) and attach it
+            # to the current user message instead of injecting a separate message.
+            # This keeps ContextViewer clean and avoids visual separation.
+            # Still track the reminder dict for DB persistence as a meta message.
             reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
             if reminder_text:
-                reminder_msg_dict = {"role": "user", "content": reminder_text}
-                messages.append(reminder_msg_dict)
-                # Track for DB persistence
-                _reminder_user_messages.append(reminder_msg_dict)
+                _attach_reminder_to_last_user_message(messages, reminder_text)
+                _reminder_user_messages.append({"content": reminder_text})
             iter_messages = messages
 
             stream_input = llmmod.StreamInput(
@@ -903,6 +902,31 @@ def _build_system_reminders(
 
     reminder = "\n".join(sections)
     return reminder, current_skills, current_date
+
+
+def _attach_reminder_to_last_user_message(
+    messages: list[dict[str, Any]],
+    reminder_text: str,
+) -> None:
+    """Append system-reminder text to the last user message's content.
+
+    Supports both plain-string and multimodal content-list formats.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            content = messages[i]["content"]
+            if isinstance(content, str):
+                messages[i]["content"] = content + "\n\n" + reminder_text
+            elif isinstance(content, list):
+                # Multimodal (image/pdf/audio): append a text part
+                content.append({"type": "text", "text": reminder_text})
+            else:
+                # Fallback: coerce to string
+                messages[i]["content"] = str(content) + "\n\n" + reminder_text
+            return
+    # No user message found — should not happen in normal flow, but
+    # inject as fallback to preserve the reminder information.
+    messages.append({"role": "user", "content": reminder_text})
 
 
 def _build_skills_reminder(
