@@ -1,0 +1,49 @@
+{
+  "provider": {
+    "deepseek": {
+      "name": "DeepSeek",
+      "api": "https://api.deepseek.com",
+      "options": {
+        "apiKey": "YOUR_API_KEY_HERE"
+      },
+      "models": {
+        "deepseek-chat": {
+          "id": "deepseek-chat",
+          "name": "DeepSeek Chat",
+          "tool_call": true,
+          "temperature": true,
+          "thinking": {
+            "type": "disabled"
+          },
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        }
+      }
+    },
+    "openai": {
+      "name": "OpenAI",
+      "api": "https://api.openai.com/v1",
+      "options": {
+        "apiKey": "YOUR_API_KEY_HERE"
+      },
+      "models": {
+        "gpt-4o": {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "tool_call": true,
+          "temperature": true,
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        }
+      }
+    }
+  },
+  "model": "deepseek/deepseek-chat",
+  "sessionMemory": {
+    "enabled": true
+  }
+}
