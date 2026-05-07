@@ -395,6 +395,8 @@ uv run mycode run --message "hello"
 
 ![多 Agent 编排设计](./docs/images/web-ui-agent-orchestration.png)
 
+> **注意**：多 Agent 编排功能目前还在进一步完善中，详细使用文档请参考 [`docs/multi-agent-user-guide.md`](./docs/multi-agent-user-guide.md)。
+
 ### 使用方式
 
 ```bash
