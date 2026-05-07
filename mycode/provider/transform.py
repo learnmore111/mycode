@@ -133,7 +133,7 @@ def build_litellm_kwargs(model: Model, variant: str | None = None) -> dict[str, 
     if tp is not None:
         kwargs["top_p"] = tp
 
-    # Reasoning
+    # Reasoning / thinking params (Anthropic/OpenAI/Google style)
     reasoning = reasoning_params(model, variant)
     if reasoning:
         kwargs.update(reasoning)
@@ -142,4 +142,20 @@ def build_litellm_kwargs(model: Model, variant: str | None = None) -> dict[str, 
     if model.headers:
         kwargs.setdefault("extra_headers", {}).update(model.headers)
 
+    # DeepSeek-style thinking via extra_body (e.g., {"thinking": {"type": "enabled"}})
+    # This is needed for providers that accept thinking as a non-standard body param.
+    _apply_thinking_extra_body(model, kwargs)
+
     return kwargs
+
+
+def _apply_thinking_extra_body(model: Model, kwargs: dict[str, Any]) -> None:
+    """Inject model-level ``thinking`` config into extra_body if present.
+
+    Used for DeepSeek-style thinking param that must be sent via
+    ``extra_body={"thinking": {"type": "enabled"}}``.
+    """
+    thinking = model.thinking
+    if not isinstance(thinking, dict):
+        return
+    kwargs.setdefault("extra_body", {})["thinking"] = thinking

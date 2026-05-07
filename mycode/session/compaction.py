@@ -12,6 +12,7 @@ Cache-friendly design:
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections import namedtuple
@@ -515,23 +516,52 @@ async def compact(
         tools=tools,  # same tools as main agent → cache key match
         tool_choice="none",  # prevent tool calls at API level
         temperature=0.0,
-        max_tokens=4096,
+        max_tokens=8196,
         api_key=api_key,
         api_base=api_base,
     )
 
-    # Step 5: consume stream and collect summary text
+    # Step 5: consume stream and collect summary text (with retry, up to 3 attempts)
+    MAX_COMPACT_RETRIES = 3
+    COMPACT_RETRY_DELAY = 1.0  # seconds between retries
+
     summary_text = ""
-    try:
-        async for event in llmmod.stream(stream_input):
-            if isinstance(event, llmmod.TextDelta):
-                summary_text += event.text
-            elif isinstance(event, llmmod.ErrorEvent):
-                logger.error("compaction LLM stream error", error=event.error)
-                return messages, _empty_metrics  # fallback: return pruned but unsummarised
-    except Exception as e:
-        logger.error("compaction LLM call failed", error=str(e))
-        return messages, _empty_metrics  # fallback
+    last_error: str | None = None
+    for attempt in range(1, MAX_COMPACT_RETRIES + 1):
+        try:
+            summary_text = ""
+            async for event in llmmod.stream(stream_input):
+                if isinstance(event, llmmod.TextDelta):
+                    summary_text += event.text
+                elif isinstance(event, llmmod.ErrorEvent):
+                    last_error = event.error
+                    logger.error(
+                        "compaction LLM stream error", attempt=attempt, max_retries=MAX_COMPACT_RETRIES,
+                        error=last_error,
+                    )
+                    break  # break inner loop, will retry or fall through
+            else:
+                # Stream completed without ErrorEvent → success (or empty)
+                break  # break outer retry loop
+
+            # If we got an ErrorEvent and have retries left, wait and retry
+            if attempt < MAX_COMPACT_RETRIES:
+                await asyncio.sleep(COMPACT_RETRY_DELAY)
+                continue
+            # No more retries, fall through to fallback below
+        except Exception as e:
+            last_error = str(e)
+            logger.error(
+                "compaction LLM call failed", attempt=attempt, max_retries=MAX_COMPACT_RETRIES,
+                error=last_error,
+            )
+            if attempt < MAX_COMPACT_RETRIES:
+                await asyncio.sleep(COMPACT_RETRY_DELAY)
+                continue
+    else:
+        # All retries exhausted — loop completed without break via successful stream
+        logger.warn("compaction LLM call failed after all retries", max_retries=MAX_COMPACT_RETRIES, error=last_error)
+        return messages, _empty_metrics  # fallback: return pruned but unsummarised
 
     if not summary_text.strip():
         logger.warn("compaction produced empty summary")

@@ -620,6 +620,24 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
         for p in parts_rows:
             parts_by_msg.setdefault(p.message_id, []).append(p)
 
+        import re as _re
+
+        reminder_re = _re.compile(r"<system-reminder>.*?</system-reminder>", _re.DOTALL)
+
+        def _append_reminder_to_last_user(reminder_text: str) -> bool:
+            """Merge a persisted pure reminder message back into the previous user turn."""
+            for entry in reversed(result):
+                if entry.get("role") != "user":
+                    continue
+                content = entry.get("content")
+                if isinstance(content, str):
+                    entry["content"] = f"{content}\n\n{reminder_text}" if content else reminder_text
+                    return True
+                if isinstance(content, list):
+                    content.append({"type": "text", "text": reminder_text})
+                    return True
+            return False
+
         result: list[dict[str, Any]] = []
 
         for msg in messages_rows:
@@ -633,6 +651,15 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
 
             if msg.role == "user":
                 text_content = "".join(p.content or "" for p in text_parts)
+
+                # Persisted pure system-reminder meta messages belong to the
+                # preceding user turn. Re-attach them so rebuilt history
+                # matches the runtime context sent to the model.
+                stripped = reminder_re.sub("", text_content).strip()
+                if not stripped and "<system-reminder>" in text_content:
+                    _append_reminder_to_last_user(text_content)
+                    continue
+
                 file_parts = [p for p in msg_parts if p.type == "file"]
                 if file_parts:
                     # Multimodal user message — rebuild OpenAI content-list

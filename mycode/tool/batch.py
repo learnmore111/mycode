@@ -28,7 +28,7 @@ logger = logmod.create(service="tool.batch")
 MAX_BATCH_SIZE = 25
 
 # Tools that cannot appear inside a batch
-_EXCLUDED_TOOLS = frozenset({"batch", "task", "todo", "question"})
+_EXCLUDED_TOOLS = frozenset({"batch", "todo", "question"})
 
 
 class BatchCallItem(BaseModel):
