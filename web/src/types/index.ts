@@ -142,6 +142,7 @@ export interface ContextMessageInfo {
   estimated_tokens: number
   is_compaction_summary?: boolean
   is_system_reminder?: boolean
+  system_reminder_content?: string
   tool_call_id?: string
   tool_name?: string
   tool_calls?: Array<{ id: string; tool: string; args_preview: string }>

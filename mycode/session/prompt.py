@@ -858,21 +858,24 @@ def _build_system_reminders(
 ) -> tuple[str, list[dict[str, str]], str]:
     """Build <system-reminder> content for skills, memory, and date.
 
+    All sections are merged into a **single** <system-reminder> block so
+    the UI can display it as one clean unit.
+
     Returns (reminder_text, current_skills_snapshot, current_date).
 
     Skills use an incremental strategy:
-    - First call (prev_skills is None) or modifications/deletions → full list
-    - Only additions → only the new skills
-    - No change → reuse previous text (empty skills section)
+    - First call (prev_skills is None) or modifications/deletions -> full list
+    - Only additions -> only the new skills
+    - No change -> reuse previous text (empty skills section)
 
     Date uses an incremental strategy:
-    - First call (prev_date is None) → full date
-    - Date changed → date update reminder
-    - No change → omit
+    - First call (prev_date is None) -> full date
+    - Date changed -> date update reminder
+    - No change -> omit
 
     Memory is always included if found.
     """
-    sections: list[str] = []
+    inner_sections: list[str] = []
 
     # --- Skills section ---
     try:
@@ -884,23 +887,25 @@ def _build_system_reminders(
 
     skills_text = _build_skills_reminder(current_skills, prev_skills)
     if skills_text:
-        sections.append(skills_text)
+        inner_sections.append(skills_text)
 
     # --- Date section ---
     current_date = time.strftime("%A, %b %d, %Y")
     date_text = _build_date_reminder(current_date, prev_date)
     if date_text:
-        sections.append(date_text)
+        inner_sections.append(date_text)
 
     # --- Memory section ---
     memory_text = _build_memory_reminder(prompt_input)
     if memory_text:
-        sections.append(memory_text)
+        inner_sections.append(memory_text)
 
-    if not sections:
+    if not inner_sections:
         return "", current_skills, current_date
 
-    reminder = "\n".join(sections)
+    # Wrap all sections in a single <system-reminder> tag
+    body = "\n\n".join(inner_sections)
+    reminder = f"<system-reminder>\n{body}\n</system-reminder>"
     return reminder, current_skills, current_date
 
 
@@ -933,7 +938,7 @@ def _build_skills_reminder(
     current: list[dict[str, str]],
     prev: list[dict[str, str]] | None,
 ) -> str:
-    """Build the skills system-reminder section.
+    """Build the skills reminder section (plain content, no wrapper tags).
 
     Returns empty string if no skills exist or nothing changed.
     """
@@ -942,11 +947,10 @@ def _build_skills_reminder(
 
     # First call — full list
     if prev is None:
-        lines = ["<system-reminder>", "The following skills are available for use with the `skill` tool:", ""]
+        lines = ["The following skills are available for use with the `skill` tool:", ""]
         for s in current:
             desc = s["description"]
             lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
-        lines.append("</system-reminder>")
         return "\n".join(lines)
 
     # No change
@@ -965,39 +969,37 @@ def _build_skills_reminder(
         new_skills = [s for s in current if s["name"] not in prev_names]
         if not new_skills:
             return ""
-        lines = ["<system-reminder>", "New skills available:", ""]
+        lines = ["New skills available:", ""]
         for s in new_skills:
             desc = s["description"]
             lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
-        lines.append("</system-reminder>")
         return "\n".join(lines)
 
     # Modification or deletion — full list
-    lines = ["<system-reminder>", "The following skills are available for use with the `skill` tool:", ""]
+    lines = ["The following skills are available for use with the `skill` tool:", ""]
     for s in current:
         desc = s["description"]
         lines.append(f"- {s['name']}: {desc}" if desc else f"- {s['name']}")
-    lines.append("</system-reminder>")
     return "\n".join(lines)
 
 
 def _build_date_reminder(current: str, prev: str | None) -> str:
-    """Build the date system-reminder section.
+    """Build the date reminder section (plain content, no wrapper tags).
 
     Incremental strategy:
-    - First call (prev is None) → full date
-    - Date changed → date update reminder
-    - No change → empty string (omit)
+    - First call (prev is None) -> full date
+    - Date changed -> date update reminder
+    - No change -> empty string (omit)
     """
     if prev is None:
-        return f"<system-reminder>\nToday's date: {current}\n</system-reminder>"
+        return f"Today's date: {current}"
     if current != prev:
-        return f"<system-reminder>\nDate has changed. Today's date is now: {current}\n</system-reminder>"
+        return f"Date has changed. Today's date is now: {current}"
     return ""
 
 
 def _build_memory_reminder(prompt_input: PromptInput) -> str:
-    """Build the memory system-reminder section.
+    """Build the memory reminder section (plain content, no wrapper tags).
 
     Returns empty string if no relevant memories found.
     """
@@ -1024,7 +1026,7 @@ def _build_memory_reminder(prompt_input: PromptInput) -> str:
 
         context = format_memories_for_context(memories, include_freshness=True)
         if context:
-            return f"<system-reminder>\n<relevant_memories>\n{context}\n</relevant_memories>\n</system-reminder>"
+            return f"<relevant_memories>\n{context}\n</relevant_memories>"
     except Exception:
         pass  # Memory injection is best-effort
     return ""
