@@ -13,6 +13,7 @@ import {
   BarChart3,
   Layers,
   ArrowDown,
+  Info,
 } from 'lucide-react'
 import type { ContextSnapshot, ContextMessageInfo, CompactionEvent } from '../types'
 import { getCompactionEvents } from '../api/compaction'
@@ -184,7 +185,6 @@ function Section({
   title,
   icon,
   tokens,
-  cacheStatus,
   defaultOpen = false,
   badge,
   children,
@@ -192,7 +192,6 @@ function Section({
   title: string
   icon: React.ReactNode
   tokens?: number
-  cacheStatus?: string
   defaultOpen?: boolean
   badge?: React.ReactNode
   children: React.ReactNode
@@ -214,17 +213,6 @@ function Section({
         {tokens != null && (
           <span className="text-xs text-ink-muted font-mono tabular-nums">
             {tokens.toLocaleString()} <span className="text-ink-faint">tok</span>
-          </span>
-        )}
-        {cacheStatus && (
-          <span
-            className={`text-xxs font-semibold px-2 py-0.5 rounded-full ${
-              cacheStatus === 'cached'
-                ? 'bg-status-success-light text-status-success'
-                : 'bg-status-info-light text-status-info'
-            }`}
-          >
-            {cacheStatus === 'cached' ? '✓ 已缓存' : '● 新'}
           </span>
         )}
       </button>
@@ -283,20 +271,25 @@ function MessageItem({ msg }: { msg: ContextMessageInfo }) {
         <span className="text-xxs text-ink-muted font-mono tabular-nums">
           {msg.estimated_tokens.toLocaleString()} tok
         </span>
-        <div
-          className={`w-2 h-2 rounded-full ${
-            msg.cache_status === 'cached' ? 'bg-status-success' : 'bg-status-info'
-          }`}
-          title={msg.cache_status === 'cached' ? '已缓存' : '新内容'}
-        />
       </button>
-      {expanded && msg.content && (
-        <div className="px-3 pb-3">
-          <pre className="text-xs bg-surface-2 rounded-xl p-3.5 border border-line overflow-auto max-h-64 whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
-            {msg.content_truncated
-              ? msg.content + `\n\n... (共 ${msg.full_length?.toLocaleString()} 字符)`
-              : msg.content}
-          </pre>
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2">
+          {/* User original input (if message has both input + reminder) */}
+          {msg.content && msg.content !== '(系统提醒)' && (
+            <pre className="text-xs bg-surface-2 rounded-xl p-3.5 border border-line overflow-auto max-h-64 whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
+              {msg.content_truncated
+                ? msg.content + `\n\n... (共 ${msg.full_length?.toLocaleString()} 字符)`
+                : msg.content}
+            </pre>
+          )}
+          {/* System reminder content — styled block instead of raw XML */}
+          {msg.is_system_reminder && msg.system_reminder_content ? (
+            <div className="bg-status-info-light/30 border border-status-info/20 rounded-xl p-3.5 overflow-auto max-h-64">
+              <pre className="text-xs whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
+                {msg.system_reminder_content}
+              </pre>
+            </div>
+          ) : null}
           {msg.tool_calls?.map((tc) => (
             <div key={tc.id} className="mt-2 flex items-center gap-2 text-xxs text-ink-muted font-mono">
               <Wrench size={10} className="text-status-warning" />
@@ -480,7 +473,7 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             <div className="flex-1 grid grid-cols-2 gap-2">
               <StatCard
                 icon={<BarChart3 size={13} />}
-                label="估算上下文"
+                label="上下文估算"
                 value={summary.total_estimated_tokens.toLocaleString()}
                 sub={summary.context_limit > 0 ? `${summary.usage_percent.toFixed(1)}%` : undefined}
                 color="text-accent"
@@ -504,31 +497,26 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
                     icon={<Zap size={13} />}
                     label="缓存命中"
                     value={cacheReadTokens.toLocaleString()}
-                    sub={`${cacheHitRate.toFixed(1)}%`}
+                    sub={cacheReadTokens > 0 ? `${cacheHitRate.toFixed(1)}%` : '未返回'}
                     color="text-status-success"
                   />
-                  <StatCard
-                    icon={<DollarSign size={13} />}
-                    label="本轮费用"
-                    value={`$${actual_usage.total_cost.toFixed(4)}`}
-                    color="text-status-warning"
-                  />
+                  {actual_usage.total_cost > 0 && (
+                    <StatCard
+                      icon={<DollarSign size={13} />}
+                      label="费用"
+                      value={`$${actual_usage.total_cost.toFixed(4)}`}
+                      color="text-status-warning"
+                    />
+                  )}
                 </>
               ) : (
-                <>
-                  <StatCard
-                    icon={<Zap size={13} />}
-                    label="已缓存"
-                    value={summary.cached_estimated_tokens.toLocaleString()}
-                    color="text-status-success"
-                  />
-                  <StatCard
-                    icon={<Layers size={13} />}
-                    label="新内容"
-                    value={summary.new_estimated_tokens.toLocaleString()}
-                    color="text-status-info"
-                  />
-                </>
+                <div className="col-span-2 flex items-center gap-2.5 px-4 py-3 bg-surface-2 rounded-xl border border-line-subtle text-xs text-ink-muted">
+                  <Info size={14} className="text-ink-faint flex-shrink-0" />
+                  <span>
+                    等待 API 返回真实 token 用量数据（上一轮迭代完成后显示）。
+                    若提供商未返回缓存字段，可能使用了隐式缓存。
+                  </span>
+                </div>
               )}
             </div>
           </div>
@@ -580,7 +568,6 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             title="系统提示词"
             icon={<FileText size={13} />}
             tokens={system.estimated_tokens}
-            cacheStatus={system.cache_status}
           >
             {system.content && !system.content.startsWith('(') ? (
               <pre className="text-xs bg-surface-2 rounded-xl p-3.5 border border-line overflow-auto max-h-64 whitespace-pre-wrap text-ink-tertiary mt-3 leading-relaxed font-mono">
@@ -601,7 +588,6 @@ export default function ContextViewer({ snapshot, sessionId, onClose }: Props) {
             title={`工具 (${tools.count})`}
             icon={<Wrench size={13} />}
             tokens={tools.estimated_tokens}
-            cacheStatus={tools.cache_status}
           >
             {tools.names.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 mt-3">

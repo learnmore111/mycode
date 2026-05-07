@@ -139,10 +139,10 @@ export interface ContextMessageInfo {
   index: number
   role: string
   content?: string
-  cache_status: 'cached' | 'new'
   estimated_tokens: number
   is_compaction_summary?: boolean
   is_system_reminder?: boolean
+  system_reminder_content?: string
   tool_call_id?: string
   tool_name?: string
   tool_calls?: Array<{ id: string; tool: string; args_preview: string }>
@@ -154,13 +154,11 @@ export interface ContextSnapshot {
   system: {
     content: string
     estimated_tokens: number
-    cache_status: string
   }
   tools: {
     count: number
     names: string[]
     estimated_tokens: number
-    cache_status: string
   }
   messages: ContextMessageInfo[]
   compaction: {
@@ -169,8 +167,6 @@ export interface ContextSnapshot {
   }
   summary: {
     total_estimated_tokens: number
-    cached_estimated_tokens: number
-    new_estimated_tokens: number
     context_limit: number
     usage_percent: number
   }
