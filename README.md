@@ -381,6 +381,20 @@ uv run mycode run --message "hello"
 | 文件变更管理 | 暂存 AI 修改的文件 + 批量确认/回退 |
 | 单端口部署 | 构建后静态文件集成到 FastAPI,API + UI 同一端口 |
 
+### 界面预览
+
+**会话聊天界面**
+
+![会话聊天界面](./docs/images/web-ui-session.png)
+
+**消息流与 Skill 注入**
+
+![消息流与 Skill 注入](./docs/images/web-ui-skills.png)
+
+**多 Agent 编排设计**
+
+![多 Agent 编排设计](./docs/images/web-ui-agent-orchestration.png)
+
 ### 使用方式
 
 ```bash
