@@ -272,13 +272,24 @@ function MessageItem({ msg }: { msg: ContextMessageInfo }) {
           {msg.estimated_tokens.toLocaleString()} tok
         </span>
       </button>
-      {expanded && msg.content && (
-        <div className="px-3 pb-3">
-          <pre className="text-xs bg-surface-2 rounded-xl p-3.5 border border-line overflow-auto max-h-64 whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
-            {msg.content_truncated
-              ? msg.content + `\n\n... (共 ${msg.full_length?.toLocaleString()} 字符)`
-              : msg.content}
-          </pre>
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2">
+          {/* User original input (if message has both input + reminder) */}
+          {msg.content && msg.content !== '(系统提醒)' && (
+            <pre className="text-xs bg-surface-2 rounded-xl p-3.5 border border-line overflow-auto max-h-64 whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
+              {msg.content_truncated
+                ? msg.content + `\n\n... (共 ${msg.full_length?.toLocaleString()} 字符)`
+                : msg.content}
+            </pre>
+          )}
+          {/* System reminder content — styled block instead of raw XML */}
+          {msg.is_system_reminder && msg.system_reminder_content ? (
+            <div className="bg-status-info-light/30 border border-status-info/20 rounded-xl p-3.5 overflow-auto max-h-64">
+              <pre className="text-xs whitespace-pre-wrap text-ink-secondary leading-relaxed font-mono">
+                {msg.system_reminder_content}
+              </pre>
+            </div>
+          ) : null}
           {msg.tool_calls?.map((tc) => (
             <div key={tc.id} className="mt-2 flex items-center gap-2 text-xxs text-ink-muted font-mono">
               <Wrench size={10} className="text-status-warning" />

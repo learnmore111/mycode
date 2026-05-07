@@ -17,12 +17,16 @@ import json
 from typing import Any
 
 from mycode.session.compaction import estimate_tokens
+import re as _re
 
 TOOL_OUTPUT_PREVIEW_LIMIT = 500  # chars — preview shown in UI for tool outputs
 TOOL_ARGS_PREVIEW_LIMIT = 200    # chars — preview shown for tool call arguments
 
 # Signature used to detect compaction summary messages.
 _COMPACTION_MARKER = "continued from a previous conversation"
+
+# Regex to extract <system-reminder>...</system-reminder> blocks from content.
+_REMINDER_RE = _re.compile(r"<system-reminder>(.*?)</system-reminder>", _re.DOTALL)
 
 
 def build_context_snapshot(
@@ -149,9 +153,22 @@ def build_context_snapshot(
             info["is_compaction_summary"] = True
             compaction_boundary_index = idx
 
-        # Detect system-reminder injection
-        if "<system-reminder>" in content:
+        # Detect and extract <system-reminder> injection.
+        # The reminder text is appended to user message content by
+        # _attach_reminder_to_last_user_message().  We extract it so the
+        # frontend can render it cleanly (badge + styled block) instead of
+        # showing raw XML tags.
+        reminder_matches = _REMINDER_RE.findall(content)
+        if reminder_matches:
             info["is_system_reminder"] = True
+            info["system_reminder_content"] = "\n".join(
+                r.strip() for r in reminder_matches if r.strip()
+            )
+            # Strip <system-reminder> blocks from displayed content
+            display_content = _REMINDER_RE.sub("", content).strip()
+            info["content"] = display_content or "(系统提醒)"
+            info["content_truncated"] = False
+            info["full_length"] = len(display_content)
 
         message_infos.append(info)
 
