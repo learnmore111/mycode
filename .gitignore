@@ -15,6 +15,7 @@ opencode.jsonc
 mycode.json
 mycode.jsonc
 .mycode/
+.logs/
 kimi-cli
 agent-mem-note
 node_modules/
