@@ -285,7 +285,7 @@ def test_load_description_nonexistent():
 
 def test_load_description_all_tools():
     """All built-in tools should have description templates."""
-    tool_ids = ["bash", "read", "edit", "write", "grep", "glob", "webfetch", "websearch", "question", "todo", "skill", "batch"]
+    tool_ids = ["bash", "read", "edit", "write", "grep", "glob", "task", "webfetch", "websearch", "question", "todo", "skill", "batch"]
     for tid in tool_ids:
         desc = load_description(tid)
         assert desc, f"Missing description template for {tid}"

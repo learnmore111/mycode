@@ -58,9 +58,9 @@ def provider_prompt(model: Model) -> list[str]:
 def _load_project_guidance(worktree: str) -> str | None:
     """Load project guidance file if present.
 
-    Looks for mycode.md, codebuddy.md or CLAUDE.md in the project root.
+    Looks for codebuddy.md or CLAUDE.md in the project root.
     """
-    for name in ("mycode.md", "codebuddy.md", "CLAUDE.md", "Claude.md"):
+    for name in ("codebuddy.md", "CLAUDE.md", "Claude.md"):
         path = Path(worktree) / name
         if path.exists():
             content = path.read_text(encoding="utf-8").strip()
@@ -101,18 +101,17 @@ def build(
 ) -> list[str]:
     """Build the complete system prompt list for an LLM call."""
     parts: list[str] = []
-    dynamic_parts: list[str] = []
 
     # Model-specific prompt
     if model:
         parts.extend(provider_prompt(model))
-        dynamic_parts.extend(environment(model))
+        parts.extend(environment(model))
     else:
         # Fallback if no model specified
         ctx = current_or_none()
         cwd = ctx.directory if ctx else os.getcwd()
         worktree = ctx.worktree if ctx else cwd
-        dynamic_parts.append(
+        parts.append(
             f"You are an AI coding assistant.\n"
             f"Working directory: {cwd}\nProject root: {worktree}\n"
             f"Platform: {platform.system()}"
@@ -121,15 +120,13 @@ def build(
     if agent_prompt:
         parts.append(agent_prompt)
 
-    # Project guidance (e.g. mycode.md / codebuddy.md / CLAUDE.md)
+    # Project guidance (e.g. codebuddy.md / CLAUDE.md)
     ctx = current_or_none()
     worktree = ctx.worktree if ctx else os.getcwd()
     guidance = _load_project_guidance(worktree)
     if guidance:
-        dynamic_parts.append(f"<project_guidance>\n{guidance}\n</project_guidance>")
+        parts.append(f"<project_guidance>\n{guidance}\n</project_guidance>")
 
     if instructions:
-        dynamic_parts.extend(instructions)
-
-    parts.extend(dynamic_parts)
+        parts.extend(instructions)
     return parts

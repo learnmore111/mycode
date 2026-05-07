@@ -267,109 +267,6 @@ def _dashscope_explicit_cache_content(text: str) -> list[dict[str, Any]]:
     }]
 
 
-def _add_cache_control_to_content(
-    content: str | list[dict[str, Any]] | None,
-) -> str | list[dict[str, Any]]:
-    """Inject a cache_control marker into a message's content field.
-
-    Handles three formats:
-      - ``None`` / falsy → returned as-is (e.g. assistant with only tool_calls)
-      - ``str`` → wrapped into a single content block with the marker
-      - ``list`` (existing content blocks) → marker appended to the last text block,
-        or a new text block is created if none exists.
-    """
-    if not content:
-        return content
-
-    if isinstance(content, str):
-        return [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
-
-    # list of content blocks — mutate a shallow copy
-    blocks = list(content)
-    # Find the last text-type block to attach the marker to
-    for idx in range(len(blocks) - 1, -1, -1):
-        block = blocks[idx]
-        if isinstance(block, dict) and block.get("type") == "text":
-            blocks[idx] = {**block, "cache_control": {"type": "ephemeral"}}
-            return blocks
-
-    # No text block found; append an empty anchor block
-    blocks.append({"type": "text", "text": "", "cache_control": {"type": "ephemeral"}})
-    return blocks
-
-
-_MAX_CACHE_MARKERS = 4  # DashScope per-request limit
-
-
-def _inject_dashscope_cache_markers(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Place DashScope explicit-cache markers at the optimal prefix boundary.
-
-    **Strategy**
-
-    In an agentic loop the *last* message in ``messages`` is always the
-    newest turn (typically a user message carrying a system-reminder or a fresh
-    instruction).  Everything preceding it – system prompt, prior conversation
-    turns, tool results – forms a stable **prefix** that will be re-sent
-    verbatim on the next iteration.
-
-    We place **one** ``cache_control`` marker on the last message *before* the
-    final one.  DashScope then caches the entire prefix from the beginning of
-    the ``messages`` array up to that marker, so on subsequent requests only
-    the trailing new message incurs full input-token cost.
-
-    **Fallback** – when there are fewer than 2 messages (e.g. the very first
-    turn), we mark only the system message.
-
-    **Constraint** – DashScope allows at most :data:`_MAX_CACHE_MARKERS` markers
-    per request.  This function uses at most 2 (system + boundary).
-    """
-    if not messages:
-        return messages
-
-    result: list[dict[str, Any]] = []
-    n = len(messages)
-
-    for i, msg in enumerate(messages):
-        new_msg: dict[str, Any] = {k: v for k, v in msg.items()}
-
-        if i == 0 and new_msg.get("role") == "system":
-            # Always mark system prompt as cacheable
-            new_msg["content"] = _add_cache_control_to_content(new_msg.get("content"))
-        elif i == n - 2 and n >= 2:
-            # Boundary: last "historical" message before the newest one.
-            # This closes the cacheable prefix.
-            new_msg["content"] = _add_cache_control_to_content(new_msg.get("content"))
-
-        result.append(new_msg)
-
-    logger.debug(
-        "dashscope_cache_markers_injected",
-        total_messages=n,
-        marked_positions=[
-            i for i, m in enumerate(result)
-            if _msg_has_cache_control(m)
-        ],
-    )
-    return result
-
-
-def _msg_has_cache_control(msg: dict[str, Any]) -> bool:
-    """Check whether a message contains any cache_control in its content."""
-    content = msg.get("content")
-    if not content:
-        return False
-    if isinstance(content, str):
-        return False
-    if isinstance(content, list):
-        return any(
-            isinstance(block, dict) and "cache_control" in block
-            for block in content
-        )
-    return False
-
-
 def _should_use_dashscope_explicit_cache(stream_input: StreamInput) -> bool:
     """Whether this request should opt into DashScope explicit prompt caching."""
     model = stream_input.model
@@ -390,9 +287,13 @@ def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
     if stream_input.system:
         system_content = "\n\n".join(stream_input.system)
         if system_content.strip():
-            # For DashScope explicit-cache models, cache markers are injected
-            # later by _inject_dashscope_cache_markers() so we emit plain text here.
-            messages.append({"role": "system", "content": system_content})
+            if _should_use_dashscope_explicit_cache(stream_input):
+                messages.append({
+                    "role": "system",
+                    "content": _dashscope_explicit_cache_content(system_content),
+                })
+            else:
+                messages.append({"role": "system", "content": system_content})
 
     # Add conversation messages
     messages.extend(stream_input.messages)
@@ -424,24 +325,15 @@ async def _dashscope_explicit_cache_response(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
 ) -> AsyncGenerator[Any, None]:
-    """Create a DashScope OpenAI-compatible stream that preserves cache_control blocks.
-
-    Cache-control markers are injected at optimal prefix boundaries by
-    :func:`_inject_dashscope_cache_markers` before the request is sent,
-    so that the stable conversation history (system + prior turns) is
-    cached and only the newest message pays full input-token cost.
-    """
+    """Create a DashScope OpenAI-compatible stream that preserves cache_control blocks."""
     from openai import AsyncOpenAI
 
     from mycode.provider.transform import build_litellm_kwargs
 
-    # Inject cache_control markers at system prompt and history boundary
-    marked_messages = _inject_dashscope_cache_markers(messages)
-
     client = AsyncOpenAI(api_key=stream_input.api_key, base_url=stream_input.api_base)
     kwargs: dict[str, Any] = {
         "model": stream_input.model.api.id,
-        "messages": marked_messages,
+        "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
@@ -677,10 +569,6 @@ def _get_reasoning_tokens(usage: Any) -> int:
 
 def _get_cache_read_tokens(usage: Any) -> int:
     """Extract cache read tokens."""
-    # DeepSeek: usage.prompt_cache_hit_tokens
-    val = _usage_get(usage, "prompt_cache_hit_tokens", 0)
-    if val:
-        return val
     # Anthropic: usage.cache_read_input_tokens
     val = _usage_get(usage, "cache_read_input_tokens", 0)
     if val:
@@ -701,12 +589,7 @@ def _get_cache_read_tokens(usage: Any) -> int:
 
 
 def _get_cache_write_tokens(usage: Any) -> int:
-    """Extract cache write / miss tokens."""
-    # DeepSeek: usage.prompt_cache_miss_tokens
-    val = _usage_get(usage, "prompt_cache_miss_tokens", 0)
-    if val:
-        return val
-    # OpenAI/Anthropic style
+    """Extract cache write tokens."""
     val = _usage_get(usage, "cache_creation_input_tokens", 0)
     if val:
         return val

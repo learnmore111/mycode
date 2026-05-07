@@ -1,14 +1,9 @@
 """Context snapshot builder for UI context viewer.
 
 Builds a structured snapshot of the full context sent to the LLM on each
-iteration of the agentic loop.  This powers the frontend "context viewer"
+iteration of the agentic loop. This powers the frontend "context viewer"
 panel, showing system prompt, tools, messages, estimated token usage,
-and **real API usage** when available.
-
-Cache status is **never guessed** — it is only reported from actual
-``usage`` fields returned by the LLM provider.  If the provider does not
-return cache metrics, the UI shows an informational hint instead of
-fabricated numbers.
+and prefix-cache hit predictions.
 """
 
 from __future__ import annotations
@@ -17,16 +12,12 @@ import json
 from typing import Any
 
 from mycode.session.compaction import estimate_tokens
-import re as _re
 
 TOOL_OUTPUT_PREVIEW_LIMIT = 500  # chars — preview shown in UI for tool outputs
-TOOL_ARGS_PREVIEW_LIMIT = 200    # chars — preview shown for tool call arguments
+TOOL_ARGS_PREVIEW_LIMIT = 200  # chars — preview shown for tool call arguments
 
 # Signature used to detect compaction summary messages.
 _COMPACTION_MARKER = "continued from a previous conversation"
-
-# Regex to extract <system-reminder>...</system-reminder> blocks from content.
-_REMINDER_RE = _re.compile(r"<system-reminder>(.*?)</system-reminder>", _re.DOTALL)
 
 
 def build_context_snapshot(
@@ -60,10 +51,10 @@ def build_context_snapshot(
     has_history:
         Whether the session was started with pre-existing history.
     actual_usage:
-        Real token usage from the **previous** iteration's LLM API response.
+        Real token usage accumulated from previous LLM API responses.
         Contains ``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
-        ``cache_write_tokens``, etc.  When *None* the frontend should display
-        a placeholder / hint rather than estimated cache numbers.
+        ``cache_write_tokens`` etc. from the provider.  When available these
+        are **far more accurate** than our heuristic estimates.
 
     Returns
     -------
@@ -76,6 +67,7 @@ def build_context_snapshot(
     system_info: dict[str, Any] = {
         "content": system_text,
         "estimated_tokens": system_tokens,
+        "cache_status": "cached",
     }
 
     # --- Tools ---
@@ -91,9 +83,14 @@ def build_context_snapshot(
         "count": len(tool_names),
         "names": tool_names,
         "estimated_tokens": tools_tokens,
+        "cache_status": "cached",
     }
 
-    # --- Messages (no cache-status guessing) ---
+    # --- Messages ---
+    # Cache status heuristic:
+    #   iteration == 0 and no history → everything is new
+    #   otherwise → all messages except the last one are cached
+    all_new = iteration == 0 and not has_history
     msg_count = len(messages)
 
     message_infos: list[dict[str, Any]] = []
@@ -103,9 +100,17 @@ def build_context_snapshot(
         role: str = msg.get("role", "unknown")
         content: str = msg.get("content") or ""
 
+        if all_new:
+            cache_status = "new"
+        elif idx < msg_count - 1:
+            cache_status = "cached"
+        else:
+            cache_status = "new"
+
         info: dict[str, Any] = {
             "index": idx,
             "role": role,
+            "cache_status": cache_status,
         }
 
         # --- role=tool ---
@@ -153,22 +158,9 @@ def build_context_snapshot(
             info["is_compaction_summary"] = True
             compaction_boundary_index = idx
 
-        # Detect and extract <system-reminder> injection.
-        # The reminder text is appended to user message content by
-        # _attach_reminder_to_last_user_message().  We extract it so the
-        # frontend can render it cleanly (badge + styled block) instead of
-        # showing raw XML tags.
-        reminder_matches = _REMINDER_RE.findall(content)
-        if reminder_matches:
+        # Detect system-reminder injection
+        if "<system-reminder>" in content:
             info["is_system_reminder"] = True
-            info["system_reminder_content"] = "\n".join(
-                r.strip() for r in reminder_matches if r.strip()
-            )
-            # Strip <system-reminder> blocks from displayed content
-            display_content = _REMINDER_RE.sub("", content).strip()
-            info["content"] = display_content or "(系统提醒)"
-            info["content_truncated"] = False
-            info["full_length"] = len(display_content)
 
         message_infos.append(info)
 
@@ -178,23 +170,34 @@ def build_context_snapshot(
         "boundary_index": compaction_boundary_index,
     }
 
-    # --- Summary (heuristic total only, no fake cache split) ---
+    # --- Summary ---
     total_tokens = system_tokens + tools_tokens
+    cached_tokens = system_tokens + tools_tokens  # system + tools always cached
+    new_tokens = 0
 
     for mi in message_infos:
-        total_tokens += mi.get("estimated_tokens", 0)
+        t = mi.get("estimated_tokens", 0)
+        total_tokens += t
+        if mi.get("cache_status") == "cached":
+            cached_tokens += t
+        else:
+            new_tokens += t
 
     usage_percent = round(100 * total_tokens / context_limit, 1) if context_limit > 0 else 0.0
 
     summary: dict[str, Any] = {
         "total_estimated_tokens": total_tokens,
+        "cached_estimated_tokens": cached_tokens,
+        "new_estimated_tokens": new_tokens,
         "context_limit": context_limit,
         "usage_percent": usage_percent,
     }
 
-    # --- Real API usage from previous iteration ---
+    # --- Actual API usage from previous iterations ---
+    # These are real numbers from the LLM provider, accumulated across
+    # all completed iterations so far.  On iteration 0 they will all be 0.
     if actual_usage:
-        actual_info: dict[str, Any] = {
+        actual_info: dict[str, Any] | None = {
             "input_tokens": actual_usage.get("input_tokens", 0),
             "output_tokens": actual_usage.get("output_tokens", 0),
             "cache_read_tokens": actual_usage.get("cache_read_tokens", 0),

@@ -77,7 +77,6 @@ class Model(BaseModel):
     status: Literal["alpha", "beta", "deprecated", "active"] = "active"
     options: dict[str, Any] = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
-    thinking: dict[str, Any] | None = None
     release_date: str = ""
     variants: dict[str, dict[str, Any]] = Field(default_factory=dict)
 

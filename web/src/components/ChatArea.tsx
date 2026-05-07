@@ -118,10 +118,7 @@ function ChangesPanel({
     if (confirmablePaths.length === 0) return
     setBatchBusy('stage')
     try {
-      // Execute sequentially to avoid git index race condition
-      for (const p of confirmablePaths) {
-        await stageGitFile(p)
-      }
+      await Promise.all(confirmablePaths.map((p) => stageGitFile(p)))
       onRefreshGit?.()
       setExpanded(false)
       setToast({ type: 'success', message: `已确认 ${confirmablePaths.length} 个文件的更改` })

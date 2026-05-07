@@ -91,7 +91,6 @@ class ModelConfig(BaseModel):
     reasoning: bool | None = None
     attachment: bool | None = None
     tool_call: bool | None = None
-    thinking: dict[str, Any] | None = None
     cost: ModelCostConfig | None = None
     limit: ModelLimitConfig | None = None
     status: Literal["alpha", "beta", "deprecated", "active"] | None = None

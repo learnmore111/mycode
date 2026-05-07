@@ -26,8 +26,6 @@ import {
   Cpu,
   Hash,
   Circle,
-  LayoutGrid,
-  List,
 } from 'lucide-react'
 import {
   listFlows, getFlow, listOrchestrationAgents,
@@ -47,7 +45,6 @@ import type {
   StartRunParams,
   SwarmRunResult,
 } from '../api/orchestration'
-import FlowDAGEditor, { type StageData } from './FlowDAGEditor'
 
 interface Props { onBack: () => void }
 type Tab = 'agents' | 'flows' | 'runs'
@@ -359,8 +356,6 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
       spawns: s.spawns.map((sp) => ({ agent: sp.agent, task: sp.task })),
     })) ?? []
   )
-  // Toggle between form-based and visual DAG editor
-  const [dagViewMode, setDagViewMode] = useState(false)
 
   const addAgent = () => setAgents((p) => [...p, { name: '', extends: '', role: '', prompt: '' }])
   const removeAgent = (i: number) => setAgents((p) => p.filter((_, idx) => idx !== i))
@@ -556,55 +551,11 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
           {mode === 'coordinator' && (
             <div className={cardStyle + ' p-5'}>
               <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className={sectionTitle}><Layers size={12} className="text-[#3D3BF3]" />执行阶段<span className="text-[#ABABAB] font-normal ml-1">({stages.length})</span></div>
-                  {/* View toggle */}
-                  <div className="flex rounded-lg border border-[#E5E4E0] p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setDagViewMode(false)}
-                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
-                        !dagViewMode ? 'bg-[#0F0F0F] text-white shadow-sm' : 'text-[#8A8A85] hover:text-[#5C5C5C]'
-                      }`}
-                    >
-                      <List size={11} />表单
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDagViewMode(true)}
-                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
-                        dagViewMode ? 'bg-[#0F0F0F] text-white shadow-sm' : 'text-[#8A8A85] hover:text-[#5C5C5C]'
-                      }`}
-                    >
-                      <LayoutGrid size={11} />DAG 图
-                    </button>
-                  </div>
-                </div>
+                <div className={sectionTitle}><Layers size={12} className="text-[#3D3BF3]" />执行阶段<span className="text-[#ABABAB] font-normal ml-1">({stages.length})</span></div>
                 <button onClick={addStage} className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#3D3BF3]/8 text-[#3D3BF3] text-[11px] font-semibold hover:bg-[#3D3BF3]/15 transition-colors">
                   <Plus size={11} />添加
                 </button>
               </div>
-
-              {/* DAG Visual Editor */}
-              {dagViewMode ? (
-                <div className="h-[520px] -mx-2">
-                  <FlowDAGEditor
-                    stages={stages as StageData[]}
-                    agents={agents.map((a) => ({ name: a.name, role: a.role || '' }))}
-                    onChange={(newStages) => setStages(newStages as typeof stages)}
-                    onAddStage={addStage}
-                    agentSelectOptions={agentSelectOptions}
-                    onSelectSpawnAgent={handleSelectSpawnAgent}
-                    onUpdateStageField={(idx, field, val) =>
-                      setStages((p) => p.map((s, i) => i === idx ? { ...s, [field]: val } : s))
-                    }
-                    onRemoveStage={removeStage}
-                    onAddSpawn={addSpawn}
-                    onRemoveSpawn={removeSpawn}
-                  />
-                </div>
-              ) : (
-              /* Form-based stage list */
               <div className="space-y-3">
                 {stages.map((stage, si) => (
                   <div key={si} className="rounded-xl border border-[#E5E4E0] bg-[#FAFAF8] p-3.5 space-y-2.5">
@@ -641,7 +592,6 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                   </div>
                 ))}
               </div>
-              )}
             </div>
           )}
 

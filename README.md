@@ -174,10 +174,10 @@ uv run pytest tests/ -v
 ## 项目统计
 
 ```
-Python 文件:      140+
-代码行数:         18,000+
-单元测试:          56
-内置工具:          15 (bash/read/edit/write/glob/grep/listdir/task/subagent/webfetch/websearch/question/todo/skill/create_skill/batch)
+Python 文件:      104
+代码行数:      13,558
+单元测试:        373 (全部通过)
+内置工具:         15
 API 路由:         26
 LSP 语言:         26
 CLI 命令:         13
@@ -381,22 +381,6 @@ uv run mycode run --message "hello"
 | 文件变更管理 | 暂存 AI 修改的文件 + 批量确认/回退 |
 | 单端口部署 | 构建后静态文件集成到 FastAPI,API + UI 同一端口 |
 
-### 界面预览
-
-**会话聊天界面**
-
-![会话聊天界面](./docs/images/web-ui-session.png)
-
-**消息流与 Skill 注入**
-
-![消息流与 Skill 注入](./docs/images/web-ui-skills.png)
-
-**多 Agent 编排设计**
-
-![多 Agent 编排设计](./docs/images/web-ui-agent-orchestration.png)
-
-> **注意**：多 Agent 编排功能目前还在进一步完善中，详细使用文档请参考 [`docs/multi-agent-user-guide.md`](./docs/multi-agent-user-guide.md)。
-
 ### 使用方式
 
 ```bash
@@ -491,27 +475,6 @@ web/
 | apply_patch 工具 (GPT-5 格式) | 待实现 |
 | LSP didChange 通知 | 待实现 |
 | Python SDK (`mycode-sdk`) | 待评估 |
-
----
-
-## 问答讲解：项目实现细节与代码位置
-
-> 详细版（含代码行号引用和数据流图）见 [**docs/Q&A.md**](./docs/Q&A.md)，涵盖以下 12 个核心问题：
-
-| 编号 | 主题 | 核心内容 |
-|------|------|---------|
-| Q1 | **Agentic Loop 工作原理** | `prompt.py` 入口编排 + `processor.py` 流式处理的完整数据流图 |
-| Q2 | **System-Reminder 增量注入** | Prefix cache 复用优化、增量策略实现（skills/date/memory 三类） |
-| Q3 | **三层循环保护** | Hard Limit / Pattern Detection / Intelligence 三层递进机制 |
-| Q4 | **上下文压缩 Compaction** | 滑动窗口 + LLM 摘要的完整 8 步流程，cache 友好设计 |
-| Q5 | **两层记忆系统** | 会话 JSONL + 结构化 memdir 四类别、检索/提取/文件锁 |
-| Q6 | **工具能力声明与读写分离** | 15 工具能力矩阵、mutating-first 执行策略 |
-| Q7 | **子代理三模式** | delegate / parallel / isolated（git worktree 隔离） |
-| Q8 | **Provider 系统** | 16 种环境变量自动发现、参数转换、litellm 统一路由 |
-| Q9 | **权限系统** | Wildcard 规则、ask/reply 阻塞流、CLI vs HTTP 差异 |
-| Q10 | **Event Bus** | 17 种事件类型、asyncio.Queue 发布-订阅 |
-| Q11 | **Web 前端架构** | React 18 组件树、SSE 流式通信、Hooks 体系 |
-| Q12 | **扩展机制** | 工具/插件/MCP/Agent/Skill/Provider 六大扩展点 |
 
 ---
 

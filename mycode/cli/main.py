@@ -68,9 +68,7 @@ def serve(port: int, host: str) -> None:
 @click.option("--port", default=4096, help="Backend API port")
 @click.option("--host", default="127.0.0.1", help="Backend hostname to bind")
 @click.option("--frontend-port", default=3000, help="Frontend dev server port")
-@click.option("--directory", "-d", default=None,
-              help="Working directory for the coding agent (default: current directory)")
-def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None:
+def dev(port: int, host: str, frontend_port: int) -> None:
     """Start both backend API server and frontend dev server for development."""
     import signal
     import subprocess
@@ -81,7 +79,7 @@ def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None
 
     logger = logmod.create(service="cli.dev")
 
-    # Resolve the web/ directory relative to this project (always use mycode's web/)
+    # Resolve the web/ directory relative to this project
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     web_dir = os.path.join(project_root, "web")
 
@@ -89,12 +87,8 @@ def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None
         click.echo(f"Error: web directory not found at {web_dir}", err=True)
         sys.exit(1)
 
-    # Resolve working directory (where the agent will operate on files)
-    work_dir = os.path.abspath(directory) if directory else os.getcwd()
-
     click.echo(f"Starting backend API server on http://{host}:{port}")
     click.echo(f"Starting frontend dev server on http://localhost:{frontend_port}")
-    click.echo(f"Working directory:  {work_dir}")
     click.echo("Press Ctrl+C to stop both servers.\n")
 
     procs: list[subprocess.Popen[bytes]] = []
@@ -114,7 +108,7 @@ def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None
     signal.signal(signal.SIGTERM, cleanup)
 
     try:
-        # Start backend API server (CWD = work_dir so "." resolves to target repo)
+        # Start backend API server
         backend_cmd = [
             sys.executable,
             "-m",
@@ -125,7 +119,7 @@ def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None
             f"--port={port}",
             "--log-level=info",
         ]
-        backend_proc = subprocess.Popen(backend_cmd, cwd=work_dir)
+        backend_proc = subprocess.Popen(backend_cmd, cwd=project_root)
         procs.append(backend_proc)
         logger.info("backend started", pid=backend_proc.pid, port=port)
 

@@ -29,9 +29,9 @@ from mycode.tool.base import (
     ToolError,
     ToolOk,
     ToolResult,
-    _assert_file_read,
     atomic_write,
     resolve_tool_path,
+    _assert_file_read,
 )
 
 _CONTEXT_LINES = 4
@@ -269,7 +269,7 @@ def _fuzzy_replace(content: str, old_string: str, new_string: str) -> tuple[str,
                 continue
             last = content.rfind(match)
             if idx != last:
-                return "", "Found multiple matches for oldString. Provide more surrounding context to make the match unique."
+                return "", f"Found multiple matches for oldString. Provide more surrounding context to make the match unique."
             return content[:idx] + new_string + content[idx + len(match):], None
     return "", "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings."
 

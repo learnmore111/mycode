@@ -265,7 +265,7 @@ async def test_batch_bash_parallel(_project):
 
 def test_excluded_tools_constant():
     assert "batch" in _EXCLUDED_TOOLS
-    assert "question" in _EXCLUDED_TOOLS
+    assert "task" in _EXCLUDED_TOOLS
     assert "todo" in _EXCLUDED_TOOLS
     assert "question" in _EXCLUDED_TOOLS
     # Normal tools should NOT be excluded

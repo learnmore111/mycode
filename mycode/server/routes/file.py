@@ -27,7 +27,11 @@ async def system_paths() -> Any:
         "documents": str(home / "Documents"),
         "downloads": str(home / "Downloads"),
     }
-    if platform.system() == "Darwin" or platform.system() == "Windows":
+    if platform.system() == "Darwin":
+        info["desktop"] = str(home / "Desktop")
+        info["documents"] = str(home / "Documents")
+        info["downloads"] = str(home / "Downloads")
+    elif platform.system() == "Windows":
         info["desktop"] = str(home / "Desktop")
         info["documents"] = str(home / "Documents")
         info["downloads"] = str(home / "Downloads")

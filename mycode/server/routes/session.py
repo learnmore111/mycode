@@ -519,20 +519,17 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
 
             result = []
             for m in messages:
-                # Hide pure system-reminder messages from UI chat view.
-                # Reminder text is now attached to the real user message, so
-                # we only skip messages whose *entire* text content consists
-                # of <system-reminder> blocks (no user input).
+                # Hide system-reminder messages from UI chat view.
+                # They are user messages injected by the agentic loop for
+                # skills/memory/date context; visible only in ContextViewer.
                 if m.role == "user":
                     msg_parts = parts_by_msg.get(m.id, [])
-                    text_parts = [p for p in msg_parts if p.get("type") == "text"]
-                    if text_parts:
-                        combined = "".join(p.get("content") or "" for p in text_parts)
-                        # Strip all <system-reminder> blocks
-                        stripped = re.sub(r"<system-reminder>.*?</system-reminder>", "", combined, flags=re.DOTALL).strip()
-                        # Skip only if nothing remains besides the reminder tags
-                        if not stripped and "<system-reminder>" in combined:
-                            continue
+                    if msg_parts and all(
+                        "<system-reminder>" in (p.get("content") or "")
+                        for p in msg_parts
+                        if p.get("type") == "text"
+                    ):
+                        continue
 
                 result.append({
                     "id": m.id,

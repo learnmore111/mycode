@@ -201,28 +201,6 @@ def test_rebuild_history_text_only_unchanged(_db: None) -> None:
     assert history[0]["content"] == "Hello"
 
 
-def test_rebuild_history_reattaches_persisted_system_reminder(_db: None) -> None:
-    """Pure reminder meta messages should be merged back into the prior user turn."""
-    from mycode.session.message import rebuild_history_from_db
-
-    user_msg = create_user_message("sess-reminder")
-    save_message(user_msg)
-    user_text = create_text_part("sess-reminder", user_msg.id)
-    user_text.content = "Please continue"
-    save_part(user_text)
-
-    reminder_msg = create_user_message("sess-reminder", is_meta=True, origin="system")
-    save_message(reminder_msg)
-    reminder_text = create_text_part("sess-reminder", reminder_msg.id)
-    reminder_text.content = "<system-reminder>\nToday's date: 2026-05-05\n</system-reminder>"
-    save_part(reminder_text)
-
-    history = rebuild_history_from_db("sess-reminder")
-    assert len(history) == 1
-    assert history[0]["role"] == "user"
-    assert history[0]["content"] == "Please continue\n\n<system-reminder>\nToday's date: 2026-05-05\n</system-reminder>"
-
-
 # ---------------------------------------------------------------------------
 # 4. _normalize_image_url
 # ---------------------------------------------------------------------------

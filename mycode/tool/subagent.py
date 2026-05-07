@@ -29,7 +29,7 @@ from mycode.util.subagent import build_agent_ruleset, check_tool_permission, is_
 logger = logmod.create(service="tool.subagent")
 
 # Tools that sub-agents cannot use (prevent recursion and interactive prompts)
-_EXCLUDED_TOOLS = frozenset({"subagent", "todo", "question", "batch"})
+_EXCLUDED_TOOLS = frozenset({"subagent", "task", "todo", "question", "batch"})
 
 # Agents allowed in parallel mode (must be safe for concurrent execution)
 _PARALLEL_SAFE_AGENTS = frozenset({"explore", "general"})

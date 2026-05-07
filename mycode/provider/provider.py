@@ -254,7 +254,6 @@ async def _discover_providers() -> dict[str, ProviderInfo]:
                         status=mcfg.status or "active",
                         options=mcfg.options or {},
                         headers=mcfg.headers or {},
-                        thinking=mcfg.thinking,
                     )
 
     # Filter disabled/enabled
