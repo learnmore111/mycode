@@ -41,7 +41,6 @@ dependencies = [
     "unidiff>=0.7.0",
     "prompt-toolkit>=3.0.52",
     "rich>=14.3.3",
-    "python-pptx>=1.0.2",
 ]
 
 [project.optional-dependencies]
