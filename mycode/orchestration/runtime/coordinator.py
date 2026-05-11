@@ -124,9 +124,9 @@ class Coordinator:
         runner: AgentRunner | None = None,
         events: OrchestrationEventEmitter | None = None,
     ) -> None:
-        if spec.mode not in ("coordinator", "hybrid"):
+        if spec.mode != "coordinator":
             raise CoordinatorError(
-                f"Coordinator runtime requires mode=coordinator|hybrid, got {spec.mode!r}"
+                f"Coordinator runtime requires mode=coordinator, got {spec.mode!r}"
             )
         self.spec = spec
         self.agents = agents

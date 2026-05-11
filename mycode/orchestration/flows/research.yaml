@@ -1,9 +1,12 @@
-# Built-in "research" orchestration.
+# Built-in "research" workflow.
 #
-# A showcase coordinator flow demonstrating:
-#   1. parallel worker exploration,
-#   2. fan-out follow-up investigation, and
-#   3. coordinator-authored synthesis.
+# A showcase workflow-style coordinator flow demonstrating:
+#   1. parallelized worker exploration,
+#   2. deterministic fan-out follow-up investigation, and
+#   3. coordinator-authored synthesis from declared inputs.
+#
+# This is the right shape for tasks with known steps and a stable DAG. The
+# coordinator is a synthesis node in the workflow, not a live team supervisor.
 #
 # Usage:
 #   mycode orchestrate inspect research
@@ -11,7 +14,7 @@
 #
 # Agents reference built-in registry agents via "extends:".
 name: research
-description: Parallel exploration, fan-out follow-up, and coordinator synthesis
+description: Workflow-style parallel exploration, fan-out follow-up, and synthesis
 mode: coordinator
 
 vars:

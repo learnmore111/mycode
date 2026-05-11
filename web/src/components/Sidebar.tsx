@@ -549,7 +549,7 @@ export default function Sidebar({
               </div>
               <div className="flex items-center gap-2.5">
                 <span className="w-5 h-5 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0"><Layers size={10} className="text-accent" /></span>
-                <span>流程设计 — Coordinator / Swarm 编排</span>
+                <span>流程设计 — 工作流 / 主管协作 / Swarm</span>
               </div>
               <div className="flex items-center gap-2.5">
                 <span className="w-5 h-5 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0"><Activity size={10} className="text-accent" /></span>

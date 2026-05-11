@@ -1824,10 +1824,12 @@ def orchestrate_run(
 ) -> None:
     """Execute an orchestration flow.
 
-    Works for both modes:
+    Works for all modes:
 
-    - **coordinator / hybrid**: walks the stage DAG and prints the last
-      stage's synthesised output.
+    - **coordinator**: walks the stage DAG and prints the last stage's
+      synthesised output.
+    - **hybrid**: seeds the supervisor agent and lets the team collaborate
+      through mailboxes.
     - **swarm**: requires ``--task`` (or stdin); seeds the entry agent's
       inbox and drives every peer via the mailbox backend until quiescence
       or ``--walltime``.
@@ -1841,7 +1843,7 @@ def orchestrate_run(
         get_default_agent_registry,
         get_default_registry,
     )
-    from mycode.orchestration.runtime import run_coordinator, run_swarm
+    from mycode.orchestration.runtime import run_coordinator, run_supervisor_collaboration, run_swarm
     from mycode.orchestration.topology import resolve_all_agents
     from mycode.orchestration.topology.loader import OrchestrationLoadError
     from mycode.orchestration.topology.validator import OrchestrationValidationError
@@ -1876,10 +1878,12 @@ def orchestrate_run(
         click.echo(f"[dry-run] flow={spec.name} mode={spec.mode}")
         for a in agents.values():
             click.echo(f"  - agent {a.name!r} resolved (extends={a.extends!r})")
-        if spec.mode == "swarm":
-            entry_name = spec.entry or spec.lead or (spec.agents[0].name if spec.agents else None)
-            click.echo(f"  - entry: {entry_name!r}")
-        else:
+        if spec.mode in ("swarm", "hybrid"):
+            entry_name = spec.coordinator if spec.mode == "hybrid" else spec.entry or spec.lead
+            entry_name = entry_name or (spec.agents[0].name if spec.agents else None)
+            role = "supervisor" if spec.mode == "hybrid" else "entry"
+            click.echo(f"  - {role}: {entry_name!r}")
+        if spec.mode == "coordinator":
             for s in spec.stages:
                 click.echo(
                     f"  - stage {s.id!r} (parallel={s.parallel}, "
@@ -1887,28 +1891,36 @@ def orchestrate_run(
                 )
         return
 
-    # ── swarm branch ───────────────────────────────────────────────────
-    if spec.mode == "swarm":
+    # ── mailbox collaboration branch ───────────────────────────────────
+    if spec.mode in ("swarm", "hybrid"):
         if not task_text:
             raise click.ClickException(
-                "swarm mode requires --task / -t (the initial user task "
-                "for the entry agent)"
+                f"{spec.mode} mode requires --task / -t (the initial user task)"
             )
         try:
-            swarm_result = asyncio.run(run_swarm(
-                spec, agents,
-                user_task=task_text,
-                max_turns=max_turns,
-                walltime_seconds=walltime_seconds,
-            ))
+            if spec.mode == "hybrid":
+                swarm_result = asyncio.run(run_supervisor_collaboration(
+                    spec, agents,
+                    user_task=task_text,
+                    max_turns=max_turns,
+                    walltime_seconds=walltime_seconds,
+                ))
+            else:
+                swarm_result = asyncio.run(run_swarm(
+                    spec, agents,
+                    user_task=task_text,
+                    max_turns=max_turns,
+                    walltime_seconds=walltime_seconds,
+                ))
         except Exception as exc:
-            raise click.ClickException(f"Swarm run failed: {exc}") from exc
+            raise click.ClickException(f"{spec.mode} run failed: {exc}") from exc
 
         if as_json:
             import json as _json
             payload = {
                 "flow": spec.name,
-                "mode": "swarm",
+                "mode": spec.mode,
+                "kind": swarm_result.kind,
                 "entry": swarm_result.entry,
                 "lead": swarm_result.lead,  # deprecated alias
                 "terminated_reason": swarm_result.terminated_reason,
@@ -1942,8 +1954,8 @@ def orchestrate_run(
         _print_swarm_result(spec, swarm_result)
         return
 
-    # ── coordinator / hybrid branch ────────────────────────────────────
-    if spec.mode not in ("coordinator", "hybrid"):
+    # ── coordinator branch ─────────────────────────────────────────────
+    if spec.mode != "coordinator":
         raise click.ClickException(
             f"'orchestrate run' does not support mode={spec.mode!r}"
         )
@@ -2084,7 +2096,7 @@ def _print_spec_tree(spec: Any) -> None:
         if a.max_turns:
             node.add(f"max_turns: {a.max_turns}")
 
-    if spec.mode in ("coordinator", "hybrid") and spec.stages:
+    if spec.mode == "coordinator" and spec.stages:
         stages_node = root.add(f"[bold]stages[/bold] ({len(spec.stages)})")
         for s in spec.stages:
             line = f"[yellow]{s.id}[/yellow]"
@@ -2377,4 +2389,3 @@ def db_history() -> None:
     # but Alembic still expects one to be set.
     cfg.set_main_option("sqlalchemy.url", "sqlite:///:memory:")
     command.history(cfg, verbose=False)
-

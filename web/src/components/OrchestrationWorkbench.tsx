@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Bot,
@@ -56,9 +56,27 @@ import FlowDAGEditor, { type StageData } from './FlowDAGEditor'
 
 interface Props { onBack: () => void }
 type Tab = 'agents' | 'flows' | 'runs'
+type RunDetailTab = 'overview' | 'board' | 'transcripts' | 'result' | 'events'
 type AgentTranscriptItem =
   | ({ type: 'message' } & AgentLiveMessageEvent)
   | ({ type: 'tool' } & AgentLiveToolEvent)
+type AgentBoardStatus = 'waiting' | 'active' | 'collaborating' | 'review' | 'done' | 'error'
+type AgentBoardCard = {
+  agent: string
+  role?: string
+  description?: string
+  status: AgentBoardStatus
+  label: string
+  eventCount: number
+  turnCount: number
+  toolCount: number
+  sentCount: number
+  receivedCount: number
+  stage?: string
+  lastPreview: string
+  updatedAt?: number
+  isEntry?: boolean
+}
 
 // ── Shared styles ──
 const inputBase = 'w-full bg-[#F4F3F0] rounded-lg px-3 py-2 text-[13px] text-[#1A1A1A] placeholder:text-[#ABABAB] outline-none border border-[#E5E4E0] focus:border-[#3D3BF3]/40 focus:ring-2 focus:ring-[#3D3BF3]/8 transition-all'
@@ -70,6 +88,57 @@ const pillInactive = 'bg-[#F4F3F0] text-[#8A8A85] border-transparent hover:borde
 const btnPrimary = 'flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#3D3BF3] text-white text-[12px] font-semibold hover:bg-[#3230D8] disabled:opacity-35 disabled:cursor-not-allowed transition-all shadow-[0_1px_3px_rgba(61,59,243,0.3)]'
 const btnGhost = 'px-3 py-1.5 rounded-lg text-[12px] font-medium text-[#8A8A85] hover:bg-[#F4F3F0] hover:text-[#5C5C5C] transition-colors'
 const sectionTitle = 'flex items-center gap-2 text-[11px] font-bold text-[#0F0F0F] uppercase tracking-[0.06em]'
+
+type FlowModeKey = 'coordinator' | 'hybrid' | 'swarm'
+const FLOW_MODE_CONFIG: Record<FlowModeKey, {
+  label: string
+  shortLabel: string
+  description: string
+  icon: React.ElementType
+  badge: string
+  darkBadge: string
+}> = {
+  coordinator: {
+    label: '工作流式',
+    shortLabel: '工作流',
+    description: '阶段化 DAG，由协调者按流程分派并汇总。',
+    icon: Workflow,
+    badge: 'bg-[#3D3BF3]/8 text-[#3D3BF3]',
+    darkBadge: 'bg-white/10 text-white',
+  },
+  hybrid: {
+    label: '主管协作式',
+    shortLabel: '主管协作',
+    description: '主管 Agent 接收任务、组织专家消息协作并综合输出。',
+    icon: Users,
+    badge: 'bg-[#16a34a]/8 text-[#16a34a]',
+    darkBadge: 'bg-[#16a34a]/15 text-[#8AE6A6]',
+  },
+  swarm: {
+    label: 'Swarm 式',
+    shortLabel: 'Swarm',
+    description: '去中心化 peer-to-peer，成员通过消息自由推进。',
+    icon: Network,
+    badge: 'bg-[#d97706]/8 text-[#d97706]',
+    darkBadge: 'bg-[#d97706]/15 text-[#F4B467]',
+  },
+}
+
+function getFlowModeConfig(mode?: string) {
+  return FLOW_MODE_CONFIG[(mode as FlowModeKey) in FLOW_MODE_CONFIG ? mode as FlowModeKey : 'coordinator']
+}
+
+function usesStages(mode: string): boolean {
+  return mode === 'coordinator'
+}
+
+function usesEntry(mode: string): boolean {
+  return mode === 'swarm' || mode === 'hybrid'
+}
+
+function usesCoordinator(mode: string): boolean {
+  return mode === 'coordinator' || mode === 'hybrid'
+}
 
 const STATIC_TOOLS = [
   'read', 'write', 'edit', 'grep', 'glob', 'listdir', 'bash',
@@ -373,8 +442,8 @@ type FlowDraftAgent = { name: string; extends: string; role: string; prompt: str
 function getManagedFlowRole(mode: string, agentName: string, coordinator: string, entry: string): string | null {
   const trimmedName = agentName.trim()
   if (!trimmedName) return null
-  if (mode === 'coordinator' && coordinator.trim() === trimmedName) return 'coordinator'
-  if (mode === 'swarm' && entry.trim() === trimmedName) return 'entry'
+  if (usesCoordinator(mode) && coordinator.trim() === trimmedName) return 'coordinator'
+  if (usesEntry(mode) && entry.trim() === trimmedName) return 'entry'
   return null
 }
 
@@ -390,13 +459,13 @@ function normalizeFlowAgentsForMode(
       return agent.role === managedRole ? agent : { ...agent, role: managedRole }
     }
 
-    if (mode === 'coordinator') {
+    if (usesCoordinator(mode)) {
       return agent.role === 'worker' ? agent : { ...agent, role: '' }
     }
 
-    if (mode === 'swarm') {
-      return agent.role === 'teammate' ? agent : { ...agent, role: '' }
-    }
+  if (mode === 'swarm') {
+    return agent.role === 'teammate' ? agent : { ...agent, role: '' }
+  }
 
     return agent
   })
@@ -410,12 +479,12 @@ function getRoleOptionsForFlowAgent(
 ): { placeholder: string; options: Array<{ value: string; label: string }> } {
   const managedRole = getManagedFlowRole(mode, agentName, coordinator, entry)
   if (managedRole === 'coordinator') {
-    return { placeholder: '由上方 Coordinator 指定', options: [{ value: 'coordinator', label: 'coordinator' }] }
+    return { placeholder: '由上方协调 Agent 指定', options: [{ value: 'coordinator', label: 'coordinator' }] }
   }
   if (managedRole === 'entry') {
     return { placeholder: '由上方起始 Agent 指定', options: [{ value: 'entry', label: 'entry' }] }
   }
-  if (mode === 'coordinator') {
+  if (usesCoordinator(mode)) {
     return { placeholder: '无角色', options: [{ value: 'worker', label: 'worker' }] }
   }
   return { placeholder: '无角色', options: [{ value: 'teammate', label: 'teammate' }] }
@@ -435,12 +504,11 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
   const [flowExtends, setFlowExtends] = useState(initial?.extends ?? '')
   const [flowModel, setFlowModel] = useState(initial?.model ?? '')
   const [maxDepth, setMaxDepth] = useState<string>(initial?.max_depth != null ? String(initial.max_depth) : '')
-  // Swarm starting agent (initial task receiver). Falls back to the legacy
-  // `lead` alias for flows loaded from older backends.
+  // Initial task receiver. Swarm-style runs use it directly; collaboration
+  // mode keeps it as the visible starting point while still using stages.
   const [entry, setEntry] = useState(initial?.entry ?? initial?.lead ?? '')
-  // Coordinator leader agent (orchestrator-worker pattern). Required for
-  // coordinator/hybrid mode. When empty the backend will try to derive it
-  // from the single agent with `role: coordinator`.
+  // Coordinator / facilitator agent for orchestration and collaboration modes.
+  // When empty the backend can derive it from the single role=coordinator agent.
   const [coordinator, setCoordinator] = useState(initial?.coordinator ?? '')
   const [scope, setScope] = useState(initial?.scope ?? 'project')
   const [vars, setVars] = useState<Array<{ key: string; value: string }>>(
@@ -562,12 +630,15 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
       extends: flowExtends || undefined,
       model: flowModel || undefined,
       max_depth: maxDepth ? parseInt(maxDepth) : undefined,
-      entry: mode === 'swarm' ? entry || undefined : undefined,
-      coordinator: mode === 'coordinator' ? coordinator || undefined : undefined,
+      entry: usesEntry(mode) ? entry || undefined : undefined,
+      coordinator: usesCoordinator(mode) ? coordinator || undefined : undefined,
       agents: agentSpecs.length > 0 ? agentSpecs : undefined,
-      stages: mode === 'coordinator' && stageSpecs.length > 0 ? stageSpecs : undefined,
+      stages: usesStages(mode) && stageSpecs.length > 0 ? stageSpecs : undefined,
       vars: Object.keys(varsObj).length > 0 ? varsObj : undefined, scope }, isNew)
   }
+
+  const modeConfig = getFlowModeConfig(mode)
+  const ModeIcon = modeConfig.icon
 
   return (
     <div className="flex flex-col h-full">
@@ -583,7 +654,7 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={onCancel} className={btnGhost + ' !text-[#8A8A85] hover:!bg-white/10 hover:!text-white'}>取消</button>
-          <button onClick={handleSave} disabled={saving || !name.trim() || agents.length === 0 || (mode === 'coordinator' && !coordinator.trim())} className={btnPrimary}>
+          <button onClick={handleSave} disabled={saving || !name.trim() || agents.length === 0 || (usesCoordinator(mode) && !coordinator.trim())} className={btnPrimary}>
             {saving ? <RefreshCcw size={12} className="animate-spin" /> : <Save size={12} />}
             <span>保存</span>
           </button>
@@ -602,13 +673,17 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
               </div>
               <div>
                 <label className={labelStyle}>模式 *</label>
-                <div className="flex gap-1.5">
-                  {([{ v: 'coordinator', l: 'Coordinator', i: Network }, { v: 'swarm', l: 'Swarm', i: Users }] as const).map(({ v, l, i: I }) => (
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(['coordinator', 'hybrid', 'swarm'] as const).map((v) => {
+                    const cfg = getFlowModeConfig(v)
+                    const I = cfg.icon
+                    return (
                     <button key={v} type="button" onClick={() => setMode(v)}
                       className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-[11px] font-semibold transition-all border whitespace-nowrap focus:outline-none ${mode === v ? pillActive : pillInactive}`}>
-                      <I size={12} />{l}
+                      <I size={12} />{cfg.label}
                     </button>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
               <div>
@@ -622,18 +697,26 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                 </div>
               </div>
             </div>
-            {/* Coordinator / Starting agent (mode-specific) */}
+            <div className="mt-4 rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-bold ${modeConfig.badge}`}>
+                  <ModeIcon size={11} />{modeConfig.label}
+                </span>
+                <span className="text-[11px] leading-5 text-[#6B6A78]">{modeConfig.description}</span>
+              </div>
+            </div>
+            {/* Facilitator / starting agent (mode-specific) */}
             <div className="mt-4 grid gap-4 grid-cols-2">
-              {mode === 'coordinator' && (
+              {usesCoordinator(mode) && (
                 <div>
-                  <label className={labelStyle} title="Coordinator 模式（orchestrator-worker）的中央协调者，负责分派并汇总 worker 结果">Coordinator Agent *</label>
-                  <Select value={coordinator} onChange={handleSelectCoordinator} placeholder="选择 Coordinator Agent（必填）"
+                  <label className={labelStyle} title="工作流式中负责阶段汇总；主管协作式中负责接收任务、组织专家并综合结果">协调 Agent *</label>
+                  <Select value={coordinator} onChange={handleSelectCoordinator} placeholder="选择协调 Agent（必填）"
                     options={agentSelectOptions} mono />
                 </div>
               )}
-              {mode === 'swarm' && (
+              {usesEntry(mode) && (
                 <div>
-                  <label className={labelStyle} title="Swarm 去中心化协作的初始任务接收者（起始 Agent）">起始 Agent</label>
+                  <label className={labelStyle} title="Swarm 式的初始任务接收者；主管协作式未指定协调 Agent 时作为主管回退">起始 Agent</label>
                   <Select value={entry} onChange={handleSelectEntry} placeholder="选择起始 Agent（可选）"
                     options={agentSelectOptions} mono />
                 </div>
@@ -672,13 +755,13 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
                 <div key={i} className="rounded-xl border border-[#E5E4E0] bg-[#FAFAF8] p-3.5">
                   {(() => {
                     const roleConfig = getRoleOptionsForFlowAgent(mode, agent.name, coordinator, entry)
-                    const helperText = mode === 'coordinator'
+                    const helperText = usesCoordinator(mode)
                       ? agent.name.trim() && agent.name.trim() === coordinator.trim()
-                        ? '该 Agent 的 coordinator 身份由上方 Coordinator Agent 统一指定。'
-                        : 'Coordinator 模式下，其他参与者只应作为 worker。'
+                        ? '该 Agent 的协调者身份由上方统一指定。'
+                        : `${modeConfig.label}下，其他参与者通常作为 worker 参与。`
                       : agent.name.trim() && agent.name.trim() === entry.trim()
                         ? '该 Agent 的 entry 身份由上方起始 Agent 统一指定。'
-                        : 'Swarm 模式下，其他参与者只应作为 teammate。'
+                        : 'Swarm 式下，其他参与者通常作为 teammate 参与。'
 
                     return (
                       <>
@@ -707,8 +790,8 @@ function FlowEditor({ initial, allAgents, onSave, onCancel, saving }: {
             </div>
           </div>
 
-          {/* Stages (coordinator) */}
-          {mode === 'coordinator' && (
+          {/* Stages (orchestration/collaboration) */}
+          {usesStages(mode) && (
             <div className={cardStyle + ' p-5'}>
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
@@ -840,8 +923,8 @@ type RunDialogState = {
   vars: Record<string, string>
 }
 
-function isBuiltinDemoFlow(flowName: string): flowName is 'research' | 'pair-review' {
-  return flowName === 'research' || flowName === 'pair-review'
+function isBuiltinDemoFlow(flowName: string): flowName is 'research' | 'supervised-review' | 'pair-review' {
+  return flowName === 'research' || flowName === 'supervised-review' || flowName === 'pair-review'
 }
 
 function DemoFlowBadge({ label }: { label: string }) {
@@ -868,7 +951,7 @@ function ResearchRunPreset({ runDialog, setRunDialog }: {
           <span className="text-[11px] font-semibold text-[#0F0F0F]">Research 启动面板</span>
         </div>
         <p className="text-[12px] leading-6 text-[#6B6A78]">
-          这个示例会先并行做两轮初探，再基于结果自动 fan-out 深挖，最后由 coordinator 输出结构化简报。
+          这个示例会先并行做两轮初探，再基于结果自动 fan-out 深挖，最后由协调 Agent 输出结构化简报。
         </p>
       </div>
 
@@ -908,7 +991,7 @@ function ResearchRunPreset({ runDialog, setRunDialog }: {
           </div>
           <div className="rounded-xl bg-[#FAFAF8] px-3 py-3">
             <div className="font-semibold text-[#0F0F0F]">Stage 3</div>
-            <div className="mt-1 leading-5">coordinator 汇总成系统概览、风险、未知项与建议行动。</div>
+            <div className="mt-1 leading-5">协调 Agent 汇总成系统概览、风险、未知项与建议行动。</div>
           </div>
         </div>
       </div>
@@ -926,7 +1009,7 @@ function PairReviewRunPreset({ runDialog, setRunDialog }: {
 
   const promptCards = [
     '请以多人 code review 的方式审查 `src/auth/`，分别从安全、性能与整体可维护性给出发现，并按严重级别汇总。',
-    '请对最近的 orchestration 相关改动做 swarm review，重点关注运行时约束、并发安全和用户可见回归。',
+    '请对最近的多 Agent 相关改动做 Swarm review，重点关注运行时约束、并发安全和用户可见回归。',
     '请审查一个 FastAPI + SQLite 模块，分别关注鉴权边界、查询效率、异常处理和测试缺口。',
   ]
 
@@ -965,7 +1048,7 @@ function PairReviewRunPreset({ runDialog, setRunDialog }: {
           value={runDialog.task}
           onChange={(e) => setRunDialog((prev) => prev ? { ...prev, task: e.target.value } : prev)}
           rows={5}
-          placeholder="描述你希望这个 swarm review 团队完成的审查任务..."
+          placeholder="描述你希望这个 Swarm review 团队完成的审查任务..."
           className={inputBase + ' min-h-[140px] resize-y leading-6'}
         />
       </div>
@@ -984,6 +1067,81 @@ function PairReviewRunPreset({ runDialog, setRunDialog }: {
           <div className="rounded-xl bg-[#FAFAF8] px-3 py-3">
             <div className="font-semibold text-[#0F0F0F]">perf-reviewer</div>
             <div className="mt-1 leading-5">关注 I/O、热循环、并发瓶颈，并主动找 security-reviewer 校验假设。</div>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function SupervisedReviewRunPreset({ runDialog, setRunDialog }: {
+  runDialog: RunDialogState
+  setRunDialog: React.Dispatch<React.SetStateAction<RunDialogState | null>>
+}) {
+  const usePrompt = (text: string) => {
+    setRunDialog((prev) => prev ? { ...prev, task: text } : prev)
+  }
+
+  const promptCards = [
+    '请由主管组织架构与风险专家评审这次多 Agent 编排改动，判断是否可以合入，并列出必须补齐的测试。',
+    '请评估一个新功能方案：架构专家关注模块边界与扩展性，风险专家关注回归、权限和发布风险，最后由主管给出决策。',
+    '请对最近的后端 API 改动做主管协作式 review，分别检查接口契约、数据一致性、异常路径和上线风险。',
+  ]
+
+  return (
+    <>
+      <div className={cardStyle + ' p-4'}>
+        <div className="flex items-center gap-2 mb-3">
+          <DemoFlowBadge label="Builtin Demo" />
+          <span className="text-[11px] font-semibold text-[#0F0F0F]">Supervisor Review 启动面板</span>
+        </div>
+        <p className="text-[12px] leading-6 text-[#6B6A78]">
+          这个示例体现主管协作式：review-supervisor 拥有最终判断权，通过消息组织架构与风险专家分别检查，
+          专家用 main 回到主管，主管在专家反馈基础上给出 ship / follow-up / block 决策。
+        </p>
+      </div>
+
+      <div className={cardStyle + ' p-4'}>
+        <div className={sectionTitle + ' mb-3'}><Users size={12} className="text-[#16a34a]" />主管任务模板</div>
+        <div className="space-y-2">
+          {promptCards.map((prompt) => (
+            <button
+              key={prompt}
+              type="button"
+              onClick={() => usePrompt(prompt)}
+              className="w-full rounded-xl border border-[#E5E4E0] bg-[#FAFAF8] px-3.5 py-3 text-left text-[12px] leading-6 text-[#5C5C5C] transition-colors hover:border-[#16a34a]/25 hover:bg-white"
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={cardStyle + ' p-4'}>
+        <div className={sectionTitle + ' mb-3'}><Activity size={12} className="text-[#3D3BF3]" />任务描述</div>
+        <textarea
+          value={runDialog.task}
+          onChange={(e) => setRunDialog((prev) => prev ? { ...prev, task: e.target.value } : prev)}
+          rows={5}
+          placeholder="描述你希望主管组织专家完成的评审任务..."
+          className={inputBase + ' min-h-[140px] resize-y leading-6'}
+        />
+      </div>
+
+      <div className={cardStyle + ' p-4'}>
+        <div className={sectionTitle + ' mb-3'}><Bot size={12} className="text-[#3D3BF3]" />协作方式</div>
+        <div className="grid gap-3 md:grid-cols-3 text-[11px] text-[#5C5C5C]">
+          <div className="rounded-xl bg-[#FAFAF8] px-3 py-3">
+            <div className="font-semibold text-[#0F0F0F]">review-supervisor</div>
+            <div className="mt-1 leading-5">接收任务、分派专家、追问不清晰反馈，并负责最终决策与综合输出。</div>
+          </div>
+          <div className="rounded-xl bg-[#FAFAF8] px-3 py-3">
+            <div className="font-semibold text-[#0F0F0F]">architecture-reviewer</div>
+            <div className="mt-1 leading-5">检查模块边界、耦合、数据流和方案是否贴合产品目标。</div>
+          </div>
+          <div className="rounded-xl bg-[#FAFAF8] px-3 py-3">
+            <div className="font-semibold text-[#0F0F0F]">risk-reviewer</div>
+            <div className="mt-1 leading-5">检查回归风险、缺失测试、权限边界、异常路径和发布风险。</div>
           </div>
         </div>
       </div>
@@ -1109,9 +1267,9 @@ function getEventHeadline(event: string, data: Record<string, unknown>): string 
     case 'orchestration.message.sent':
       return `${sender || 'unknown'} → ${recipient || 'unknown'}`
     case 'orchestration.swarm.started':
-      return `Swarm 启动 · 起始 Agent ${entry || 'unknown'}`
+      return `Swarm 式启动 · 起始 Agent ${entry || 'unknown'}`
     case 'orchestration.swarm.finished':
-      return `Swarm 完成 · ${asText(data.terminated_reason) || 'unknown'}`
+      return `Swarm 式完成 · ${asText(data.terminated_reason) || 'unknown'}`
     default:
       return event
   }
@@ -1132,7 +1290,7 @@ function getEventDetail(event: string, data: Record<string, unknown>): string {
     case 'orchestration.flow.finished':
       return duration != null ? `总耗时 ${duration.toFixed(2)}s` : 'Flow 已结束。'
     case 'orchestration.stage.started':
-      return '等待该阶段下的 spawn 或 coordinator 任务推进。'
+      return '等待该阶段下的 spawn 或协调任务推进。'
     case 'orchestration.stage.finished':
       return coordinatorPreview || outputPreview || `spawn 数：${asNumber(data.spawn_count) ?? 0}`
     case 'orchestration.spawn.started':
@@ -1148,17 +1306,309 @@ function getEventDetail(event: string, data: Record<string, unknown>): string {
     case 'orchestration.swarm.started':
       return `Peer：${peers.join(', ') || '—'}`
     case 'orchestration.swarm.finished':
-      return terminatedReason || (duration != null ? `总耗时 ${duration.toFixed(2)}s` : 'Swarm 已完成。')
+      return terminatedReason || (duration != null ? `总耗时 ${duration.toFixed(2)}s` : 'Swarm 式运行已完成。')
     default:
       return contentPreview || outputPreview || taskPreview || '暂无更多细节。'
   }
+}
+
+function getAgentCardPreview(item?: AgentTranscriptItem): string {
+  if (!item) return '已加入编排，等待分配任务或事件更新。'
+  if (item.type === 'tool') {
+    return item.output_preview || item.args_preview
+      ? `${item.tool_name} · ${item.output_preview || item.args_preview}`
+      : `${item.tool_name} 工具调用中`
+  }
+  if (item.recipient) return `发给 ${item.recipient}：${item.content_preview || '已发送协作消息。'}`
+  return item.content_preview || '产生了一条新的对话内容。'
+}
+
+function getAgentStatusLabel(status: AgentBoardStatus): string {
+  switch (status) {
+    case 'waiting':
+      return '待命'
+    case 'active':
+      return '执行中'
+    case 'collaborating':
+      return '协作中'
+    case 'review':
+      return '收尾中'
+    case 'done':
+      return '已完成'
+    case 'error':
+      return '异常'
+    default:
+      return status
+  }
+}
+
+function getAgentStatusTone(status: AgentBoardStatus): { column: string; badge: string; dot: string; icon: React.ElementType } {
+  switch (status) {
+    case 'active':
+      return { column: 'bg-[#FFF9EC]', badge: 'bg-[#d97706] text-white', dot: 'bg-[#d97706] animate-pulse', icon: Zap }
+    case 'collaborating':
+      return { column: 'bg-[#F0F8F3]', badge: 'bg-[#16a34a] text-white', dot: 'bg-[#16a34a] animate-pulse', icon: Users }
+    case 'review':
+      return { column: 'bg-[#F7F4FF]', badge: 'bg-[#7C3AED] text-white', dot: 'bg-[#7C3AED]', icon: Shield }
+    case 'done':
+      return { column: 'bg-[#F0F6FD]', badge: 'bg-[#1473D1] text-white', dot: 'bg-[#1473D1]', icon: Check }
+    case 'error':
+      return { column: 'bg-[#FFF1F1]', badge: 'bg-[#dc2626] text-white', dot: 'bg-[#dc2626]', icon: AlertCircle }
+    default:
+      return { column: 'bg-[#FAFAF8]', badge: 'bg-white text-[#8A8A85] border border-[#D4D3CF]', dot: 'bg-[#D4D3CF]', icon: Circle }
+  }
+}
+
+function formatAgentUpdatedAt(timestamp?: number): string {
+  if (!timestamp) return '—'
+  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function buildAgentBoardCards(
+  activeRun: RunDetail,
+  flowDetail: FlowDetail | null,
+  agentPanels: Record<string, AgentTranscriptItem[]>,
+  runEvents: RunEventItem[],
+): AgentBoardCard[] {
+  const cards = new Map<string, AgentBoardCard>()
+  const entryAgent = flowDetail?.entry || flowDetail?.lead
+  const ensure = (name: string, seed?: Partial<AgentBoardCard>) => {
+    const trimmed = name.trim()
+    if (!trimmed) return null
+    const existing = cards.get(trimmed)
+    if (existing) {
+      cards.set(trimmed, { ...existing, ...seed, agent: trimmed })
+      return cards.get(trimmed)!
+    }
+    const created: AgentBoardCard = {
+      agent: trimmed,
+      role: seed?.role,
+      description: seed?.description,
+      status: seed?.status ?? 'waiting',
+      label: seed?.label ?? '待命',
+      eventCount: seed?.eventCount ?? 0,
+      turnCount: seed?.turnCount ?? 0,
+      toolCount: seed?.toolCount ?? 0,
+      sentCount: seed?.sentCount ?? 0,
+      receivedCount: seed?.receivedCount ?? 0,
+      stage: seed?.stage,
+      lastPreview: seed?.lastPreview ?? '已加入编排，等待分配任务或事件更新。',
+      updatedAt: seed?.updatedAt,
+      isEntry: seed?.isEntry ?? trimmed === entryAgent,
+    }
+    cards.set(trimmed, created)
+    return created
+  }
+
+  flowDetail?.agents.forEach((agent) => {
+    ensure(agent.name, {
+      role: agent.role || agent.extends,
+      description: agent.description || agent.prompt,
+      isEntry: agent.name === entryAgent,
+    })
+  })
+
+  Object.entries(agentPanels).forEach(([agentName, items]) => {
+    const lastItem = items[items.length - 1]
+    const toolCount = items.filter((item) => item.type === 'tool').length
+    const messageItems = items.filter((item): item is Extract<AgentTranscriptItem, { type: 'message' }> => item.type === 'message')
+    const card = ensure(agentName)
+    if (!card) return
+    card.eventCount = items.length
+    card.turnCount = Math.max(0, ...items.map((item) => item.turn ?? 0))
+    card.toolCount = toolCount
+    card.sentCount = messageItems.filter((item) => Boolean(item.recipient)).length
+    card.stage = lastItem?.stage_id || card.stage
+    card.lastPreview = getAgentCardPreview(lastItem)
+    card.updatedAt = lastItem?.time || card.updatedAt
+    if (!activeRun.done) {
+      card.status = card.sentCount > 0 ? 'collaborating' : 'active'
+      card.label = getAgentStatusLabel(card.status)
+    }
+  })
+
+  runEvents.forEach((ev) => {
+    if (ev.event === 'orchestration.spawn.started' || ev.event === 'orchestration.spawn.finished' || ev.event === 'orchestration.agent.tool' || ev.event === 'orchestration.agent.message') {
+      const agent = asText(ev.data.agent)
+      const card = ensure(agent)
+      if (!card) return
+      card.updatedAt = Math.max(card.updatedAt ?? 0, ev.time)
+      card.stage = asText(ev.data.stage_id) || card.stage
+      if (!activeRun.done) {
+        if (ev.event === 'orchestration.spawn.finished') {
+          card.status = 'review'
+          card.label = '等待汇总'
+        } else if (ev.event === 'orchestration.agent.message' && asText(ev.data.recipient)) {
+          card.status = 'collaborating'
+          card.label = '协作中'
+        } else {
+          card.status = 'active'
+          card.label = '执行中'
+        }
+      }
+    }
+    if (ev.event === 'orchestration.message.sent') {
+      const sender = asText(ev.data.sender)
+      const recipient = asText(ev.data.recipient)
+      const senderCard = ensure(sender)
+      if (senderCard) {
+        senderCard.sentCount += 1
+        senderCard.status = activeRun.done ? senderCard.status : 'collaborating'
+        senderCard.label = activeRun.done ? senderCard.label : '协作中'
+        senderCard.updatedAt = Math.max(senderCard.updatedAt ?? 0, ev.time)
+        senderCard.lastPreview = asText(ev.data.summary) || asText(ev.data.content_preview) || `发给 ${recipient || '队友'} 的协作消息`
+      }
+      const recipientCard = ensure(recipient)
+      if (recipientCard) {
+        recipientCard.receivedCount += 1
+        recipientCard.updatedAt = Math.max(recipientCard.updatedAt ?? 0, ev.time)
+      }
+    }
+  })
+
+  const result = activeRun.result
+  if (isSwarmRunResult(result)) {
+    result.peers.forEach((peer) => {
+      const card = ensure(peer.name, { role: peer.agent })
+      if (!card) return
+      card.status = peer.is_error ? 'error' : 'done'
+      card.label = peer.is_error ? '异常' : '已完成'
+      card.turnCount = Math.max(card.turnCount, peer.turns)
+      card.toolCount = Math.max(card.toolCount, peer.tool_calls)
+      card.sentCount = Math.max(card.sentCount, peer.sent_count ?? 0)
+      card.receivedCount = Math.max(card.receivedCount, peer.received_count ?? 0)
+      card.lastPreview = getSwarmPeerNarrative(peer)
+      card.isEntry = card.isEntry || peer.name === result.entry || peer.name === result.lead
+    })
+  } else if (isCoordinatorRunResult(result)) {
+    result.stages.forEach((stage) => {
+      const agent = stage.coordinator_agent
+      if (!agent) return
+      const card = ensure(agent, { stage: stage.stage_id })
+      if (!card) return
+      card.status = stage.is_error ? 'error' : 'done'
+      card.label = stage.is_error ? '异常' : '已完成'
+      card.lastPreview = stage.output_preview || card.lastPreview
+      card.eventCount = Math.max(card.eventCount, stage.spawn_count)
+    })
+  }
+
+  if (activeRun.done) {
+    cards.forEach((card) => {
+      if (card.status === 'waiting' || !isSwarmRunResult(result)) {
+        card.status = activeRun.status === 'failed' ? 'error' : 'done'
+        card.label = activeRun.status === 'failed' ? '异常' : getRunStatusLabel(activeRun)
+      }
+    })
+  }
+
+  return Array.from(cards.values()).sort((a, b) => {
+    if (a.isEntry !== b.isEntry) return a.isEntry ? -1 : 1
+    return a.agent.localeCompare(b.agent)
+  })
+}
+
+function AgentOrchestrationBoard({ cards, selectedAgent, onSelectAgent }: {
+  cards: AgentBoardCard[]
+  selectedAgent: string | null
+  onSelectAgent: (agent: string) => void
+}) {
+  const columns: Array<{ status: AgentBoardStatus; title: string }> = [
+    { status: 'waiting', title: 'Backlog' },
+    { status: 'active', title: 'In Progress' },
+    { status: 'collaborating', title: 'Messaging' },
+    { status: 'review', title: 'In Review' },
+    { status: 'done', title: 'Done' },
+    { status: 'error', title: 'Blocked' },
+  ]
+  const activeColumns = columns
+    .map((column) => ({ ...column, cards: cards.filter((card) => card.status === column.status) }))
+    .filter((column) => column.cards.length > 0 || column.status !== 'error')
+
+  if (cards.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-[#E5E4E0] bg-[#FAFAF8] px-4 py-12 text-center text-[12px] text-[#ABABAB]">
+        运行开始后，这里会按状态展示每一个成员 agent。
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div className="grid min-w-[920px] auto-cols-[minmax(210px,1fr)] grid-flow-col gap-3">
+        {activeColumns.map((column) => {
+          const tone = getAgentStatusTone(column.status)
+          const Icon = tone.icon
+          return (
+            <div key={column.status} className={`min-h-[360px] rounded-2xl border border-[#E5E4E0]/80 ${tone.column} p-3`}>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold ${tone.badge}`}>
+                    <Icon size={10} />
+                    {column.title}
+                  </span>
+                  <span className="text-[11px] font-semibold text-[#8A8A85]">{column.cards.length}</span>
+                </div>
+                <span className="text-[14px] leading-none text-[#ABABAB]">...</span>
+              </div>
+              <div className="space-y-2.5">
+                {column.cards.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-[#E5E4E0] bg-white/45 px-3 py-8 text-center text-[11px] text-[#ABABAB]">
+                    暂无成员
+                  </div>
+                ) : column.cards.map((card) => (
+                  <button
+                    key={card.agent}
+                    type="button"
+                    onClick={() => onSelectAgent(card.agent)}
+                    className={`w-full rounded-2xl border bg-white px-3.5 py-3 text-left shadow-[0_1px_2px_rgba(15,15,15,0.04)] transition-all hover:-translate-y-0.5 hover:shadow-md ${
+                      selectedAgent === card.agent ? 'border-[#3D3BF3]/35 ring-2 ring-[#3D3BF3]/10' : 'border-[#E5E4E0]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-[JetBrains_Mono,monospace] text-[10px] text-[#8A8A85]">{card.agent}</div>
+                        <div className="mt-1 line-clamp-2 text-[12px] font-bold leading-5 text-[#0F0F0F]">{card.role || card.description || (card.isEntry ? '起始 Agent' : '成员 Agent')}</div>
+                      </div>
+                      <span className={`mt-0.5 h-2 w-2 rounded-full ${tone.dot}`} />
+                    </div>
+                    <div className="mt-2 line-clamp-2 text-[11px] leading-5 text-[#6B6A78]">{card.lastPreview}</div>
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      {card.isEntry && <span className="rounded-md bg-[#0F0F0F] px-1.5 py-0.5 text-[9px] font-bold text-white">ENTRY</span>}
+                      {card.stage && <span className="rounded-md bg-[#F4F3F0] px-1.5 py-0.5 text-[9px] font-semibold text-[#8A8A85]">{card.stage}</span>}
+                      <span className="rounded-md bg-[#F4F3F0] px-1.5 py-0.5 text-[9px] font-semibold text-[#8A8A85]">{card.eventCount} events</span>
+                      {card.toolCount > 0 && <span className="rounded-md bg-[#d97706]/10 px-1.5 py-0.5 text-[9px] font-semibold text-[#d97706]">{card.toolCount} tools</span>}
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
+                      <div className="rounded-lg bg-[#FAFAF8] px-2 py-1">
+                        <div className="text-[10px] font-bold text-[#0F0F0F]">{card.turnCount}</div>
+                        <div className="text-[8px] uppercase tracking-[0.08em] text-[#ABABAB]">Turns</div>
+                      </div>
+                      <div className="rounded-lg bg-[#FAFAF8] px-2 py-1">
+                        <div className="text-[10px] font-bold text-[#0F0F0F]">{card.sentCount}</div>
+                        <div className="text-[8px] uppercase tracking-[0.08em] text-[#ABABAB]">Sent</div>
+                      </div>
+                      <div className="rounded-lg bg-[#FAFAF8] px-2 py-1">
+                        <div className="text-[10px] font-bold text-[#0F0F0F]">{formatAgentUpdatedAt(card.updatedAt)}</div>
+                        <div className="text-[8px] uppercase tracking-[0.08em] text-[#ABABAB]">Updated</div>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 function isSwarmRunResult(result: RunDetail['result']): result is SwarmRunResult {
   return Boolean(result)
     && typeof result === 'object'
     && !Array.isArray(result)
-    && (result as { kind?: unknown }).kind === 'swarm'
+    && ((result as { kind?: unknown }).kind === 'swarm' || (result as { kind?: unknown }).kind === 'hybrid')
     && Array.isArray((result as { peers?: unknown }).peers)
 }
 
@@ -1222,10 +1672,12 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
   const [expandedFlow, setExpandedFlow] = useState<string | null>(null)
   const [flowDetail, setFlowDetail] = useState<FlowDetail | null>(null)
   const [runDialog, setRunDialog] = useState<RunDialogState | null>(null)
+  const [runDetailTab, setRunDetailTab] = useState<RunDetailTab>('overview')
   const [startingRun, setStartingRun] = useState(false)
   const [runEvents, setRunEvents] = useState<RunEventItem[]>([])
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null)
+  const [activeRunFlowDetail, setActiveRunFlowDetail] = useState<FlowDetail | null>(null)
   const [runDetailLoading, setRunDetailLoading] = useState(false)
   const [cancellingRun, setCancellingRun] = useState(false)
   const [agentPanels, setAgentPanels] = useState<Record<string, AgentTranscriptItem[]>>({})
@@ -1258,7 +1710,13 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
   const refreshRunDetail = useCallback(async (runId: string, silent: boolean = false) => {
     if (!silent) setRunDetailLoading(true)
     try {
-      setActiveRun(await getRun(runId))
+      const detail = await getRun(runId)
+      setActiveRun(detail)
+      try {
+        setActiveRunFlowDetail(await getFlow(detail.flow))
+      } catch {
+        setActiveRunFlowDetail(null)
+      }
     } catch (err) {
       if (!silent) fire('error', `加载运行详情失败: ${err}`)
     } finally {
@@ -1277,8 +1735,10 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
   useEffect(() => {
     if (!activeRunId) {
       setActiveRun(null)
+      setActiveRunFlowDetail(null)
       setAgentPanels({})
       setSelectedAgentPanel(null)
+      setRunDetailTab('overview')
       return
     }
     void refreshRunDetail(activeRunId)
@@ -1289,6 +1749,20 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
     const id = window.setInterval(() => { void refreshRunDetail(activeRunId, true) }, 2500)
     return () => window.clearInterval(id)
   }, [activeRun?.done, activeRunId, refreshRunDetail, tab])
+
+  const activeAgentCards = useMemo(
+    () => activeRun ? buildAgentBoardCards(activeRun, activeRunFlowDetail, agentPanels, runEvents) : [],
+    [activeRun, activeRunFlowDetail, agentPanels, runEvents],
+  )
+  const activeAgentStats = useMemo(() => ({
+    members: activeAgentCards.length,
+    waiting: activeAgentCards.filter((card) => card.status === 'waiting').length,
+    active: activeAgentCards.filter((card) => card.status === 'active' || card.status === 'collaborating' || card.status === 'review').length,
+    done: activeAgentCards.filter((card) => card.status === 'done').length,
+    blocked: activeAgentCards.filter((card) => card.status === 'error').length,
+    tools: activeAgentCards.reduce((sum, card) => sum + card.toolCount, 0),
+    messages: activeAgentCards.reduce((sum, card) => sum + card.sentCount, 0),
+  }), [activeAgentCards])
 
   useEffect(() => {
     if (!activeRunId) return undefined
@@ -1435,8 +1909,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
 
   const handleStartRun = async () => {
     if (!runDialog) return
-    if (runDialog.detail.mode === 'swarm' && !runDialog.task.trim()) {
-      fire('error', '请输入 swarm 任务描述')
+    if ((runDialog.detail.mode === 'swarm' || runDialog.detail.mode === 'hybrid') && !runDialog.task.trim()) {
+      fire('error', `请输入 ${getFlowModeConfig(runDialog.detail.mode).label} 任务描述`)
       return
     }
 
@@ -1449,7 +1923,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
           .map(([key, value]) => [key, value ?? '']),
       )
       if (Object.keys(vars).length > 0) params.vars = vars
-      if (runDialog.detail.mode === 'swarm') params.task = runDialog.task.trim()
+      if (runDialog.detail.mode === 'swarm' || runDialog.detail.mode === 'hybrid') params.task = runDialog.task.trim()
 
       const result = await startRun(params)
       fire('success', `运行 ${result.run_id.slice(0, 8)}… 已启动`)
@@ -1627,6 +2101,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                 {flows.map((flow) => {
                   const isExp = expandedFlow === flow.name
                   const canEdit = flow.source === 'project' || flow.source === 'global'
+                  const detailMode = flowDetail && isExp ? getFlowModeConfig(flowDetail.mode) : null
                   return (
                     <div key={flow.name} className={cardStyle + ` overflow-hidden ${isExp ? 'shadow-md' : 'hover:shadow-md'} transition-shadow`}>
                       <div className="flex items-center gap-4 px-5 py-3.5 cursor-pointer group" onClick={() => void handleViewFlow(flow.name)}>
@@ -1655,12 +2130,14 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                         <div className="px-5 pb-4 border-t border-[#F4F3F0]">
                           <div className="mt-3.5 space-y-3">
                             <div className="flex items-center gap-2.5 flex-wrap">
-                              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
-                                flowDetail.mode === 'coordinator' ? 'bg-[#3D3BF3]/8 text-[#3D3BF3]' : 'bg-[#d97706]/8 text-[#d97706]'
-                              }`}>{flowDetail.mode === 'coordinator' ? <Network size={10} /> : <Users size={10} />}{flowDetail.mode}</span>
+                              {(() => {
+                                const cfg = detailMode ?? getFlowModeConfig(flowDetail.mode)
+                                const Icon = cfg.icon
+                                return <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold ${cfg.badge}`}><Icon size={10} />{cfg.label}</span>
+                              })()}
                               {isBuiltinDemoFlow(flow.name) && <DemoFlowBadge label="Builtin Demo" />}
-                              {flowDetail.mode === 'coordinator' && flowDetail.coordinator && <span className="text-[11px] text-[#8A8A85]">Lead: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.coordinator}</span></span>}
-                              {flowDetail.mode !== 'coordinator' && (flowDetail.entry || flowDetail.lead) && <span className="text-[11px] text-[#8A8A85]">起始 Agent: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.entry || flowDetail.lead}</span></span>}
+                              {usesCoordinator(flowDetail.mode) && flowDetail.coordinator && <span className="text-[11px] text-[#8A8A85]">协调 Agent: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.coordinator}</span></span>}
+                              {usesEntry(flowDetail.mode) && (flowDetail.entry || flowDetail.lead) && <span className="text-[11px] text-[#8A8A85]">起始 Agent: <span className="font-[JetBrains_Mono,monospace] font-semibold text-[#5C5C5C]">{flowDetail.entry || flowDetail.lead}</span></span>}
                               <span className="text-[11px] text-[#ABABAB]">{flowDetail.agents.length} agents · {flowDetail.stages.length} stages</span>
                               <button onClick={() => void openRunDialog(flow)} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-[#16a34a]/20 bg-[#16a34a]/8 px-3 py-1.5 text-[11px] font-semibold text-[#16a34a] transition-colors hover:bg-[#16a34a]/12">
                                 <Play size={11} />配置并运行
@@ -1668,12 +2145,17 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                             </div>
                             {flow.name === 'research' && (
                               <div className="rounded-2xl border border-[#3D3BF3]/12 bg-[#3D3BF3]/[0.04] px-4 py-3 text-[12px] leading-6 text-[#5C5C5C]">
-                                这个内置示例用于演示 Coordinator 模式的完整链路：并行探索、基于结果的 fan-out 深挖，以及最后由 coordinator 汇总为结构化简报。
+                                这个内置示例用于演示工作流式的完整链路：并行探索、基于结果的 fan-out 深挖，以及最后由协调 Agent 汇总为结构化简报。
                               </div>
                             )}
                             {flow.name === 'pair-review' && (
                               <div className="rounded-2xl border border-[#d97706]/15 bg-[#d97706]/[0.04] px-4 py-3 text-[12px] leading-6 text-[#6B4D1F]">
-                                这个内置示例用于演示 Swarm 模式的核心差异：不仅有起始 agent 发起任务，还要求安全与性能 reviewer 彼此直接发消息做交叉校验，再由发起该轮协作的 peer 汇总最终报告。
+                                这个内置示例用于演示 Swarm 式的核心差异：不仅有起始 agent 发起任务，还要求安全与性能 reviewer 彼此直接发消息做交叉校验，再由发起该轮协作的 peer 汇总最终报告。
+                              </div>
+                            )}
+                            {flow.name === 'supervised-review' && (
+                              <div className="rounded-2xl border border-[#16a34a]/15 bg-[#16a34a]/[0.04] px-4 py-3 text-[12px] leading-6 text-[#355C3B]">
+                                这个内置示例用于演示主管协作式：主管 Agent 接收任务、分派架构与风险专家，并以专家反馈为输入产出最终决策。
                               </div>
                             )}
                             {flowDetail.agents.length > 0 && (
@@ -1741,6 +2223,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                       </div>
                     ) : runs.map((run) => {
                       const tone = getRunTone(run)
+                      const modeCfg = getFlowModeConfig(run.mode)
+                      const ModeIcon = modeCfg.icon
                       return (
                         <button key={run.run_id} type="button" onClick={() => { setActiveRunId(run.run_id); setRunEvents([]) }}
                           className={cardStyle + ` w-full text-left px-4 py-3 transition-all ${
@@ -1751,9 +2235,9 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span className="text-[12px] font-semibold text-[#0F0F0F] truncate">{run.flow}</span>
-                                <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${run.mode === 'swarm' ? 'bg-[#d97706]/8 text-[#d97706]' : 'bg-[#3D3BF3]/8 text-[#3D3BF3]'}`}>
-                                  {run.mode === 'swarm' ? <Users size={9} /> : <Network size={9} />}
-                                  {run.mode}
+                                <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[9px] font-bold ${modeCfg.badge}`}>
+                                  <ModeIcon size={9} />
+                                  {modeCfg.label}
                                 </span>
                               </div>
                               <div className="mt-1 font-[JetBrains_Mono,monospace] text-[10px] text-[#8A8A85] truncate">{run.run_id}</div>
@@ -1776,17 +2260,23 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                     <>
                       <div className={cardStyle + ' overflow-hidden'}>
                         <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4 border-b border-[#E5E4E0] bg-[#0F0F0F]">
+                          {(() => {
+                            const modeCfg = getFlowModeConfig(activeRun.mode)
+                            const ModeIcon = modeCfg.icon
+                            return (
                           <div>
                             <div className="flex items-center gap-2.5 flex-wrap">
                               <h3 className="text-[14px] font-bold text-white">{activeRun.flow}</h3>
-                              <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${activeRun.mode === 'swarm' ? 'bg-[#d97706]/15 text-[#F4B467]' : 'bg-white/10 text-white'}`}>
-                                {activeRun.mode === 'swarm' ? <Users size={9} /> : <Network size={9} />}
-                                {activeRun.mode}
+                              <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[9px] font-bold ${modeCfg.darkBadge}`}>
+                                <ModeIcon size={9} />
+                                {modeCfg.label}
                               </span>
                               <span className={`inline-flex rounded-lg px-2 py-0.5 text-[9px] font-bold ${getRunTone(activeRun).badge}`}>{getRunStatusLabel(activeRun)}</span>
                             </div>
                             <div className="mt-2 font-[JetBrains_Mono,monospace] text-[10px] text-[#8A8A85]">{activeRun.run_id}</div>
                           </div>
+                            )
+                          })()}
                           <div className="flex items-center gap-2">
                             <button onClick={() => activeRunId && void refreshRunDetail(activeRunId)} className={btnGhost + ' !text-[#8A8A85] hover:!bg-white/10 hover:!text-white'}>
                               {runDetailLoading ? '刷新中…' : '刷新详情'}
@@ -1801,27 +2291,77 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                           </div>
                         </div>
 
-                        <div className="p-5 space-y-4">
-                          <div className="grid gap-3 md:grid-cols-4">
-                            <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
-                              <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">开始时间</div>
-                              <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{formatRunTime(activeRun.started_at)}</div>
-                            </div>
-                            <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
-                              <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">耗时</div>
-                              <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{formatRunElapsed(activeRun)}</div>
-                            </div>
-                            <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
-                              <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">最大轮数</div>
-                              <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.max_turns || '默认'}</div>
-                            </div>
-                            <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
-                              <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">Walltime</div>
-                              <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.walltime_seconds ? `${activeRun.walltime_seconds}s` : '未限制'}</div>
-                            </div>
+                        <div className="border-b border-[#E5E4E0] bg-white px-5 py-3">
+                          <div className="flex gap-1 overflow-x-auto">
+                            {([
+                              { key: 'overview' as const, icon: Activity, label: '总览' },
+                              { key: 'board' as const, icon: LayoutGrid, label: '看板' },
+                              { key: 'transcripts' as const, icon: Bot, label: '对话' },
+                              { key: 'result' as const, icon: Layers, label: '结果' },
+                              { key: 'events' as const, icon: List, label: '事件' },
+                            ]).map(({ key, icon: Icon, label }) => (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() => setRunDetailTab(key)}
+                                className={`flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-semibold transition-all ${
+                                  runDetailTab === key
+                                    ? 'bg-[#0F0F0F] text-white shadow-[0_1px_3px_rgba(0,0,0,0.16)]'
+                                    : 'text-[#8A8A85] hover:bg-[#F4F3F0] hover:text-[#5C5C5C]'
+                                }`}
+                              >
+                                <Icon size={13} />{label}
+                              </button>
+                            ))}
                           </div>
+                        </div>
 
-                          {(activeRun.task_preview || Object.keys(activeRun.vars).length > 0) && (
+                        <div className="p-5">
+                          {runDetailTab === 'overview' && (
+                            <div className="space-y-4">
+                              <div className="grid gap-3 md:grid-cols-4">
+                                <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">开始时间</div>
+                                  <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{formatRunTime(activeRun.started_at)}</div>
+                                </div>
+                                <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">耗时</div>
+                                  <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{formatRunElapsed(activeRun)}</div>
+                                </div>
+                                <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">最大轮数</div>
+                                  <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.max_turns || '默认'}</div>
+                                </div>
+                                <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">Walltime</div>
+                                  <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.walltime_seconds ? `${activeRun.walltime_seconds}s` : '未限制'}</div>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 md:grid-cols-4">
+                                <button type="button" onClick={() => setRunDetailTab('board')} className="rounded-2xl border border-[#E5E4E0] bg-white px-4 py-3 text-left transition-all hover:border-[#3D3BF3]/25 hover:shadow-md">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">成员 Agent</div>
+                                  <div className="mt-2 text-[22px] font-semibold text-[#0F0F0F]">{activeAgentStats.members}</div>
+                                  <div className="mt-1 text-[10px] text-[#8A8A85]">{activeAgentStats.active} active · {activeAgentStats.done} done</div>
+                                </button>
+                                <button type="button" onClick={() => setRunDetailTab('board')} className="rounded-2xl border border-[#E5E4E0] bg-white px-4 py-3 text-left transition-all hover:border-[#d97706]/25 hover:shadow-md">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">工具调用</div>
+                                  <div className="mt-2 text-[22px] font-semibold text-[#d97706]">{activeAgentStats.tools}</div>
+                                  <div className="mt-1 text-[10px] text-[#8A8A85]">来自成员看板</div>
+                                </button>
+                                <button type="button" onClick={() => setRunDetailTab('events')} className="rounded-2xl border border-[#E5E4E0] bg-white px-4 py-3 text-left transition-all hover:border-[#16a34a]/25 hover:shadow-md">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">协作消息</div>
+                                  <div className="mt-2 text-[22px] font-semibold text-[#16a34a]">{activeAgentStats.messages}</div>
+                                  <div className="mt-1 text-[10px] text-[#8A8A85]">{runEvents.length} live events</div>
+                                </button>
+                                <button type="button" onClick={() => activeAgentStats.blocked > 0 ? setRunDetailTab('board') : setRunDetailTab('result')} className="rounded-2xl border border-[#E5E4E0] bg-white px-4 py-3 text-left transition-all hover:border-[#dc2626]/25 hover:shadow-md">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">异常</div>
+                                  <div className={`mt-2 text-[22px] font-semibold ${activeAgentStats.blocked > 0 ? 'text-[#dc2626]' : 'text-[#0F0F0F]'}`}>{activeAgentStats.blocked}</div>
+                                  <div className="mt-1 text-[10px] text-[#8A8A85]">{activeRun.error ? '运行失败' : '当前状态'}</div>
+                                </button>
+                              </div>
+
+                              {(activeRun.task_preview || Object.keys(activeRun.vars).length > 0) && (
                             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)]">
                               <div className="rounded-2xl border border-[#E5E4E0] bg-white p-4">
                                 <div className={sectionTitle + ' mb-3'}><Activity size={12} className="text-[#3D3BF3]" />任务摘要</div>
@@ -1845,15 +2385,57 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                             </div>
                           )}
 
-                          {activeRun.error && (
+                              {activeRun.error && (
                             <div className="rounded-2xl border border-[#dc2626]/20 bg-[#dc2626]/6 p-4 text-[12px] text-[#b42318]">
                               <div className="flex items-center gap-2 font-semibold"><AlertCircle size={14} />运行失败</div>
                               <div className="mt-2 whitespace-pre-wrap break-words leading-6">{activeRun.error}</div>
                             </div>
                           )}
 
-                          <div className="rounded-2xl border border-[#E5E4E0] bg-white p-4 space-y-4">
-                            <div className={sectionTitle}><Bot size={12} className="text-[#3D3BF3]" />子 Agent 运行窗口</div>
+                              <div className="grid gap-3 md:grid-cols-3">
+                                <button type="button" onClick={() => setRunDetailTab('board')} className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3 text-left transition-colors hover:bg-white">
+                                  <div className={sectionTitle}><LayoutGrid size={12} className="text-[#3D3BF3]" />打开看板</div>
+                                  <p className="mt-2 text-[11px] leading-5 text-[#8A8A85]">按状态查看每个成员 agent 的执行位置。</p>
+                                </button>
+                                <button type="button" onClick={() => setRunDetailTab('transcripts')} className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3 text-left transition-colors hover:bg-white">
+                                  <div className={sectionTitle}><Bot size={12} className="text-[#3D3BF3]" />查看对话</div>
+                                  <p className="mt-2 text-[11px] leading-5 text-[#8A8A85]">钻进单个 agent 的消息、收件内容和工具调用。</p>
+                                </button>
+                                <button type="button" onClick={() => setRunDetailTab('result')} className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3 text-left transition-colors hover:bg-white">
+                                  <div className={sectionTitle}><Layers size={12} className="text-[#3D3BF3]" />查看结果</div>
+                                  <p className="mt-2 text-[11px] leading-5 text-[#8A8A85]">查看多 Agent 运行的最终摘要。</p>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {runDetailTab === 'board' && (
+                            <div className="space-y-4">
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className={sectionTitle}><LayoutGrid size={12} className="text-[#3D3BF3]" />成员 Agent 状态看板</div>
+                                <div className="flex items-center gap-3 text-[10px] text-[#8A8A85]">
+                                  <span>{activeAgentStats.members} members</span>
+                                  <span>{activeAgentStats.tools} tools</span>
+                                  <span>{activeAgentStats.messages} messages</span>
+                                </div>
+                              </div>
+                              <AgentOrchestrationBoard
+                                cards={activeAgentCards}
+                                selectedAgent={selectedAgentPanel}
+                                onSelectAgent={(agent) => {
+                                  setSelectedAgentPanel(agent)
+                                  if (agentPanels[agent]) setRunDetailTab('transcripts')
+                                }}
+                              />
+                            </div>
+                          )}
+
+                          {runDetailTab === 'transcripts' && (
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className={sectionTitle}><Bot size={12} className="text-[#3D3BF3]" />子 Agent 运行窗口</div>
+                                <button type="button" onClick={() => setRunDetailTab('board')} className={btnGhost}>返回看板</button>
+                              </div>
                             <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
                               <div className="space-y-2">
                                 {Object.keys(agentPanels).length > 0 ? Object.entries(agentPanels).map(([agentName, items]) => (
@@ -1948,13 +2530,14 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                               </div>
                             </div>
                           </div>
+                          )}
 
-                          {isSwarmRunResult(activeRun.result) && (
-                            <div className="rounded-2xl border border-[#E5E4E0] bg-white p-4 space-y-4">
-                              <div className={sectionTitle}><Users size={12} className="text-[#d97706]" />Swarm 结果</div>
+                          {runDetailTab === 'result' && isSwarmRunResult(activeRun.result) && (
+                            <div className="space-y-4">
+                              <div className={sectionTitle}><Users size={12} className="text-[#d97706]" />{activeRun.result.kind === 'hybrid' ? '主管协作式结果' : 'Swarm 式结果'}</div>
                               <div className="grid gap-3 md:grid-cols-5">
                                 <div className="rounded-2xl bg-[#FAFAF8] px-4 py-3">
-                                  <div className="text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">起始 Agent</div>
+                                  <div className="text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">{activeRun.result.kind === 'hybrid' ? '主管 Agent' : '起始 Agent'}</div>
                                   <div className="mt-2 text-[12px] font-semibold text-[#0F0F0F]">{activeRun.result.entry || activeRun.result.lead || '—'}</div>
                                 </div>
                                 <div className="rounded-2xl bg-[#FAFAF8] px-4 py-3">
@@ -2032,9 +2615,9 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                             </div>
                           )}
 
-                          {isCoordinatorRunResult(activeRun.result) && (
-                            <div className="rounded-2xl border border-[#E5E4E0] bg-white p-4 space-y-4">
-                              <div className={sectionTitle}><Layers size={12} className="text-[#3D3BF3]" />Coordinator 结果</div>
+                          {runDetailTab === 'result' && isCoordinatorRunResult(activeRun.result) && (
+                            <div className="space-y-4">
+                              <div className={sectionTitle}><Layers size={12} className="text-[#3D3BF3]" />编排/协作结果</div>
                               <div className="grid gap-3 md:grid-cols-4">
                                 <div className="rounded-2xl bg-[#FAFAF8] px-4 py-3">
                                   <div className="text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">阶段数</div>
@@ -2077,47 +2660,55 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                             </div>
                           )}
 
-                          {isGenericCancelledResult(activeRun.result) && (
+                          {runDetailTab === 'result' && !isSwarmRunResult(activeRun.result) && !isCoordinatorRunResult(activeRun.result) && !isGenericCancelledResult(activeRun.result) && (
+                            <div className="rounded-2xl border border-dashed border-[#E5E4E0] bg-[#FAFAF8] px-5 py-12 text-center text-[12px] text-[#ABABAB]">
+                              当前运行还没有可展示的结构化结果。
+                            </div>
+                          )}
+
+                          {runDetailTab === 'result' && isGenericCancelledResult(activeRun.result) && (
                             <div className="rounded-2xl border border-[#d97706]/15 bg-[#d97706]/[0.04] p-4 text-[12px] text-[#8A8A85]">
                               该运行已被取消，当前只保留基础状态摘要，细粒度历史时间线仍依赖实时事件流。
                             </div>
                           )}
-                        </div>
-                      </div>
 
-                      <div className={cardStyle + ' overflow-hidden'}>
-                        <div className="flex items-center gap-2.5 px-5 py-3 border-b border-[#E5E4E0] bg-white">
-                          <Activity size={13} className="text-[#3D3BF3]" />
-                          <span className="text-[12px] font-bold text-[#0F0F0F]">事件时间线</span>
-                          <span className="text-[10px] text-[#ABABAB] font-[JetBrains_Mono,monospace]">{activeRun.run_id.slice(0, 12)}</span>
-                          {!activeRun.done && <Circle size={6} fill="currentColor" className="text-[#16a34a] animate-pulse" />}
-                        </div>
-                        {runEvents.length === 0 ? (
-                          <div className="px-5 py-10 text-center text-[12px] text-[#ABABAB]">
-                            {activeRun.done
-                              ? '当前没有可回放的历史 SSE 事件。后续补齐持久化事件历史后，这里可以展示完整回放。'
-                              : '已连接事件流，等待新的编排事件到达…'}
-                          </div>
-                        ) : (
-                          <div className="max-h-[460px] overflow-y-auto divide-y divide-[#F4F3F0]">
-                            {runEvents.map((ev, index) => (
-                              <div key={`${ev.event}-${index}`} className="px-5 py-3.5 hover:bg-[#FAFAF8] transition-colors">
-                                <div className="flex items-start gap-3">
-                                  <div className="mt-0.5 text-[10px] font-[JetBrains_Mono,monospace] text-[#ABABAB] tabular-nums whitespace-nowrap">
-                                    {new Date(ev.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className={`inline-flex rounded-md px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${getEventTone(ev.event)}`}>{getEventLabel(ev.event)}</span>
-                                      <span className="text-[12px] font-semibold text-[#0F0F0F]">{getEventHeadline(ev.event, ev.data)}</span>
-                                    </div>
-                                    <div className="mt-1 text-[11px] leading-6 text-[#6B6A78]">{getEventDetail(ev.event, ev.data)}</div>
-                                  </div>
-                                </div>
+                          {runDetailTab === 'events' && (
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-2.5">
+                                <Activity size={13} className="text-[#3D3BF3]" />
+                                <span className="text-[12px] font-bold text-[#0F0F0F]">事件时间线</span>
+                                <span className="text-[10px] text-[#ABABAB] font-[JetBrains_Mono,monospace]">{activeRun.run_id.slice(0, 12)}</span>
+                                {!activeRun.done && <Circle size={6} fill="currentColor" className="text-[#16a34a] animate-pulse" />}
                               </div>
-                            ))}
-                          </div>
-                        )}
+                              {runEvents.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-[#E5E4E0] bg-[#FAFAF8] px-5 py-10 text-center text-[12px] text-[#ABABAB]">
+                                  {activeRun.done
+                                    ? '当前没有可回放的历史 SSE 事件。后续补齐持久化事件历史后，这里可以展示完整回放。'
+                                    : '已连接事件流，等待新的编排事件到达…'}
+                                </div>
+                              ) : (
+                                <div className="max-h-[620px] overflow-y-auto rounded-2xl border border-[#E5E4E0] bg-white divide-y divide-[#F4F3F0]">
+                                  {runEvents.map((ev, index) => (
+                                    <div key={`${ev.event}-${index}`} className="px-5 py-3.5 hover:bg-[#FAFAF8] transition-colors">
+                                      <div className="flex items-start gap-3">
+                                        <div className="mt-0.5 text-[10px] font-[JetBrains_Mono,monospace] text-[#ABABAB] tabular-nums whitespace-nowrap">
+                                          {new Date(ev.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span className={`inline-flex rounded-md px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] ${getEventTone(ev.event)}`}>{getEventLabel(ev.event)}</span>
+                                            <span className="text-[12px] font-semibold text-[#0F0F0F]">{getEventHeadline(ev.event, ev.data)}</span>
+                                          </div>
+                                          <div className="mt-1 text-[11px] leading-6 text-[#6B6A78]">{getEventDetail(ev.event, ev.data)}</div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </>
                   ) : (
@@ -2127,7 +2718,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                           <Activity size={22} />
                         </div>
                         <h3 className="text-[15px] font-semibold text-[#0F0F0F]">选择一条运行记录</h3>
-                        <p className="mt-2 text-[12px] leading-6 text-[#8A8A85]">右侧会展示 run 的阶段摘要、Swarm 输出预览、实时事件流以及取消控制。</p>
+                        <p className="mt-2 text-[12px] leading-6 text-[#8A8A85]">右侧会展示 run 的总览、成员看板、结果和实时事件流。</p>
                       </div>
                     </div>
                   )}
@@ -2145,16 +2736,27 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2.5">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10 text-white">
-                      {runDialog.detail.mode === 'swarm' ? <Users size={14} /> : <Network size={14} />}
-                    </div>
-                    <div>
-                      <div className="text-[13px] font-bold text-white">启动 {runDialog.flowName}</div>
-                      <div className="mt-1 text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">{runDialog.detail.mode} · {runDialog.detail.agents.length} agents · {runDialog.detail.stages.length} stages</div>
-                    </div>
+                    {(() => {
+                      const cfg = getFlowModeConfig(runDialog.detail.mode)
+                      const Icon = cfg.icon
+                      return (
+                        <>
+                          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10 text-white">
+                            <Icon size={14} />
+                          </div>
+                          <div>
+                            <div className="text-[13px] font-bold text-white">启动 {runDialog.flowName}</div>
+                            <div className="mt-1 text-[10px] uppercase tracking-[0.08em] text-[#8A8A85]">{cfg.label} · {runDialog.detail.agents.length} agents · {runDialog.detail.stages.length} stages</div>
+                          </div>
+                        </>
+                      )
+                    })()}
                   </div>
+                  {runDialog.detail.mode === 'hybrid' && (
+                    <p className="mt-3 text-[11px] leading-6 text-[#ABABAB]">主管协作式会把任务交给协调 Agent，由它通过 <code>send_message</code> 组织专家协同，最终优先展示主管输出。</p>
+                  )}
                   {runDialog.detail.mode === 'swarm' && (
-                    <p className="mt-3 text-[11px] leading-6 text-[#ABABAB]">Swarm 是去中心化的点对点协作。起始 Agent（如已指定）只负责接收初始任务；其他 peer 通过 <code>send_message</code> 在运行时自由 handoff。</p>
+                    <p className="mt-3 text-[11px] leading-6 text-[#ABABAB]">Swarm 式是去中心化的点对点协作。起始 Agent（如已指定）只负责接收初始任务；其他 peer 通过 <code>send_message</code> 在运行时自由 handoff。</p>
                   )}
                 </div>
                 <button onClick={() => setRunDialog(null)} className="rounded-xl p-2 text-[#8A8A85] transition-colors hover:bg-white/10 hover:text-white">
@@ -2166,18 +2768,22 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
             <div className="max-h-[70vh] overflow-y-auto px-6 py-5 space-y-5 bg-[#FAFAF8]">
               {runDialog.flowName === 'research' ? (
                 <ResearchRunPreset runDialog={runDialog} setRunDialog={setRunDialog} />
+              ) : runDialog.flowName === 'supervised-review' ? (
+                <SupervisedReviewRunPreset runDialog={runDialog} setRunDialog={setRunDialog} />
               ) : runDialog.flowName === 'pair-review' ? (
                 <PairReviewRunPreset runDialog={runDialog} setRunDialog={setRunDialog} />
               ) : (
                 <>
-                  {runDialog.detail.mode === 'swarm' && (
+                  {(runDialog.detail.mode === 'swarm' || runDialog.detail.mode === 'hybrid') && (
                     <div className={cardStyle + ' p-4'}>
                       <div className={sectionTitle + ' mb-3'}><Users size={12} className="text-[#d97706]" />任务描述</div>
                       <textarea
                         value={runDialog.task}
                         onChange={(e) => setRunDialog((prev) => prev ? { ...prev, task: e.target.value } : prev)}
                         rows={4}
-                        placeholder="例如：请以 code review 团队的方式审查最近的 orchestration 持久化改动，输出风险、建议与优先级。"
+                        placeholder={runDialog.detail.mode === 'hybrid'
+                          ? '例如：请由主管组织安全、性能和可维护性专家协作审查最近改动，并综合风险、建议与优先级。'
+                          : '例如：请以 code review 团队的方式审查最近的 orchestration 持久化改动，输出风险、建议与优先级。'}
                         className={inputBase + ' min-h-[120px] resize-y leading-6'}
                       />
                     </div>
@@ -2199,7 +2805,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                       <div className={sectionTitle + ' mb-3'}><Layers size={12} className="text-[#3D3BF3]" />执行结构</div>
                       <div className="space-y-2 text-[11px] text-[#5C5C5C]">
                         <div className="flex items-center justify-between"><span>模式</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.mode}</span></div>
-                        <div className="flex items-center justify-between"><span>起始 Agent</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.entry || runDialog.detail.lead || '—'}</span></div>
+                        <div className="flex items-center justify-between"><span>{runDialog.detail.mode === 'hybrid' ? '主管 Agent' : '起始 Agent'}</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.mode === 'hybrid' ? runDialog.detail.coordinator || runDialog.detail.entry || runDialog.detail.lead || '—' : runDialog.detail.entry || runDialog.detail.lead || '—'}</span></div>
                         <div className="flex items-center justify-between"><span>Stages</span><span className="font-semibold text-[#0F0F0F]">{runDialog.detail.stages.length}</span></div>
                         <div className="flex items-center justify-between"><span>默认变量</span><span className="font-semibold text-[#0F0F0F]">{Object.keys(runDialog.detail.vars).length}</span></div>
                       </div>
@@ -2234,7 +2840,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
 
             <div className="flex items-center justify-end gap-2 border-t border-[#E5E4E0] bg-white px-6 py-4">
               <button onClick={() => setRunDialog(null)} className={btnGhost}>取消</button>
-              <button onClick={() => void handleStartRun()} disabled={startingRun || (runDialog.detail.mode === 'swarm' && !runDialog.task.trim())} className={btnPrimary}>
+              <button onClick={() => void handleStartRun()} disabled={startingRun || ((runDialog.detail.mode === 'swarm' || runDialog.detail.mode === 'hybrid') && !runDialog.task.trim())} className={btnPrimary}>
                 {startingRun ? <RefreshCcw size={12} className="animate-spin" /> : <Play size={12} />}
                 <span>{startingRun ? '启动中…' : '启动运行'}</span>
               </button>

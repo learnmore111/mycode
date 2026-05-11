@@ -46,6 +46,7 @@ from mycode.orchestration.runtime import (
     SwarmResult,
     TmuxMailbox,
     run_coordinator,
+    run_supervisor_collaboration,
     run_swarm,
 )
 from mycode.orchestration.topology.schema import (
@@ -85,5 +86,6 @@ __all__ = [
     "SwarmResult",
     "TmuxMailbox",
     "run_coordinator",
+    "run_supervisor_collaboration",
     "run_swarm",
 ]

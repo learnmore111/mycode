@@ -6,13 +6,12 @@ It declares:
 - ``mode``: coordinator | swarm | hybrid
 - ``agents``: named agent definitions (may ``extend`` a registry agent)
 - ``stages``: (coordinator) ordered DAG with optional fan-out / parallel
-- ``coordinator``: (coordinator/hybrid) the leader agent that synthesises
-  worker outputs.  **Required** for coordinator mode — this is the
-  orchestrator-worker pattern (cf. Anthropic "orchestrator-worker",
-  LangGraph "supervisor").  When omitted, the loader attempts to derive
-  it from the single agent whose ``role == "coordinator"``.
-- ``entry``: (swarm) the entry agent — the initial task receiver.
-  ``lead`` is accepted as a backward-compatible alias.
+- ``coordinator``: (coordinator) the leader agent that synthesises worker
+  outputs; (hybrid) the supervisor agent that receives the task, delegates
+  through mailboxes, and produces the final answer.
+- ``entry``: (swarm) the initial task receiver; (hybrid) fallback supervisor
+  when ``coordinator`` is omitted. ``lead`` is accepted as a backward-
+  compatible alias.
 
 See :mod:`mycode.orchestration.topology.loader` for parsing and
 :mod:`mycode.orchestration.topology.validator` for semantic checks.
@@ -153,8 +152,9 @@ class OrchestrationSpec(BaseModel):
     vars: dict[str, Any] = Field(default_factory=dict)
     agents: list[AgentSpec] = Field(default_factory=list)
     stages: list[StageSpec] = Field(default_factory=list)
-    # In coordinator (or hybrid) mode ``coordinator`` names the leader agent
-    # that synthesises worker outputs — the orchestrator-worker pattern.
+    # In coordinator mode ``coordinator`` names the leader agent that
+    # synthesises worker outputs — the orchestrator-worker pattern. In hybrid
+    # mode it names the supervisor for mailbox-based collaboration.
     # Required for coordinator mode; may be omitted in pure swarm mode.
     # If not explicitly set, the loader derives it from the unique agent
     # whose ``role == "coordinator"`` (see ``_sync_coordinator``).

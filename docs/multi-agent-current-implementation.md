@@ -240,6 +240,19 @@ flow 的核心 schema 位于 `mycode/orchestration/topology/schema.py`，顶层�
 
 ---
 
+## 5.6 主管协作式运行时
+
+`mode: hybrid` 现在通过 `run_supervisor_collaboration()` 执行。它复用 swarm mailbox primitives，但语义不是去中心化 swarm：
+
+1. `coordinator` 作为主管接收用户任务
+2. 主管通过 `send_message` 分派专家
+3. 专家通过 `recipient: main` 回到主管
+4. 运行结果保留 mailbox transcript，并优先展示主管输出
+
+内置 `supervised-review.yaml` 用于展示这个模式：主管组织架构专家和风险专家评审，最后给出 ship / follow-up / block 决策。
+
+---
+
 ## 6. Swarm 运行时
 
 ### 6.1 总体模型
@@ -389,7 +402,7 @@ Swarm 运行结束后会得到 `SwarmResult`，其中包含：
 
 如果只用一句较严谨的话概括当前实现，可以写成：
 
-> 当前仓库的多 Agent 架构，是以 `AgentInfo`、工具注册、权限系统与 LLM runner 为共享基础设施，在其上并行演化出的两套机制：一套是主会话内的 `task` 子代理，一套是以 flow / registry / runtime / API / UI 为主体的独立 orchestration 子系统；其中 Coordinator 负责声明式 flow 执行，Swarm 负责 mailbox 驱动的团队协作。
+> 当前仓库的多 Agent 架构，是以 `AgentInfo`、工具注册、权限系统与 LLM runner 为共享基础设施，在其上并行演化出的两套机制：一套是主会话内的 `task` 子代理，一套是以 flow / registry / runtime / API / UI 为主体的独立 orchestration 子系统；其中 Coordinator 负责声明式 flow 执行，Supervisor Collaboration 与 Swarm 负责 mailbox 驱动的团队协作。
 
 ---
 
@@ -400,7 +413,7 @@ Swarm 运行结束后会得到 `SwarmResult`，其中包含：
 - 有统一的 Agent 数据模型
 - 有多层 Agent / Flow 注册能力
 - 有 loader、validator 与 resolver
-- 有 Coordinator 与 Swarm 两类运行时
+- 有 Coordinator、Supervisor Collaboration 与 Swarm 三类运行时
 - 有 CLI、HTTP API、SSE 与 Web 工作台入口
 - 有相对成体系的测试覆盖
 

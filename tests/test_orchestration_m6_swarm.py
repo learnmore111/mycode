@@ -40,6 +40,7 @@ from mycode.orchestration.runtime import (
     SwarmAgentContext,
     SwarmError,
     SwarmResult,
+    run_supervisor_collaboration,
     run_swarm,
 )
 from mycode.orchestration.runtime.swarm import SendMessageParams, _SendMessageTool
@@ -357,6 +358,16 @@ def _swarm_spec(names: list[str], lead: str) -> OrchestrationSpec:
     )
 
 
+def _hybrid_spec(names: list[str], coordinator: str) -> OrchestrationSpec:
+    return OrchestrationSpec(
+        name="fake-hybrid",
+        mode="hybrid",
+        coordinator=coordinator,
+        agents=[AgentSpec(name=n) for n in names],
+        backend=BackendSpec(prefer="inprocess"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_swarm_happy_path_with_scripted_runner():
     agents = {n: _agent_info(n) for n in ["lead", "sec", "perf"]}
@@ -404,6 +415,47 @@ async def test_run_swarm_happy_path_with_scripted_runner():
     kinds = [e.kind for e in result.transcript]
     assert "shutdown_request" in kinds
     assert kinds.count("message") >= 4  # 2 deliveries + 2 replies
+
+
+@pytest.mark.asyncio
+async def test_run_supervisor_collaboration_uses_coordinator_as_main():
+    agents = {n: _agent_info(n) for n in ["supervisor", "sec", "perf"]}
+    spec = _hybrid_spec(["supervisor", "sec", "perf"], coordinator="supervisor")
+
+    runner = ScriptedRunner(scripts={
+        "supervisor": [
+            Action("send", recipient="sec", content="check auth boundaries"),
+            Action("send", recipient="perf", content="check slow queries"),
+            Action("idle"),
+            Action("idle"),
+            Action("done", content="Supervisor final: ship with two follow-ups."),
+        ],
+        "sec": [
+            Action("send", recipient="main", content="auth boundary is okay"),
+            Action("done", content="sec done"),
+        ],
+        "perf": [
+            Action("send", recipient="main", content="query needs index"),
+            Action("done", content="perf done"),
+        ],
+    })
+
+    result = await run_supervisor_collaboration(
+        spec,
+        agents,
+        user_task="coordinate this review",
+        runner=runner,
+        max_turns=10,
+    )
+
+    assert result.kind == "hybrid"
+    assert result.lead == "supervisor"
+    assert result.entry == "supervisor"
+    assert "Supervisor final" in result.lead_output
+    supervisor_replies = [e.content for e in runner.received["supervisor"]]
+    assert "auth boundary is okay" in supervisor_replies
+    assert "query needs index" in supervisor_replies
+    assert any(e.sender == "supervisor" and e.recipient == "sec" for e in result.transcript)
 
 
 @pytest.mark.asyncio

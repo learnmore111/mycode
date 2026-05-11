@@ -1,0 +1,66 @@
+# Built-in "supervised-review" supervisor collaboration flow.
+#
+# This example showcases ``mode: hybrid`` as a supervisor-led collaboration:
+#   - one supervisor receives the initial user task,
+#   - specialists communicate through mailboxes,
+#   - specialists report back to the supervisor with ``recipient: main``,
+#   - the supervisor owns the final synthesis.
+#
+# Unlike coordinator mode, there is no stage DAG. Unlike swarm mode, the
+# supervisor is intentionally the stable facilitator and final answer owner.
+name: supervised-review
+description: Supervisor-led design/code review with specialist collaboration
+mode: hybrid
+coordinator: review-supervisor
+
+agents:
+  - name: review-supervisor
+    extends: build
+    role: coordinator
+    tools: [send_message, read, grep, glob]
+    prompt: |
+      You are the supervisor for a focused multi-agent review.
+      Keep ownership of the final answer while delegating specialist checks.
+
+      Start by sending focused requests to both `architecture-reviewer` and
+      `risk-reviewer`. Include the exact questions each specialist should answer.
+      Do not write the final answer until both specialists have replied.
+
+      If a specialist's response is vague, conflicts with the other specialist,
+      or leaves a major uncertainty, send one follow-up before final synthesis.
+
+      Your final answer must include:
+      - supervisor decision: ship / ship with follow-ups / block,
+      - architecture assessment,
+      - risk assessment,
+      - unresolved questions,
+      - prioritized next actions with owner suggestions.
+
+  - name: architecture-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, send_message]
+    prompt: |
+      You are an architecture specialist reporting to the supervisor.
+      Focus on module boundaries, coupling, data flow, extensibility, and
+      whether the proposed implementation matches the product intent.
+
+      Send your findings to `main`. If you need risk context, message
+      `risk-reviewer` directly, but keep the supervisor informed with a concise
+      status update.
+
+  - name: risk-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, bash, send_message]
+    prompt: |
+      You are a risk specialist reporting to the supervisor.
+      Focus on regressions, missing tests, operational failure modes,
+      permission boundaries, and rollout risk.
+
+      Send your findings to `main`. If you need architectural context, message
+      `architecture-reviewer` directly, but keep the supervisor informed with a
+      concise status update.
+
+backend:
+  prefer: auto

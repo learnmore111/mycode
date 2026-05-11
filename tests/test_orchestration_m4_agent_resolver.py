@@ -5,7 +5,7 @@ Covers:
 * implicit same-name parent reopen
 * inline overrides respect Pydantic ``model_fields_set`` (unset fields inherit)
 * ``disallowed_tools`` subtracts from the inherited tool allow-list
-* both shipped flows (``research.yaml`` and ``pair-review.yaml``) resolve
+* shipped flows resolve
   cleanly against the default registry
 * unknown ``extends`` → ``AgentResolveError`` (resolver) and clean diagnostic
   via ``validator.validate(registry=...)``
@@ -227,6 +227,19 @@ class TestResolveAllAgents:
         assert sec.extends == "explore"
         assert sec.role == "teammate"
         assert set(sec.tools or []) == {"read", "grep", "glob", "send_message"}
+
+    def test_supervised_review_flow_resolves(self, registry: AgentRegistry) -> None:
+        spec = load_file(FLOWS_DIR / "supervised-review.yaml")
+        resolved = resolve_all_agents(spec.agents, registry)
+
+        assert spec.mode == "hybrid"
+        assert spec.coordinator == "review-supervisor"
+        assert set(resolved) == {"review-supervisor", "architecture-reviewer", "risk-reviewer"}
+
+        supervisor = resolved["review-supervisor"]
+        assert supervisor.extends == "build"
+        assert supervisor.role == "coordinator"
+        assert set(supervisor.tools or []) == {"send_message", "read", "grep", "glob"}
 
 
 # --- validator with registry ---------------------------------------------

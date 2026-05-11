@@ -534,13 +534,13 @@ class LiteLLMSwarmRunner:
 
 
 # ---------------------------------------------------------------------------
-# SwarmResult + run_swarm top-level API
+# SwarmResult + mailbox-collaboration top-level APIs
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class SwarmResult:
-    """Aggregated outcome of a swarm run."""
+    """Aggregated outcome of a mailbox-based multi-agent run."""
 
     flow_name: str
     # Name of the entry agent (initial task receiver).  Kept as ``lead`` for
@@ -555,6 +555,9 @@ class SwarmResult:
     # Convenience: the entry agent's final text is commonly the swarm answer.
     lead_output: str = ""
     terminated_reason: str = ""  # "lead-quiet" | "turn-budget" | "walltime" | "shutdown"
+    # ``hybrid`` reuses the same mailbox result shape, with ``lead`` naming
+    # the supervisor/facilitator whose final output is surfaced first.
+    kind: str = "swarm"
 
     @property
     def entry(self) -> str:
@@ -567,63 +570,33 @@ class SwarmResult:
         return self.lead_output
 
 
-async def run_swarm(
+def _first_declared_agent(spec: OrchestrationSpec, agents: dict[str, AgentInfo]) -> str:
+    if spec.agents:
+        return spec.agents[0].name
+    return next(iter(agents), "")
+
+
+async def _run_mailbox_team(
     spec: OrchestrationSpec,
     agents: dict[str, AgentInfo],
     *,
     user_task: str,
+    lead: str,
+    kind: str,
     runner: SwarmAgentRunner | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     walltime_seconds: float = 300.0,
     events: OrchestrationEventEmitter | None = None,
 ) -> SwarmResult:
-    """Execute an orchestration spec in ``swarm`` mode.
-
-    Parameters
-    ----------
-    spec:
-        Validated spec with ``mode='swarm'``.  ``spec.entry`` (or the
-        legacy alias ``spec.lead``) names the initial task receiver; when
-        neither is set the runtime falls back to the first declared agent.
-    agents:
-        Resolved ``{name → AgentInfo}`` from :mod:`agent_resolver`.
-    user_task:
-        The initial prompt delivered to the entry agent's inbox.
-    runner:
-        Per-peer loop.  Defaults to :class:`LiteLLMSwarmRunner`; tests
-        inject a deterministic fake.
-    max_turns:
-        Per-peer turn budget.  A peer that hits it is politely stopped.
-    walltime_seconds:
-        Hard deadline for the whole swarm; blown budgets terminate the
-        run even if peers are still chatting.
-    events:
-        Optional lifecycle emitter.  When supplied, the runtime publishes
-        ``orchestration.swarm.started`` / ``.swarm.finished`` and hooks
-        the mailbox so every routed envelope produces an
-        ``orchestration.message.sent`` event.
-    """
-    if spec.mode != "swarm":
-        raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
+    """Shared mailbox runtime for swarm and supervisor-collaboration modes."""
     if not agents:
-        raise SwarmError("swarm requires at least 1 agent")
+        raise SwarmError(f"{kind} requires at least 1 agent")
     if len(agents) < 2:
-        raise SwarmError("swarm requires at least 2 agents")
-
-    # Resolve the entry agent.  Prefer the new ``entry`` field; fall back
-    # to the legacy ``lead`` alias; finally use the first declared agent
-    # as a sensible default so a fully-decentralized swarm spec (no entry
-    # pinned) still has a deterministic task-seeding target.
-    entry_name = spec.entry or spec.lead
-    if not entry_name:
-        # ``spec.agents`` preserves declaration order; ``agents`` is a dict
-        # rebuilt from it, but we re-derive from the spec to be explicit.
-        entry_name = spec.agents[0].name if spec.agents else next(iter(agents))
-    if entry_name not in agents:
+        raise SwarmError(f"{kind} requires at least 2 agents")
+    if lead not in agents:
         raise SwarmError(
-            f"entry agent {entry_name!r} not in resolved agents: {sorted(agents)}"
+            f"{kind} lead agent {lead!r} not in resolved agents: {sorted(agents)}"
         )
-    lead = entry_name  # kept for readability below (callbacks, events)
 
     peer_runner = runner or LiteLLMSwarmRunner()
     # Honour the backend hint from the spec.  ``None`` / ``auto`` /
@@ -705,6 +678,73 @@ async def run_swarm(
         transcript=list(system.event_log),
         lead_output=(lead_out.output if lead_out else ""),
         terminated_reason=terminated_reason["value"],
+        kind=kind,
+    )
+
+
+async def run_swarm(
+    spec: OrchestrationSpec,
+    agents: dict[str, AgentInfo],
+    *,
+    user_task: str,
+    runner: SwarmAgentRunner | None = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    walltime_seconds: float = 300.0,
+    events: OrchestrationEventEmitter | None = None,
+) -> SwarmResult:
+    """Execute an orchestration spec in ``swarm`` mode.
+
+    ``spec.entry`` (or the legacy alias ``spec.lead``) names the initial
+    task receiver. When omitted, the runtime falls back to the first
+    declared agent, preserving decentralized swarm semantics.
+    """
+    if spec.mode != "swarm":
+        raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
+    entry_name = spec.entry or spec.lead or _first_declared_agent(spec, agents)
+    return await _run_mailbox_team(
+        spec,
+        agents,
+        user_task=user_task,
+        lead=entry_name,
+        kind="swarm",
+        runner=runner,
+        max_turns=max_turns,
+        walltime_seconds=walltime_seconds,
+        events=events,
+    )
+
+
+async def run_supervisor_collaboration(
+    spec: OrchestrationSpec,
+    agents: dict[str, AgentInfo],
+    *,
+    user_task: str,
+    runner: SwarmAgentRunner | None = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    walltime_seconds: float = 300.0,
+    events: OrchestrationEventEmitter | None = None,
+) -> SwarmResult:
+    """Execute ``hybrid`` as supervisor-led mailbox collaboration.
+
+    The supervisor receives the initial task, can delegate to peers through
+    ``send_message``, and is addressable as ``main`` so specialists can
+    report back. The final result surfaces the supervisor's output first.
+    """
+    if spec.mode != "hybrid":
+        raise SwarmError(
+            f"run_supervisor_collaboration requires mode=hybrid, got {spec.mode!r}"
+        )
+    supervisor = spec.coordinator or spec.entry or spec.lead or _first_declared_agent(spec, agents)
+    return await _run_mailbox_team(
+        spec,
+        agents,
+        user_task=user_task,
+        lead=supervisor,
+        kind="hybrid",
+        runner=runner,
+        max_turns=max_turns,
+        walltime_seconds=walltime_seconds,
+        events=events,
     )
 
 
@@ -715,5 +755,6 @@ __all__ = [
     "SwarmAgentRunner",
     "SwarmError",
     "SwarmResult",
+    "run_supervisor_collaboration",
     "run_swarm",
 ]

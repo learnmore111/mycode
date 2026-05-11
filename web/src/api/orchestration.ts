@@ -53,11 +53,11 @@ export interface FlowDetail {
   extends?: string
   model?: string
   max_depth?: number
-  /** Preferred field: the swarm initial task receiver. */
+  /** Preferred field: the initial task receiver for swarm/collaboration flows. */
   entry?: string
   /** @deprecated Alias of {@link entry}; kept for backward compatibility. */
   lead?: string
-  /** The leader agent in coordinator/hybrid mode (orchestrator-worker pattern). */
+  /** The coordinating/facilitating agent in orchestration/collaboration flows. */
   coordinator?: string
   agents: FlowAgent[]
   stages: FlowStage[]
@@ -108,8 +108,8 @@ export interface SwarmRecentMessage {
 }
 
 export interface SwarmRunResult {
-  kind: 'swarm'
-  /** Preferred: the swarm entry (initial task receiver) agent name. */
+  kind: 'swarm' | 'hybrid'
+  /** Preferred: the entry/supervisor agent name. */
   entry: string
   /** @deprecated Alias of {@link entry}. */
   lead: string
@@ -119,7 +119,7 @@ export interface SwarmRunResult {
   collaboration_count?: number
   active_peer_count?: number
   has_errors: boolean
-  /** Preferred: preview of the entry agent's final output. */
+  /** Preferred: preview of the entry/supervisor agent's final output. */
   entry_output_preview: string
   /** @deprecated Alias of {@link entry_output_preview}. */
   lead_output_preview: string
@@ -250,11 +250,11 @@ export interface FlowCreateParams {
   extends?: string
   model?: string
   max_depth?: number
-  /** Preferred field for the swarm initial task receiver. */
+  /** Preferred field for the initial task receiver in swarm/collaboration flows. */
   entry?: string
   /** @deprecated Alias of {@link entry}; still accepted by the backend. */
   lead?: string
-  /** The leader agent in coordinator/hybrid mode. */
+  /** The coordinating/facilitating agent in orchestration/collaboration flows. */
   coordinator?: string
   agents?: Array<Record<string, unknown>>
   stages?: Array<Record<string, unknown>>

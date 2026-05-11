@@ -170,8 +170,13 @@ def _check_mode_constraints(spec: OrchestrationSpec, r: _Report) -> None:
             r.add("swarm mode should not declare stages (it is message-driven)")
         if len(spec.agents) < 2:
             r.add("swarm mode requires at least 2 agents")
-    elif spec.mode == "hybrid" and not spec.stages and not spec.entry:
-        r.add("hybrid mode requires stages and/or an entry agent")
+    elif spec.mode == "hybrid":
+        if spec.stages:
+            r.add("hybrid mode should not declare stages (it is supervisor-led mailbox collaboration)")
+        if len(spec.agents) < 2:
+            r.add("hybrid mode requires at least 2 agents")
+        if not (spec.coordinator or spec.entry or spec.lead):
+            r.add("hybrid mode requires a coordinator or entry agent to act as supervisor")
 
 
 def _check_stage_dag(spec: OrchestrationSpec, r: _Report) -> None:

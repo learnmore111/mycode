@@ -59,9 +59,9 @@ def test_list_flows_returns_shipped_flows(client):
     data = resp.json()
     assert isinstance(data, list)
     names = {f["name"] for f in data}
-    # ``research`` and ``pair-review`` are the two flows shipped with the
-    # package since M1; both must surface here.
+    # Built-in examples cover workflow, supervisor collaboration, and swarm.
     assert "research" in names
+    assert "supervised-review" in names
     assert "pair-review" in names
 
 
@@ -203,6 +203,70 @@ def test_get_run_detail_returns_swarm_summary(client, monkeypatch):
     assert detail["result"]["terminated_reason"] == "lead-quiet"
     assert detail["result"]["lead_output_preview"] == "final swarm answer"
     assert detail["result"]["peer_count"] >= 2
+
+
+def test_post_run_hybrid_dispatches_to_supervisor_collaboration(client, monkeypatch, tmp_path):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    flow_dir = tmp_path / ".mycode" / "orchestrations"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "supervised-review.yaml").write_text(
+        """
+name: supervised-review
+mode: hybrid
+coordinator: supervisor
+agents:
+  - name: supervisor
+    role: coordinator
+  - name: specialist
+    role: teammate
+""".strip(),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    async def _fake_run_supervisor_collaboration(spec, agents, *, user_task, events=None, **kw):
+        seen["mode"] = spec.mode
+        seen["task"] = user_task
+        return SwarmResult(
+            flow_name=spec.name,
+            lead=spec.coordinator or "",
+            peers={
+                name: SpawnOutput(
+                    agent=name,
+                    task=f"task for {name}",
+                    output=f"output from {name}",
+                    turns=1,
+                    tool_calls=0,
+                )
+                for name in agents
+            },
+            transcript=[],
+            lead_output="supervisor answer",
+            terminated_reason="lead-quiet",
+            kind="hybrid",
+        )
+
+    async def _unexpected_run_coordinator(*args, **kwargs):
+        raise AssertionError("hybrid should not use coordinator runtime")
+
+    monkeypatch.setattr(orch_route, "run_supervisor_collaboration", _fake_run_supervisor_collaboration)
+    monkeypatch.setattr(orch_route, "run_coordinator", _unexpected_run_coordinator)
+
+    resp = client.post(
+        "/orchestration/run",
+        json={"flow": "supervised-review", "task": "coordinate this", "directory": str(tmp_path)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["mode"] == "hybrid"
+    detail = _wait_for_run_status(client, resp.json()["run_id"], "completed")
+
+    assert seen == {"mode": "hybrid", "task": "coordinate this"}
+    assert detail["result"]["kind"] == "hybrid"
+    assert detail["result"]["lead"] == "supervisor"
+    assert detail["result"]["lead_output_preview"] == "supervisor answer"
 
 
 def test_swarm_summary_includes_collaboration_metrics(client):

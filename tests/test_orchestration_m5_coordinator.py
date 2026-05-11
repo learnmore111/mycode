@@ -361,7 +361,7 @@ async def test_topo_respects_explicit_depends_on_over_declaration_order():
 async def test_swarm_mode_rejected():
     spec = OrchestrationSpec(name="sw", mode="swarm", lead="x",
                              agents=[AgentSpec(name="x")])
-    with pytest.raises(CoordinatorError, match="coordinator\\|hybrid"):
+    with pytest.raises(CoordinatorError, match="mode=coordinator"):
         Coordinator(spec, {"x": _minimal_agent("x")})
 
 

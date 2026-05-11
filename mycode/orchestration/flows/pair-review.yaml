@@ -6,8 +6,13 @@
 #   - specialists exchange focused findings,
 #   - the final report is assembled after peer feedback.
 #
-# Swarm mode is **decentralized / peer-to-peer** — the ``entry`` field below
-# only marks the initial task receiver; it is *not* a central controller.
+# Swarm mode is **decentralized / peer-to-peer**. This example intentionally
+# requires reviewer-to-reviewer messages so the final answer is produced after
+# dynamic peer interaction, not by a fixed supervisor or stage DAG.
+#
+# The ``entry`` field below only marks the initial task receiver; it is *not*
+# a central controller. Peers may challenge, clarify, and route messages among
+# themselves during the run.
 #
 # ``entry`` is the canonical field; ``lead`` is retained as a deprecated
 # alias for backward compatibility with flows authored pre-v0.x.

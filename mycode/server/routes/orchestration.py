@@ -47,7 +47,7 @@ from mycode.orchestration.run_store import (
 )
 from mycode.orchestration.runtime.coordinator import run_coordinator
 from mycode.orchestration.runtime.events import BusOrchestrationEmitter
-from mycode.orchestration.runtime.swarm import run_swarm
+from mycode.orchestration.runtime.swarm import run_supervisor_collaboration, run_swarm
 from mycode.orchestration.topology import resolve_all_agents
 from mycode.orchestration.topology.loader import OrchestrationLoadError
 from mycode.orchestration.topology.validator import OrchestrationValidationError
@@ -258,8 +258,9 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
         )
     ]
 
+    kind = getattr(result, "kind", "swarm") or "swarm"
     return {
-        "kind": "swarm",
+        "kind": kind,
         "lead": getattr(result, "lead", ""),
         "entry": getattr(result, "entry", "") or getattr(result, "lead", ""),
         "peer_count": len(peers),
@@ -611,15 +612,15 @@ class _FlowBody(BaseModel):
     extends: str | None = None
     model: str | None = None
     max_depth: int | None = None
-    # ``entry`` is the preferred field for the swarm initial task receiver.
-    # ``lead`` is kept for backwards-compat and mirrored to ``entry`` on
-    # persist.  Clients may send either; the server normalizes.
+    # ``entry`` is the preferred field for the initial task receiver in
+    # collaboration/swarm-style flows. ``lead`` is kept for backwards-compat
+    # and mirrored to ``entry`` on persist. Clients may send either.
     entry: str | None = None
     lead: str | None = None
-    # ``coordinator`` names the leader agent in coordinator/hybrid mode
-    # (orchestrator-worker pattern).  Required for coordinator mode unless
-    # exactly one agent already has ``role: coordinator`` — in which case
-    # the schema layer derives it automatically.
+    # ``coordinator`` names the coordinating/facilitating agent in
+    # orchestration/collaboration flows. Required for coordinator mode unless
+    # exactly one agent already has ``role: coordinator`` — in which case the
+    # schema layer derives it automatically.
     coordinator: str | None = None
     agents: list[dict[str, Any]] = []
     stages: list[dict[str, Any]] = []
@@ -803,8 +804,8 @@ async def start_run(body: _RunBody) -> Any:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"agent resolution failed: {exc}") from exc
 
-    if spec.mode == "swarm" and not body.task:
-        raise HTTPException(status_code=400, detail="swarm mode requires 'task' in body")
+    if spec.mode in ("swarm", "hybrid") and not body.task:
+        raise HTTPException(status_code=400, detail=f"{spec.mode} mode requires 'task' in body")
 
     run_id = uuid.uuid4().hex[:16]
     entry = _RunRecord(
@@ -825,6 +826,15 @@ async def start_run(body: _RunBody) -> Any:
         try:
             if spec.mode == "swarm":
                 result = await run_swarm(
+                    spec, agents,
+                    user_task=body.task or "",
+                    max_turns=body.max_turns,
+                    walltime_seconds=body.walltime_seconds,
+                    events=emitter,
+                )
+                entry.result = _summarize_swarm_result(result)
+            elif spec.mode == "hybrid":
+                result = await run_supervisor_collaboration(
                     spec, agents,
                     user_task=body.task or "",
                     max_turns=body.max_turns,
