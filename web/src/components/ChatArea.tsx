@@ -9,6 +9,7 @@ import ContextViewer from './ContextViewer'
 
 interface Props {
   session: Session | null
+  directory?: string | null
   messages: Message[]
   streaming: boolean
   streamText: string
@@ -23,7 +24,7 @@ interface Props {
   codeChanges: SessionCodeChange[]
   onCodeChangesCleared?: () => void
   chatStatus: 'idle' | 'streaming' | 'paused'
-  onCreate: () => Promise<Session>
+  onCreate: () => Promise<Session | null>
   models: { id: string; name: string; provider: string }[]
   agents: AgentInfo[]
   selectedModel?: string
@@ -56,6 +57,7 @@ function ChangesPanel({
   onRefreshGit,
   gitChangedPaths,
   gitFilesByPath,
+  directory,
 }: {
   pausedRun: PausedRun | null
   codeChanges: SessionCodeChange[]
@@ -65,6 +67,7 @@ function ChangesPanel({
   onRefreshGit?: () => void
   gitChangedPaths?: Set<string>
   gitFilesByPath?: Map<string, GitChangedFile>
+  directory?: string | null
 }) {
   const [expanded, setExpanded] = useState(false)
   const [busyFiles, setBusyFiles] = useState<Record<string, 'stage' | 'revert'>>({})
@@ -84,7 +87,7 @@ function ChangesPanel({
   const handleStage = async (path: string) => {
     setBusyFiles((prev) => ({ ...prev, [path]: 'stage' }))
     try {
-      await stageGitFile(path)
+      await stageGitFile(path, directory ?? undefined)
       onRefreshGit?.()
     } catch (err) {
       console.error('Stage failed', err)
@@ -101,7 +104,7 @@ function ChangesPanel({
     if (!confirm(`确定要丢弃 ${path} 的所有更改？此操作不可撤销。`)) return
     setBusyFiles((prev) => ({ ...prev, [path]: 'revert' }))
     try {
-      await revertGitFile(path)
+      await revertGitFile(path, directory ?? undefined)
       onRefreshGit?.()
     } catch (err) {
       console.error('Revert failed', err)
@@ -120,7 +123,7 @@ function ChangesPanel({
     try {
       // Execute sequentially to avoid git index race condition
       for (const p of confirmablePaths) {
-        await stageGitFile(p)
+        await stageGitFile(p, directory ?? undefined)
       }
       onRefreshGit?.()
       setExpanded(false)
@@ -141,7 +144,7 @@ function ChangesPanel({
     if (!confirm(`确定要丢弃全部 ${filePaths.length} 个文件的更改？此操作不可撤销。`)) return
     setBatchBusy('revert')
     try {
-      await Promise.all(filePaths.map((p) => revertGitFile(p)))
+      await Promise.all(filePaths.map((p) => revertGitFile(p, directory ?? undefined)))
       onRefreshGit?.()
       setExpanded(false)
       setToast({ type: 'success', message: `已回退 ${filePaths.length} 个文件的更改` })
@@ -360,6 +363,7 @@ function ChangesPanel({
 
 export default function ChatArea({
   session,
+  directory,
   messages,
   streaming,
   streamText,
@@ -496,6 +500,7 @@ export default function ChatArea({
         onRefreshGit={onRefreshGit}
         gitChangedPaths={gitChangedPaths}
         gitFilesByPath={gitFilesByPath}
+        directory={directory}
       />
       {showContext && contextSnapshot && (
         <ContextViewer snapshot={contextSnapshot} sessionId={session.id} onClose={() => setShowContext(false)} />

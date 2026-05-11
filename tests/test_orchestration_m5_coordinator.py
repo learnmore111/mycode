@@ -377,20 +377,25 @@ async def test_research_flow_runs_with_fake_runner(tmp_path):
 
     result = await run_coordinator(spec, agents, runner=runner)
 
-    # Two explorers ran first, then coordinator synthesized.
+    # Two explorers ran first, then a fan-out deep-dive, then coordinator synthesized.
     stage_ids = result.context.stage_order
-    assert stage_ids == ["research", "synthesize"]
+    assert stage_ids == ["research", "deep-dive", "synthesize"]
     research = result.context.stages["research"]
     assert len(research.spawns) == 2
     assert all(sp.agent == "explorer" for sp in research.spawns)
 
+    deep_dive = result.context.stages["deep-dive"]
+    assert len(deep_dive.spawns) == 2
+    assert all(sp.agent == "explorer" for sp in deep_dive.spawns)
+
     synth = result.context.stages["synthesize"]
     assert synth.coordinator_agent == "coordinator"
-    # The synthesis spawn received both explorer outputs via inputs_block.
+    # The synthesis call received both first-pass and deep-dive outputs.
     coord_call = runner.calls[-1]
     assert coord_call.agent.name == "coordinator"
-    assert "Describe the module layout" in coord_call.inputs_block
-    assert "List all TODOs" in coord_call.inputs_block
+    assert "Describe the codebase structure" in coord_call.inputs_block
+    assert "maintenance risks or TODO hotspots" in coord_call.inputs_block
+    assert "Prior finding:" in runner.calls[2].task
 
 
 def test_pair_review_flow_rejected_by_coordinator_runtime():

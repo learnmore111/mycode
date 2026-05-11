@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,6 +34,7 @@ from mycode.agent.agent import AgentInfo
 from mycode.orchestration.registry.agent_registry import AgentRegistry
 from mycode.orchestration.runtime import (
     Envelope,
+    LiteLLMSwarmRunner,
     MailboxSystem,
     SpawnOutput,
     SwarmAgentContext,
@@ -508,27 +510,30 @@ async def test_run_swarm_pair_review_flow_end_to_end(tmp_path):
     agents = resolve_all_agents(spec.agents, reg)
 
     assert spec.mode == "swarm"
-    assert spec.lead == "reviewer-lead"
-    assert set(agents.keys()) == {"reviewer-lead", "security-reviewer", "perf-reviewer"}
+    assert spec.lead == "reviewer-starter"
+    assert set(agents.keys()) == {"reviewer-starter", "security-reviewer", "perf-reviewer"}
 
     runner = ScriptedRunner(scripts={
-        "reviewer-lead": [
+        "reviewer-starter": [
             Action("send", recipient="security-reviewer", content="focus on auth"),
             Action("send", recipient="perf-reviewer", content="focus on DB"),
             Action("idle"),
             Action("idle"),
+            Action("send", recipient="security-reviewer", content="cross-check perf assumptions with perf-reviewer"),
             Action("shutdown_request", recipient="security-reviewer", content=""),
             Action("shutdown_request", recipient="perf-reviewer", content=""),
             Action("done", content="unified review ready"),
         ],
         "security-reviewer": [
             Action("send", recipient="main", content="secrets look clean"),
+            Action("send", recipient="perf-reviewer", content="auth boundary looks strict; does caching change threat exposure?"),
             Action("idle"),
             Action("idle"),
             Action("idle"),
             Action("done", content="sec ok"),
         ],
         "perf-reviewer": [
+            Action("send", recipient="security-reviewer", content="cache layer is read-only; no extra auth bypass visible"),
             Action("send", recipient="main", content="no N+1 detected"),
             Action("idle"),
             Action("idle"),
@@ -546,13 +551,17 @@ async def test_run_swarm_pair_review_flow_end_to_end(tmp_path):
     )
 
     assert result.flow_name == "pair-review"
-    assert result.lead == "reviewer-lead"
+    assert result.lead == "reviewer-starter"
     assert "unified review ready" in result.lead_output
     # Both workers should have seen a delegating message and a shutdown.
     for name in ("security-reviewer", "perf-reviewer"):
         kinds = [e.kind for e in runner.received[name]]
         assert "message" in kinds
         assert "shutdown_request" in kinds
+    # The built-in demo should model direct peer-to-peer collaboration,
+    # not just starter→reviewer dispatch and reviewer→starter replies.
+    assert any(e.sender == "security-reviewer" and e.recipient == "perf-reviewer" for e in result.transcript)
+    assert any(e.sender == "perf-reviewer" and e.recipient == "security-reviewer" for e in result.transcript)
 
 
 @pytest.mark.asyncio
@@ -624,3 +633,56 @@ def test_swarm_types_reexported_at_package_root():
     assert orchmod.SwarmResult is SwarmResult
     assert orchmod.run_swarm is run_swarm
     assert callable(orchmod.LiteLLMSwarmRunner)
+
+
+@pytest.mark.asyncio
+async def test_litellm_swarm_runner_exits_when_mailbox_goes_quiet(monkeypatch):
+    """A peer that has already seen one message should not keep taking
+    empty turns forever just because its conversation history is non-empty."""
+
+    stream_calls: list[int] = []
+
+    async def _fake_stream(_input):
+        stream_calls.append(1)
+        if False:
+            yield  # pragma: no cover
+        from mycode.session.llm import FinishEvent
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=False),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+    monkeypatch.setattr("mycode.tool.registry.to_llm_tools", lambda: [])
+
+    system = MailboxSystem.inprocess(["lead", "peer"])
+    await system.send(sender="lead", recipient="peer", content="please review auth.py")
+
+    runner = LiteLLMSwarmRunner(idle_poll_seconds=0.0, max_idle_polls=0)
+    result = await runner(
+        SwarmAgentContext(
+            agent=_agent_info("peer"),
+            sender_name="peer",
+            system=system,
+            lead_name="lead",
+            initial_task=None,
+            max_turns=8,
+            should_stop=lambda: False,
+        ),
+    )
+
+    assert len(stream_calls) == 1
+    assert result.tool_calls == 0
+    assert result.turns <= 2

@@ -38,7 +38,9 @@ interface SystemPaths {
 }
 
 interface Props {
-  onSelectFile: (path: string) => void
+  onSelectFile?: (path: string) => void
+  onSelectDirectory?: (path: string) => void
+  mode?: 'file' | 'directory'
   onClose: () => void
 }
 
@@ -138,7 +140,7 @@ function Breadcrumbs({
 }
 
 /* ── Main Component ── */
-export default function FilePicker({ onSelectFile, onClose }: Props) {
+export default function FilePicker({ onSelectFile, onSelectDirectory, mode = 'file', onClose }: Props) {
   const [currentPath, setCurrentPath] = useState('/')
   const [entries, setEntries] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -286,37 +288,40 @@ export default function FilePicker({ onSelectFile, onClose }: Props) {
               ) : (
                 <div className="py-1">
                   {filteredEntries.map((entry) => (
-                    <button
-                      key={entry.path}
-                      onClick={() =>
-                        entry.type === 'directory'
-                          ? navigateTo(entry.path)
-                          : onSelectFile(entry.path)
-                      }
-                      className="flex items-center gap-2.5 w-full px-4 py-2 text-sm hover:bg-surface-hover transition-colors text-left group"
-                    >
-                      {entry.type === 'directory' ? (
-                        <Folder size={14} className="text-status-warning flex-shrink-0" />
-                      ) : (
-                        getFileIcon(entry.name)
-                      )}
-                      <span
-                        className={`truncate text-sm ${
-                          entry.type === 'file'
-                            ? 'group-hover:text-accent transition-colors'
-                            : 'font-medium'
-                        }`}
+                    <div key={entry.path} className="group flex items-center">
+                      <button
+                        onClick={() => {
+                          if (entry.type === 'directory') {
+                            navigateTo(entry.path)
+                            return
+                          }
+                          onSelectFile?.(entry.path)
+                        }}
+                        className="flex items-center gap-2.5 flex-1 min-w-0 px-4 py-2 text-sm hover:bg-surface-hover transition-colors text-left"
                       >
-                        {entry.name}
-                      </span>
-                      {entry.type === 'file' && entry.size != null && (
-                        <span className="text-xxs text-ink-faint ml-auto font-mono flex-shrink-0">
-                          {entry.size < 1024
-                            ? `${entry.size} B`
-                            : `${(entry.size / 1024).toFixed(1)} KB`}
+                        {entry.type === 'directory' ? (
+                          <Folder size={14} className="text-status-warning flex-shrink-0" />
+                        ) : (
+                          getFileIcon(entry.name)
+                        )}
+                        <span
+                          className={`truncate text-sm ${
+                            entry.type === 'file'
+                              ? 'group-hover:text-accent transition-colors'
+                              : 'font-medium'
+                          }`}
+                        >
+                          {entry.name}
                         </span>
-                      )}
-                    </button>
+                        {entry.type === 'file' && entry.size != null && (
+                          <span className="text-xxs text-ink-faint ml-auto font-mono flex-shrink-0">
+                            {entry.size < 1024
+                              ? `${entry.size} B`
+                              : `${(entry.size / 1024).toFixed(1)} KB`}
+                          </span>
+                        )}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -330,10 +335,20 @@ export default function FilePicker({ onSelectFile, onClose }: Props) {
             {filteredEntries.length} 个项目
             {searchQuery && ` · 筛选 "${searchQuery}"`}
           </span>
-          <span className="text-xxs text-ink-faint">
-            <kbd className="px-1 py-0.5 bg-surface-0 rounded text-xxs border border-line font-mono">Esc</kbd>
-            {' '}关闭
-          </span>
+          <div className="flex items-center gap-2">
+            {mode === 'directory' && onSelectDirectory && (
+              <button
+                onClick={() => onSelectDirectory(currentPath)}
+                className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors"
+              >
+                打开当前文件夹
+              </button>
+            )}
+            <span className="text-xxs text-ink-faint">
+              <kbd className="px-1 py-0.5 bg-surface-0 rounded text-xxs border border-line font-mono">Esc</kbd>
+              {' '}关闭
+            </span>
+          </div>
         </div>
       </div>
     </div>

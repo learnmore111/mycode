@@ -109,6 +109,23 @@ async def test_recording_emitter_captures_all_event_types():
         spawn=SpawnOutput(agent="a", task="do thing", output="done"),
         duration_seconds=0.05,
     )
+    await rec.agent_message(
+        stage_id="s1",
+        spawn_index=0,
+        agent="a",
+        role="assistant",
+        content="working on it",
+        turn=1,
+    )
+    await rec.agent_tool(
+        stage_id="s1",
+        spawn_index=0,
+        agent="a",
+        tool_name="read",
+        args_preview='{"file":"a.py"}',
+        output_preview="contents",
+        turn=1,
+    )
     await rec.stage_finished(
         StageOutput(stage_id="s1", spawns=[
             SpawnOutput(agent="a", task="do thing", output="done"),
@@ -123,6 +140,8 @@ async def test_recording_emitter_captures_all_event_types():
         "orchestration.stage.started",
         "orchestration.spawn.started",
         "orchestration.spawn.finished",
+        "orchestration.agent.message",
+        "orchestration.agent.tool",
         "orchestration.stage.finished",
         "orchestration.flow.finished",
     ]
@@ -156,6 +175,39 @@ async def test_recording_emitter_message_and_swarm_events():
     assert msg_payload["kind"] == "message"
     assert msg_payload["sender"] == "L"
     assert msg_payload["recipient"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_recording_emitter_agent_detail_events():
+    rec = RecordingEmitter(flow_name="demo", run_id="r")
+    await rec.agent_message(
+        stage_id="s1",
+        spawn_index=0,
+        agent="worker",
+        role="assistant",
+        kind="message",
+        content="draft answer",
+        turn=2,
+    )
+    await rec.agent_tool(
+        stage_id="s1",
+        spawn_index=0,
+        agent="worker",
+        tool_name="grep",
+        args_preview="foo",
+        output_preview="bar",
+        turn=2,
+    )
+
+    assert rec.types() == [
+        "orchestration.agent.message",
+        "orchestration.agent.tool",
+    ]
+    detail = rec.of_type("orchestration.agent.message")[0]
+    assert detail["agent"] == "worker"
+    assert detail["turn"] == 2
+    tool = rec.of_type("orchestration.agent.tool")[0]
+    assert tool["tool_name"] == "grep"
 
 
 # --- BusOrchestrationEmitter publishes on a real bus ----------------------

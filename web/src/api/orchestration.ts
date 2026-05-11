@@ -14,30 +14,45 @@ export interface FlowAgent {
   prompt?: string
   role?: string
   description?: string
+  disallowed_tools?: string[]
   tools?: string[]
+  permission?: Array<{ permission: string; pattern: string; action: string }>
   model?: string
   temperature?: number
+  top_p?: number
+  isolation?: string
   max_turns?: number
+  background?: boolean
+  omit_claudemd?: boolean
 }
 
 export interface FlowStageSpawn {
   agent: string
   task: string
+  vars?: Record<string, unknown>
+  timeout_seconds?: number
 }
 
 export interface FlowStage {
   id: string
+  description?: string
   parallel: boolean
+  max_concurrency?: number
   runs_on?: string
   fan_out_from?: string
   depends_on: string[]
   inputs: string[]
+  prompt?: string
   spawns: FlowStageSpawn[]
 }
 
 export interface FlowDetail {
   name: string
+  description?: string
   mode: 'coordinator' | 'swarm' | 'hybrid'
+  extends?: string
+  model?: string
+  max_depth?: number
   /** Preferred field: the swarm initial task receiver. */
   entry?: string
   /** @deprecated Alias of {@link entry}; kept for backward compatibility. */
@@ -47,6 +62,7 @@ export interface FlowDetail {
   agents: FlowAgent[]
   stages: FlowStage[]
   vars: Record<string, string>
+  backend?: Record<string, unknown>
 }
 
 export interface OrchestrationAgent {
@@ -59,6 +75,10 @@ export interface OrchestrationAgent {
   error?: string
 }
 
+export interface OrchestrationAgentDetail extends AgentCreateParams {
+  source: string
+}
+
 export interface SwarmPeerSummary {
   name: string
   agent: string
@@ -66,6 +86,25 @@ export interface SwarmPeerSummary {
   turns: number
   tool_calls: number
   output_preview: string
+  sent_count?: number
+  received_count?: number
+  recent_activity_direction?: 'sent' | 'received' | 'output' | 'none'
+  recent_activity_partner?: string
+  recent_activity_preview?: string
+}
+
+export interface SwarmMessageRoute {
+  sender: string
+  recipient: string
+  count: number
+}
+
+export interface SwarmRecentMessage {
+  seq: number
+  kind: string
+  sender: string
+  recipient: string
+  preview: string
 }
 
 export interface SwarmRunResult {
@@ -77,11 +116,15 @@ export interface SwarmRunResult {
   peer_count: number
   terminated_reason: string
   message_count: number
+  collaboration_count?: number
+  active_peer_count?: number
   has_errors: boolean
   /** Preferred: preview of the entry agent's final output. */
   entry_output_preview: string
   /** @deprecated Alias of {@link entry_output_preview}. */
   lead_output_preview: string
+  message_routes?: SwarmMessageRoute[]
+  recent_messages?: SwarmRecentMessage[]
   peers: SwarmPeerSummary[]
 }
 
@@ -139,6 +182,27 @@ export interface RunDetail extends RunStatus {
   result?: RunResult
 }
 
+export interface AgentLiveMessageEvent {
+  role: string
+  kind: string
+  turn: number
+  content_preview: string
+  recipient?: string
+  stage_id?: string | null
+  spawn_index?: number | null
+  time: number
+}
+
+export interface AgentLiveToolEvent {
+  tool_name: string
+  turn: number
+  args_preview: string
+  output_preview: string
+  stage_id?: string | null
+  spawn_index?: number | null
+  time: number
+}
+
 export interface StartRunParams {
   flow: string
   task?: string
@@ -161,11 +225,16 @@ export interface AgentCreateParams {
   extends?: string
   role?: string
   mode?: string
+  hidden?: boolean
   tools?: string[]
   prompt?: string
   model?: string
   temperature?: number
   top_p?: number
+  color?: string
+  variant?: string
+  options?: Record<string, unknown>
+  steps?: number
   max_turns?: number
   isolation?: string
   omit_claudemd?: boolean
@@ -178,6 +247,9 @@ export interface FlowCreateParams {
   name: string
   description?: string
   mode?: string
+  extends?: string
+  model?: string
+  max_depth?: number
   /** Preferred field for the swarm initial task receiver. */
   entry?: string
   /** @deprecated Alias of {@link entry}; still accepted by the backend. */
@@ -203,6 +275,10 @@ export async function getFlow(name: string): Promise<FlowDetail> {
 
 export async function listOrchestrationAgents(): Promise<OrchestrationAgent[]> {
   return apiFetch<OrchestrationAgent[]>('/orchestration/agent')
+}
+
+export async function getOrchestrationAgent(name: string): Promise<OrchestrationAgentDetail> {
+  return apiFetch<OrchestrationAgentDetail>(`/orchestration/agent/${encodeURIComponent(name)}`)
 }
 
 export async function startRun(params: StartRunParams): Promise<RunInfo> {

@@ -28,6 +28,7 @@ from mycode.orchestration.runtime.context import SpawnOutput
 
 if TYPE_CHECKING:
     from mycode.agent.agent import AgentInfo
+    from mycode.orchestration.runtime.events import OrchestrationEventEmitter
 
 
 # --- Request / response -----------------------------------------------------
@@ -48,6 +49,9 @@ class SpawnRequest:
     # unused by the default runner.
     vars: dict[str, Any] | None = None
     timeout_seconds: int | None = None
+    stage_id: str | None = None
+    spawn_index: int | None = None
+    events: OrchestrationEventEmitter | None = None
 
 
 # --- Protocol ---------------------------------------------------------------
@@ -216,6 +220,15 @@ class LiteLLMAgentRunner:
             assistant_text = "".join(text_parts)
             if assistant_text:
                 output_parts.append(assistant_text)
+                if req.events is not None:
+                    await req.events.agent_message(
+                        stage_id=req.stage_id,
+                        spawn_index=req.spawn_index,
+                        agent=agent.name,
+                        role="assistant",
+                        content=assistant_text,
+                        turn=turn + 1,
+                    )
 
             step = guard.begin_step(turn)
             guard.complete_step(step, text_length=len(assistant_text))
@@ -272,6 +285,17 @@ class LiteLLMAgentRunner:
                     tool_output = result.output
                 except Exception as exc:  # noqa: BLE001 — tool errors must not kill the run
                     tool_output = f"Error: {exc}"
+
+                if req.events is not None:
+                    await req.events.agent_tool(
+                        stage_id=req.stage_id,
+                        spawn_index=req.spawn_index,
+                        agent=agent.name,
+                        tool_name=tc.tool_name,
+                        args_preview=tc.args or "",
+                        output_preview=tool_output,
+                        turn=turn + 1,
+                    )
 
                 messages.append({
                     "role": "tool",

@@ -107,6 +107,12 @@ function streamRequest(path: string, callbacks: StreamCallbacks, init?: RequestI
   return controller
 }
 
+function withDirectory(path: string, directory?: string): string {
+  if (!directory) return path
+  const params = new URLSearchParams({ directory })
+  return `${path}?${params.toString()}`
+}
+
 /**
  * Send a message via POST and stream SSE events back.
  * Returns an AbortController to cancel the stream.
@@ -116,8 +122,9 @@ export function streamMessage(
   parts: Array<{ type: string; content: string }>,
   callbacks: StreamCallbacks,
   options?: { model?: string; agent?: string },
+  directory?: string,
 ): AbortController {
-  return streamRequest(`/session/${sessionId}/message`, callbacks, {
+  return streamRequest(withDirectory(`/session/${sessionId}/message`, directory), callbacks, {
     method: 'POST',
     body: JSON.stringify({
       parts,
@@ -127,8 +134,8 @@ export function streamMessage(
   })
 }
 
-export function streamResume(sessionId: string, callbacks: StreamCallbacks): AbortController {
-  return streamRequest(`/session/${sessionId}/resume`, callbacks, {
+export function streamResume(sessionId: string, callbacks: StreamCallbacks, directory?: string): AbortController {
+  return streamRequest(withDirectory(`/session/${sessionId}/resume`, directory), callbacks, {
     method: 'POST',
   })
 }

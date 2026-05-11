@@ -1,6 +1,7 @@
 """Session API routes."""
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from typing import TYPE_CHECKING, Any
@@ -113,6 +114,27 @@ def _paused_run_json(info: PausedRunInfo | None) -> dict[str, Any] | None:
         "model": info.model,
         "agent": info.agent,
     }
+
+
+def _get_session_or_404(session_id: str) -> SessionInfo:
+    try:
+        return get_session(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"Session not found: {session_id}") from exc
+
+
+async def _provide_for_session(session_id: str, fn: Any, *, fallback_directory: str = ".") -> Any:
+    from mycode.project.instance import provide
+
+    info = _get_session_or_404(session_id)
+    effective_directory = info.directory or fallback_directory
+    logger.debug(
+        "session context resolved",
+        session_id=session_id,
+        requested_directory=fallback_directory,
+        effective_directory=effective_directory,
+    )
+    return await provide(effective_directory, fn)
 
 
 def _build_resume_prompt(last_user_text: str, partial_text: str | None = None) -> str:
@@ -286,10 +308,8 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
             "total_cost": last_assistant.cost or 0.0,
         }
         if last_assistant.raw_usage:
-            try:
+            with contextlib.suppress(Exception):
                 raw_usage = json.loads(last_assistant.raw_usage)
-            except Exception:
-                pass
 
     return build_context_snapshot(
         system=system,
@@ -315,6 +335,7 @@ def _stream_session_prompt(
 ) -> EventSourceResponse:
     from mycode.bus.bus import Bus
     from mycode.project.instance import InstanceContext, ProjectInfo, set_context
+    from mycode.project.project import from_directory
 
     bus = Bus()
 
@@ -323,8 +344,23 @@ def _stream_session_prompt(
 
         from mycode.session.message import rebuild_history_from_db
 
-        project = ProjectInfo(id="global", worktree=directory)
-        ctx = InstanceContext(directory=directory, worktree=directory, project=project)
+        session_info = get_session(session_id)
+        session_directory = session_info.directory or directory
+        logger.info(
+            "session stream starting",
+            session_id=session_id,
+            requested_directory=directory,
+            session_directory=session_directory,
+            part_count=len(parts),
+            model=model,
+            agent=agent,
+            clear_pause_before_start=clear_pause_before_start,
+        )
+        try:
+            project = await from_directory(session_directory)
+        except Exception:
+            project = ProjectInfo(id="global", worktree=session_directory)
+        ctx = InstanceContext(directory=session_directory, worktree=project.worktree, project=project)
         token = set_context(ctx)
         abort_event = _aio.Event()
         set_abort_signal(session_id, abort_event)
@@ -342,6 +378,7 @@ def _stream_session_prompt(
             )
             async for event in prompt(inp, bus, history=history):
                 yield {"event": event.type, "data": json.dumps(event.data)}
+            logger.info("session stream completed", session_id=session_id, session_directory=session_directory)
         except _aio.CancelledError:
             logger.debug("SSE stream cancelled by client", session_id=session_id)
             # Signal abort so prompt()'s inner loop short-circuits on its
@@ -380,7 +417,9 @@ async def session_list(directory: str = Query(default="."), limit: int = Query(d
     from mycode.project.instance import provide
 
     async def _fn() -> Any:
-        return [_session_json(s) for s in list_sessions(limit=limit)]
+        sessions = [_session_json(s) for s in list_sessions(directory=directory, limit=limit)]
+        logger.info("session list returned", directory=directory, limit=limit, count=len(sessions))
+        return sessions
 
     return await provide(directory, _fn)
 
@@ -391,7 +430,9 @@ async def session_list_deleted(directory: str = Query(default="."), limit: int =
     from mycode.project.instance import provide
 
     async def _fn() -> Any:
-        return [_session_json(s) for s in list_deleted(limit=limit)]
+        sessions = [_session_json(s) for s in list_deleted(directory=directory, limit=limit)]
+        logger.info("deleted session list returned", directory=directory, limit=limit, count=len(sessions))
+        return sessions
 
     return await provide(directory, _fn)
 
@@ -401,9 +442,15 @@ async def session_create(request: Request, directory: str = Query(default=".")) 
     from mycode.project.instance import provide
 
     body = await request.json() if request.headers.get("content-type") else {}
+    logger.info(
+        "session create requested",
+        directory=directory,
+        has_title=isinstance(body, dict) and bool(body.get("title")),
+    )
 
     async def _fn() -> Any:
         s = create_session(title=body.get("title"))
+        logger.info("session created", session_id=s.id, directory=s.directory, title=s.title)
         return _session_json(s)
 
     return await provide(directory, _fn)
@@ -411,78 +458,64 @@ async def session_create(request: Request, directory: str = Query(default=".")) 
 
 @router.get("/{session_id}")
 async def session_get(session_id: str, directory: str = Query(default=".")) -> Any:
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
-        try:
-            return _session_json(get_session(session_id))
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        logger.debug("session fetch requested", session_id=session_id, requested_directory=directory)
+        return _session_json(_get_session_or_404(session_id))
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.delete("/{session_id}")
 async def session_delete(session_id: str, directory: str = Query(default=".")) -> Any:
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
         try:
             remove(session_id)
         except KeyError as exc:
             raise HTTPException(404, f"Session not found: {session_id}") from exc
+        logger.info("session deleted", session_id=session_id, requested_directory=directory)
         return {"ok": True}
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.post("/{session_id}/restore")
 async def session_restore(session_id: str, directory: str = Query(default=".")) -> Any:
     """Restore a soft-deleted session."""
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
         try:
             restore(session_id)
+            logger.info("session restored", session_id=session_id, requested_directory=directory)
             return {"ok": True}
         except KeyError as exc:
             raise HTTPException(404, f"Session not found: {session_id}") from exc
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.put("/{session_id}/title")
 async def session_set_title(session_id: str, request: Request, directory: str = Query(default=".")) -> Any:
-    from mycode.project.instance import provide
-
     body = await request.json()
 
     async def _fn() -> Any:
         set_title(session_id, body.get("title", ""))
         return {"ok": True}
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.get("/{session_id}/context")
 async def session_context(session_id: str, directory: str = Query(default=".")) -> Any:
     """Rebuild the current context snapshot for an existing session."""
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        _get_session_or_404(session_id)
         return await _build_session_context_snapshot(session_id)
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.get("/{session_id}/messages")
 async def session_messages(session_id: str, directory: str = Query(default=".")) -> Any:
     """Get all messages and their parts for a session."""
-    from mycode.project.instance import provide
     from mycode.storage.database import session_scope
     from mycode.storage.models import MessageTable, PartTable
 
@@ -495,6 +528,7 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
                 .all()
             )
             if not messages:
+                logger.info("session messages returned", session_id=session_id, requested_directory=directory, count=0)
                 return []
 
             message_ids = [m.id for m in messages]
@@ -556,9 +590,10 @@ async def session_messages(session_id: str, directory: str = Query(default="."))
                     "parts": parts_by_msg.get(m.id, []),
                     "time": {"created": m.time_created, "completed": m.time_completed},
                 })
+            logger.info("session messages returned", session_id=session_id, requested_directory=directory, count=len(result))
             return result
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.get("/{session_id}/changes")
@@ -568,47 +603,34 @@ async def session_changes(
     limit: int = Query(default=6, ge=1, le=50),
 ) -> Any:
     """Return the most recent code changes for a session."""
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        _get_session_or_404(session_id)
         return _collect_session_code_changes(session_id, limit=limit)
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.get("/{session_id}/pause")
 async def session_pause_get(session_id: str, directory: str = Query(default=".")) -> Any:
     """Get the persisted paused state for a session, if any."""
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        _get_session_or_404(session_id)
 
         state = get_paused_run(session_id)
+        logger.debug("session pause state requested", session_id=session_id, paused=state is not None)
         return {"paused": state is not None, "state": _paused_run_json(state)}
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.post("/{session_id}/pause")
 async def session_pause_set(session_id: str, request: Request, directory: str = Query(default=".")) -> Any:
     """Persist pause metadata for a session and abort the current run if needed."""
-    from mycode.project.instance import provide
-
     body = await request.json() if request.headers.get("content-type") else {}
+    logger.info("session pause requested", session_id=session_id, requested_directory=directory)
 
     async def _fn() -> Any:
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        _get_session_or_404(session_id)
 
         last_user_text = str(body.get("lastUserText") or "").strip()
         partial_text = str(body.get("partialText") or "").strip() or None
@@ -641,23 +663,18 @@ async def session_pause_set(session_id: str, request: Request, directory: str = 
             "state": _paused_run_json(state),
         }
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.delete("/{session_id}/pause")
 async def session_pause_clear(session_id: str, directory: str = Query(default=".")) -> Any:
     """Clear the persisted paused state for a session."""
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        _get_session_or_404(session_id)
         clear_paused_run(session_id)
         return {"ok": True}
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.post("/{session_id}/message")
@@ -666,6 +683,14 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
     parts = body.get("parts", [])
     model = body.get("model")
     agent = body.get("agent")
+    logger.info(
+        "session message requested",
+        session_id=session_id,
+        requested_directory=directory,
+        part_count=len(parts) if isinstance(parts, list) else 0,
+        model=model,
+        agent=agent,
+    )
     return _stream_session_prompt(session_id, directory, parts=parts, model=model, agent=agent)
 
 
@@ -673,20 +698,15 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
 @router.post("/{session_id}/resume")
 async def session_resume(session_id: str, directory: str = Query(default=".")) -> Any:
     """Resume a previously paused session by replaying the stored continuation prompt."""
-    from mycode.project.instance import provide
-
     async def _fn() -> Any:
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
-
+        _get_session_or_404(session_id)
         state = get_paused_run(session_id)
         if state is None:
             raise HTTPException(409, f"Session {session_id} has no paused state")
         return state
 
-    paused = await provide(directory, _fn)
+    paused = await _provide_for_session(session_id, _fn, fallback_directory=directory)
+    logger.info("session resume requested", session_id=session_id, requested_directory=directory)
     parts = [{"type": "text", "content": _build_resume_prompt(paused.last_user_text, paused.partial_text)}]
     return _stream_session_prompt(
         session_id,
@@ -742,7 +762,6 @@ async def session_rollback(
     Response: ``{"kept": int, "removed": int, "snapshot_ref": str | None,
                  "restored": bool}``
     """
-    from mycode.project.instance import provide
     from mycode.session.message import rollback_to_turn
 
     body = await request.json() if request.headers.get("content-type") else {}
@@ -754,10 +773,7 @@ async def session_rollback(
 
     async def _fn() -> Any:
         # Validate the session exists first — cleaner 404 than KeyError.
-        try:
-            get_session(session_id)
-        except KeyError as exc:
-            raise HTTPException(404, f"Session not found: {session_id}") from exc
+        session_info = _get_session_or_404(session_id)
 
         if is_session_busy(session_id):
             raise HTTPException(409, "Session is currently being processed; abort first")
@@ -781,7 +797,7 @@ async def session_rollback(
                 # the session_id as the project discriminator so each
                 # session has its own shadow-git scope — this matches
                 # how snapshot.track() is invoked from the orchestrator.
-                snap = Snapshot(project_id=session_id, worktree=directory)
+                snap = Snapshot(project_id=session_id, worktree=session_info.directory or directory)
                 restored = bool(await snap.restore(snap_ref))
             except Exception as exc:
                 logger.warn(
@@ -793,7 +809,7 @@ async def session_rollback(
 
         return {**result, "restored": restored}
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.get("/{session_id}/export")
@@ -803,7 +819,6 @@ async def session_export(session_id: str, directory: str = Query(default=".")) -
     The response is the archive dict — the client can JSON.stringify it
     and save to disk. Binary attachments are NOT included in v1.
     """
-    from mycode.project.instance import provide
     from mycode.session.archive import export_session
 
     async def _fn() -> Any:
@@ -812,7 +827,7 @@ async def session_export(session_id: str, directory: str = Query(default=".")) -
         except KeyError as exc:
             raise HTTPException(404, str(exc)) from exc
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)
 
 
 @router.post("/import")
@@ -847,7 +862,6 @@ async def session_fork(
 
     Body: ``{"turn": <int>, "title": <str?>}``. Returns the new session.
     """
-    from mycode.project.instance import provide
     from mycode.session.archive import fork_session
 
     body = await request.json() if request.headers.get("content-type") else {}
@@ -866,4 +880,4 @@ async def session_fork(
             raise HTTPException(400, str(exc)) from exc
         return _session_json(info)
 
-    return await provide(directory, _fn)
+    return await _provide_for_session(session_id, _fn, fallback_directory=directory)

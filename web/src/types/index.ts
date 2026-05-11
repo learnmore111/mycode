@@ -37,6 +37,13 @@ export interface Session {
   time: TimeInfo
 }
 
+export interface WorkspaceProject {
+  id: string
+  directory: string
+  name: string
+  worktree: string
+}
+
 // ---- Part ----
 export type PartType = 'text' | 'tool' | 'reasoning' | 'file' | 'step'
 

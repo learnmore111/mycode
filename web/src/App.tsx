@@ -19,8 +19,9 @@ type MainView = 'chat' | 'orchestration'
 
 export default function App() {
   const session = useSession()
-  const chat = useChat(session.activeId)
-  const git = useGit()
+  const activeDirectory = session.active?.directory ?? session.activeProject?.directory ?? undefined
+  const chat = useChat(session.activeId, activeDirectory)
+  const git = useGit(activeDirectory)
   const permission = usePermission()
   const providerState = useProviders()
 
@@ -105,7 +106,7 @@ export default function App() {
 
   useEffect(() => {
     chat.loadHistory()
-  }, [session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeDirectory, session.activeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Command palette (Cmd/Ctrl+K) ---
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -134,22 +135,26 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler)
   }, [paletteOpen])
 
-  // When clicking a session in sidebar, switch back to chat view
-  const handleSelectSession = useCallback((id: string) => {
-    session.setActiveId(id)
+  const handleSelectProjectSession = useCallback((directory: string, id: string) => {
+    session.setActiveSession(directory, id)
     setMainView('chat')
   }, [session])
 
   return (
     <div className="flex h-screen bg-surface-1 text-ink font-sans">
       <Sidebar
-        sessions={session.sessions}
-        deletedSessions={session.deletedSessions}
+        projects={session.projects}
+        activeProjectDirectory={session.activeProjectDirectory}
         activeId={session.activeId}
-        onSelect={handleSelectSession}
-        onCreate={() => { session.create(); setMainView('chat') }}
+        onSelect={handleSelectProjectSession}
+        onSelectProject={session.setActiveProjectDirectory}
+        onCreate={(directory) => { session.create(directory); setMainView('chat') }}
         onDelete={session.remove}
         onRestore={session.restore}
+        onOpenProject={(directory) => {
+          void session.openProject(directory)
+        }}
+        onCloseProject={session.closeProject}
         loading={session.loading}
         gitStatus={git.status}
         gitLoading={git.loading}
@@ -180,6 +185,7 @@ export default function App() {
       <div className={mainView === 'chat' ? 'flex-1 flex flex-col min-w-0 min-h-0' : 'hidden'}>
         <ChatArea
           session={session.active}
+          directory={activeDirectory}
           messages={chat.messages}
           streaming={chat.streaming}
           streamText={chat.streamText}
@@ -231,9 +237,9 @@ export default function App() {
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
-        sessions={session.sessions}
+        sessions={session.allSessions}
         activeId={session.activeId}
-        onSelect={(id) => { session.setActiveId(id); setMainView('chat') }}
+        onSelect={(id) => { session.selectSessionById(id); setMainView('chat') }}
       />
     </div>
   )

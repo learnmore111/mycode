@@ -203,25 +203,24 @@ class TestResolveAllAgents:
         # build's base config + the inline tools list.
         coord = resolved["coordinator"]
         assert coord.role == "coordinator"
-        assert set(coord.tools or []) >= {"task", "send_message", "task_stop"}
+        assert set(coord.tools or []) >= {"read", "grep"}
 
     def test_pair_review_flow_resolves(self, registry: AgentRegistry) -> None:
         spec = load_file(FLOWS_DIR / "pair-review.yaml")
         resolved = resolve_all_agents(spec.agents, registry)
 
-        assert set(resolved) == {"reviewer-lead", "security-reviewer", "perf-reviewer"}
+        assert set(resolved) == {"reviewer-starter", "security-reviewer", "perf-reviewer"}
 
-        lead = resolved["reviewer-lead"]
+        lead = resolved["reviewer-starter"]
         assert lead.extends == "build"
         # Role was renamed from legacy "lead" to "entry" when the Swarm
         # semantics were aligned with OpenAI / LangGraph Swarm.
         assert lead.role == "entry"
         assert set(lead.tools or []) == {
             "send_message",
-            "team_create",
             "read",
             "grep",
-            "task_stop",
+            "glob",
         }
 
         sec = resolved["security-reviewer"]

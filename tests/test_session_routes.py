@@ -129,3 +129,96 @@ def test_messages_route_returns_reasoning_parts(client: TestClient, tmp_path):
     assert len(messages) == 1
     assert messages[0]["parts"][0]["type"] == "reasoning"
     assert messages[0]["parts"][0]["content"] == "先分析事件流。"
+
+
+def test_session_list_scoped_to_exact_directory(client: TestClient, tmp_path):
+    from mycode.session.session import create
+
+    dir_a = tmp_path / "project-a"
+    dir_b = tmp_path / "project-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    token_a = inst.set_context(inst.InstanceContext(
+        directory=str(dir_a),
+        worktree=str(dir_a),
+        project=inst.ProjectInfo(id="global", worktree=str(dir_a)),
+    ))
+    session_a = create(title="session-a")
+    token_a.reset()
+
+    token_b = inst.set_context(inst.InstanceContext(
+        directory=str(dir_b),
+        worktree=str(dir_b),
+        project=inst.ProjectInfo(id="global", worktree=str(dir_b)),
+    ))
+    create(title="session-b")
+    token_b.reset()
+
+    resp = client.get("/session", params={"directory": str(dir_a)})
+    assert resp.status_code == 200
+    sessions = resp.json()
+    assert [item["id"] for item in sessions] == [session_a.id]
+
+
+def test_session_list_does_not_include_child_directory_sessions(client: TestClient, tmp_path):
+    from mycode.session.session import create
+
+    parent_dir = tmp_path / "workspace"
+    child_dir = parent_dir / "nested"
+    parent_dir.mkdir()
+    child_dir.mkdir()
+
+    parent_token = inst.set_context(inst.InstanceContext(
+        directory=str(parent_dir),
+        worktree=str(parent_dir),
+        project=inst.ProjectInfo(id="global", worktree=str(parent_dir)),
+    ))
+    parent_session = create(title="parent-session")
+    parent_token.reset()
+
+    child_token = inst.set_context(inst.InstanceContext(
+        directory=str(child_dir),
+        worktree=str(parent_dir),
+        project=inst.ProjectInfo(id="global", worktree=str(parent_dir)),
+    ))
+    create(title="child-session")
+    child_token.reset()
+
+    resp = client.get("/session", params={"directory": str(parent_dir)})
+    assert resp.status_code == 200
+    sessions = resp.json()
+    assert [item["id"] for item in sessions] == [parent_session.id]
+
+
+def test_message_route_uses_session_directory_even_when_query_directory_differs(client: TestClient, tmp_path, monkeypatch):
+    from mycode.project.instance import current
+    from mycode.session.session import create
+
+    dir_a = tmp_path / "workspace-a"
+    dir_b = tmp_path / "workspace-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    token = inst.set_context(inst.InstanceContext(
+        directory=str(dir_a),
+        worktree=str(dir_a),
+        project=inst.ProjectInfo(id="global", worktree=str(dir_a)),
+    ))
+    session = create(title="bound-directory")
+    token.reset()
+
+    async def fake_prompt(prompt_input, bus, history=None):
+        assert current().directory == str(dir_a)
+        yield SimpleNamespace(type="started", data={"session_id": prompt_input.session_id})
+        yield SimpleNamespace(type="done", data={"ok": True})
+
+    monkeypatch.setattr("mycode.server.routes.session.prompt", fake_prompt)
+
+    resp = client.post(
+        f"/session/{session.id}/message",
+        params={"directory": str(dir_b)},
+        json={"parts": [{"type": "text", "content": "hello"}]},
+    )
+    assert resp.status_code == 200
+    assert "event: done" in resp.text

@@ -428,16 +428,17 @@ subagent(
 name: research
 mode: coordinator
 vars:
-  q1: "描述模块结构"
-  q2: "列出所有 TODO"
+  q1: "描述代码库结构与主要子系统"
+  q2: "识别最值得关注的维护风险或 TODO 热点"
 
 agents:
   - name: coordinator
+    extends: build
     role: coordinator
-    tools: [task, send_message]
+    tools: [read, grep]
     prompt: |
-      你是协调者。不直接执行研究。
-      用 task 派发 explorer worker，然后综合发现。
+      你是协调者。不要重复 worker 的探索工作，
+      而是比较、归纳、指出分歧，并给出后续建议。
 
   - name: explorer
     extends: explore          # 继承内置 explore
@@ -453,21 +454,37 @@ stages:
       - agent: explorer
         task: "{{ vars.q2 }}"
 
+  - id: deep-dive
+    fan_out_from: research
+    spawn:
+      - agent: explorer
+        task: |
+          基于以下前序发现，补充一个最值得继续深挖的点，并解释原因：
+
+          {{ $item }}
+
   - id: synthesize
     runs_on: coordinator
-    depends_on: [research]
-    inputs: [research.*]
+    depends_on: [deep-dive]
+    inputs: [research.*, deep-dive.*]
     prompt: |
-      综合探索发现为一份 markdown 报告。
+      输出一份 markdown 研究简报，包含：
+      1. 系统概览
+      2. 关键风险 / 热点
+      3. 重要未知项
+      4. 建议下一步
 ```
 
 **执行流程**：
 ```
-[research stage] ─┬─► explorer: 描述模块结构
-                  └─► explorer: 列出 TODO
+[research stage] ─┬─► explorer: 结构与子系统
+                  └─► explorer: 风险与 TODO 热点
+                        │
+                        ▼
+             [deep-dive stage] ─► explorer: 补充后续调查点
                         │
                         ▼ (depends_on + inputs)
-              [synthesize stage] ─► coordinator: 综合报告
+              [synthesize stage] ─► coordinator: 综合简报
 ```
 
 ### 6.2 pair-review.yaml（Swarm 模式）
@@ -481,26 +498,27 @@ agents:
   - name: reviewer-lead
     extends: build
     role: entry
-    tools: [send_message, read, grep]
+    tools: [send_message, read, grep, glob]
     prompt: |
-      你是审查入口。委派安全问题给 security-reviewer，
-      性能问题给 perf-reviewer。收集响应后产出最终报告。
+      你是 swarm code review 的入口。
+      先把任务拆给不同专家，再在必要时追问、交叉验证，
+      最后按严重级别汇总成最终报告。
 
   - name: security-reviewer
     extends: explore
     role: teammate
     tools: [read, grep, glob, send_message]
     prompt: |
-      你是安全专家。关注注入、auth、secrets。
-      通过 send_message 报告给 reviewer-lead。
+      你是安全专家。关注 auth、secrets、输入校验、
+      注入与权限绕过；必要时可直接联系 perf-reviewer 交叉确认。
 
   - name: perf-reviewer
     extends: explore
     role: teammate
     tools: [read, grep, glob, bash, send_message]
     prompt: |
-      你是性能专家。关注 N+1、热循环、不必要的 I/O。
-      报告给 reviewer-lead。
+      你是性能专家。关注不必要的 I/O、热循环、广域扫描、
+      启动成本和并发瓶颈；必要时与 security-reviewer 互相确认假设。
 ```
 
 ---

@@ -17,7 +17,7 @@ interface ChatOptions {
   agent?: string
 }
 
-export function useChat(sessionId: string | null) {
+export function useChat(sessionId: string | null, directory?: string | null) {
   const [messages, setMessages] = useState<Message[]>([])
   const [streaming, setStreaming] = useState(false)
   const [streamText, setStreamText] = useState('')
@@ -43,7 +43,7 @@ export function useChat(sessionId: string | null) {
       return
     }
 
-    getPausedRun(sessionId)
+    getPausedRun(sessionId, directory ?? undefined)
       .then((state) => {
         setPausedRun(state)
         setStatus(state ? 'paused' : 'idle')
@@ -51,7 +51,7 @@ export function useChat(sessionId: string | null) {
       .catch((err) => {
         console.error('Failed to load paused run state', err)
       })
-  }, [sessionId])
+  }, [directory, sessionId])
 
   const resetStreamingState = useCallback(() => {
     streamTextRef.current = ''
@@ -66,16 +66,16 @@ export function useChat(sessionId: string | null) {
     if (!sessionId) return
 
     const [msgs, snapshot, paused, changes] = await Promise.all([
-      getMessages(sessionId),
-      getContextSnapshot(sessionId).catch((err) => {
+      getMessages(sessionId, directory ?? undefined),
+      getContextSnapshot(sessionId, directory ?? undefined).catch((err) => {
         console.error('Failed to load context snapshot', err)
         return null
       }),
-      getPausedRun(sessionId).catch((err) => {
+      getPausedRun(sessionId, directory ?? undefined).catch((err) => {
         console.error('Failed to load paused run state', err)
         return null
       }),
-      getSessionCodeChanges(sessionId).catch((err) => {
+      getSessionCodeChanges(sessionId, directory ?? undefined).catch((err) => {
         console.error('Failed to load session code changes', err)
         return []
       }),
@@ -93,7 +93,12 @@ export function useChat(sessionId: string | null) {
           return {
             ...snapshot,
             actual_usage: {
-              ...snapshot.actual_usage,
+              input_tokens: snapshot.actual_usage?.input_tokens ?? 0,
+              output_tokens: snapshot.actual_usage?.output_tokens ?? 0,
+              cache_read_tokens: snapshot.actual_usage?.cache_read_tokens ?? 0,
+              cache_write_tokens: snapshot.actual_usage?.cache_write_tokens ?? 0,
+              reasoning_tokens: snapshot.actual_usage?.reasoning_tokens ?? 0,
+              total_cost: snapshot.actual_usage?.total_cost ?? 0,
               raw_usage: prev.actual_usage.raw_usage,
             },
           }
@@ -101,7 +106,7 @@ export function useChat(sessionId: string | null) {
         return snapshot
       })
     }
-  }, [sessionId])
+  }, [directory, sessionId])
 
   const loadHistory = useCallback(async () => {
     if (!sessionId) {
@@ -314,7 +319,7 @@ export function useChat(sessionId: string | null) {
       streamPartsRef.current = []
       setStreamText('')
       setStreamParts([])
-      void clearPausedRunRemote(sessionId).catch((err) => {
+      void clearPausedRunRemote(sessionId, directory ?? undefined).catch((err) => {
         console.error('Failed to clear paused run state', err)
       })
 
@@ -340,9 +345,10 @@ export function useChat(sessionId: string | null) {
           onDone: finalizeStream,
         },
         options,
+        directory ?? undefined,
       )
     },
-    [applyStreamEvent, finalizeStream, sessionId],
+    [applyStreamEvent, directory, finalizeStream, sessionId],
   )
 
   const abort = useCallback(async () => {
@@ -357,7 +363,7 @@ export function useChat(sessionId: string | null) {
           pausedAt: Date.now(),
           model: lastOptionsRef.current.model,
           agent: lastOptionsRef.current.agent,
-        })
+        }, directory ?? undefined)
         setPausedRun(result.state)
         setStatus(result.state ? 'paused' : 'idle')
       } catch (err) {
@@ -373,7 +379,7 @@ export function useChat(sessionId: string | null) {
 
     controllerRef.current?.abort()
     resetStreamingState()
-  }, [resetStreamingState, sessionId])
+  }, [directory, resetStreamingState, sessionId])
 
   const resume = useCallback(() => {
     if (!sessionId || !pausedRun) return
@@ -392,25 +398,25 @@ export function useChat(sessionId: string | null) {
         finalizeStream()
       },
       onDone: finalizeStream,
-    })
-  }, [applyStreamEvent, finalizeStream, pausedRun, sessionId])
+    }, directory ?? undefined)
+  }, [applyStreamEvent, directory, finalizeStream, pausedRun, sessionId])
 
   const dismissPausedRun = useCallback(async () => {
     if (!sessionId) return
     try {
-      await clearPausedRunRemote(sessionId)
+      await clearPausedRunRemote(sessionId, directory ?? undefined)
     } catch (err) {
       console.error('Failed to clear paused run state', err)
     }
     setPausedRun(null)
     setStatus('idle')
-  }, [sessionId])
+  }, [directory, sessionId])
 
   const rollbackToTurn = useCallback(
     async (turn: number, options?: { restoreSnapshot?: boolean }) => {
       if (!sessionId) return null
       try {
-        const result = await rollbackToTurnRemote(sessionId, turn, options)
+        const result = await rollbackToTurnRemote(sessionId, turn, options, directory ?? undefined)
         // Refresh both transcript and code-changes after rollback.
         await reloadPersistedState()
         return result
@@ -420,7 +426,7 @@ export function useChat(sessionId: string | null) {
         throw err
       }
     },
-    [reloadPersistedState, sessionId],
+    [directory, reloadPersistedState, sessionId],
   )
 
   return {

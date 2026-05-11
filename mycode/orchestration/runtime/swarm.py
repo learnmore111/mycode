@@ -238,6 +238,7 @@ class SwarmAgentContext:
     # decide whether the global budget is exhausted.  Returning True
     # tells the runner to stop cleanly.
     should_stop: Callable[[], bool]
+    events: OrchestrationEventEmitter | None = None
 
     @property
     def entry_name(self) -> str:
@@ -330,12 +331,23 @@ class LiteLLMSwarmRunner:
         messages: list[dict[str, Any]] = []
         if sctx.initial_task:
             messages.append({"role": "user", "content": sctx.initial_task})
+            if sctx.events is not None:
+                await sctx.events.agent_message(
+                    stage_id=None,
+                    spawn_index=None,
+                    agent=agent.name,
+                    role="user",
+                    kind="task",
+                    content=sctx.initial_task,
+                    turn=0,
+                )
 
         output_parts: list[str] = []
         total_tool_calls = 0
         last_text = ""
         turn = 0
         idle_polls = 0
+        awaiting_tool_followup = False
 
         effective_max_turns = min(
             sctx.max_turns,
@@ -353,17 +365,32 @@ class LiteLLMSwarmRunner:
                 messages.append({"role": "user", "content": env.format_for_llm()})
                 if env.kind == "shutdown_request":
                     received_shutdown = True
+                if sctx.events is not None:
+                    await sctx.events.agent_message(
+                        stage_id=None,
+                        spawn_index=None,
+                        agent=agent.name,
+                        role="user",
+                        kind=env.kind,
+                        recipient=env.sender,
+                        content=env.format_for_llm(),
+                        turn=turn + 1,
+                    )
 
-            # If there's nothing to react to and no seed task on this turn,
-            # poll a few times before giving up so we don't exit the very
-            # first tick when peers haven't produced yet.
-            if not envs and not messages:
+            # After a peer has already seen earlier messages, its history
+            # remains non-empty forever. We only want another LLM turn when
+            # there is *fresh* inbox input, a seed task, or a pending
+            # follow-up after tool execution.
+            has_seed_input = turn == 0 and bool(sctx.initial_task)
+            should_take_turn = bool(envs) or has_seed_input or awaiting_tool_followup
+            if not should_take_turn:
                 if idle_polls >= self._max_idle_polls:
                     break
                 idle_polls += 1
                 await asyncio.sleep(self._idle_poll_seconds)
                 continue
             idle_polls = 0
+            awaiting_tool_followup = False
 
             # 2) Take one LLM turn.
             stream_input = llmmod.StreamInput(
@@ -400,6 +427,15 @@ class LiteLLMSwarmRunner:
             if assistant_text:
                 output_parts.append(assistant_text)
                 last_text = assistant_text
+                if sctx.events is not None:
+                    await sctx.events.agent_message(
+                        stage_id=None,
+                        spawn_index=None,
+                        agent=agent.name,
+                        role="assistant",
+                        content=assistant_text,
+                        turn=turn + 1,
+                    )
 
             # 3) Execute tool calls (incl. send_message).
             if pending and finish == "tool-calls":
@@ -454,13 +490,28 @@ class LiteLLMSwarmRunner:
                     except Exception as exc:  # noqa: BLE001
                         tool_output = f"Error: {exc}"
 
+                    if sctx.events is not None:
+                        await sctx.events.agent_tool(
+                            stage_id=None,
+                            spawn_index=None,
+                            agent=agent.name,
+                            tool_name=tc.tool_name,
+                            args_preview=tc.args or "",
+                            output_preview=tool_output,
+                            turn=turn + 1,
+                        )
+
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.tool_call_id,
                         "content": tool_output,
                     })
                 # Continue loop: maybe more responses land in the inbox.
+                awaiting_tool_followup = True
                 continue
+
+            if assistant_text:
+                messages.append({"role": "assistant", "content": assistant_text})
 
             # 4) No tool call this turn. If we received a shutdown request
             #    already delivered to the LLM and the LLM chose not to act,
@@ -616,6 +667,7 @@ async def run_swarm(
             lead_name=lead,
             initial_task=user_task if name == lead else None,
             max_turns=max_turns,
+            events=events,
             should_stop=should_stop,
         )
         out = await peer_runner(sctx)

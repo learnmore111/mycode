@@ -205,6 +205,42 @@ def test_get_run_detail_returns_swarm_summary(client, monkeypatch):
     assert detail["result"]["peer_count"] >= 2
 
 
+def test_swarm_summary_includes_collaboration_metrics(client):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.mailbox import Envelope
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    result = SwarmResult(
+        flow_name="pair-review",
+        lead="reviewer-starter",
+        peers={
+            "reviewer-starter": SpawnOutput(agent="reviewer-starter", task="lead", output="final summary", turns=3, tool_calls=2),
+            "security-reviewer": SpawnOutput(agent="security-reviewer", task="sec", output="", turns=2, tool_calls=1),
+            "perf-reviewer": SpawnOutput(agent="perf-reviewer", task="perf", output="", turns=2, tool_calls=1),
+        },
+        transcript=[
+            Envelope(kind="message", sender="reviewer-starter", recipient="security-reviewer", content="check auth", seq=1),
+            Envelope(kind="message", sender="reviewer-starter", recipient="perf-reviewer", content="check hot paths", seq=2),
+            Envelope(kind="message", sender="security-reviewer", recipient="reviewer-starter", content="auth looks okay", seq=3),
+            Envelope(kind="message", sender="perf-reviewer", recipient="reviewer-starter", content="cache misses in repo", seq=4),
+        ],
+        lead_output="final summary",
+        terminated_reason="lead-quiet",
+    )
+
+    summary = orch_route._summarize_swarm_result(result)
+    assert summary is not None
+    assert summary["collaboration_count"] == 4
+    assert summary["active_peer_count"] == 3
+    assert len(summary["message_routes"]) == 4
+    peers = {peer["name"]: peer for peer in summary["peers"]}
+    assert peers["reviewer-starter"]["sent_count"] == 2
+    assert peers["reviewer-starter"]["received_count"] == 2
+    assert peers["security-reviewer"]["recent_activity_direction"] == "sent"
+    assert summary["recent_messages"][-1]["preview"] == "cache misses in repo"
+
+
 def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
     from mycode.server.routes import orchestration as orch_route
 
