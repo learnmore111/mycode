@@ -305,6 +305,32 @@ def test_swarm_summary_includes_collaboration_metrics(client):
     assert summary["recent_messages"][-1]["preview"] == "cache misses in repo"
 
 
+def test_swarm_summary_ignores_placeholder_no_output_for_activity(client):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    result = SwarmResult(
+        flow_name="pair-review",
+        lead="reviewer-starter",
+        peers={
+            "reviewer-starter": SpawnOutput(agent="reviewer-starter", task="lead", output="final summary", turns=3, tool_calls=2),
+            "security-reviewer": SpawnOutput(agent="security-reviewer", task="sec", output="(no output)", turns=0, tool_calls=0),
+            "perf-reviewer": SpawnOutput(agent="perf-reviewer", task="perf", output="(no output)", turns=0, tool_calls=0),
+        },
+        transcript=[],
+        lead_output="final summary",
+        terminated_reason="lead-quiet",
+    )
+
+    summary = orch_route._summarize_swarm_result(result)
+    assert summary is not None
+    assert summary["active_peer_count"] == 1
+    peers = {peer["name"]: peer for peer in summary["peers"]}
+    assert peers["security-reviewer"]["output_preview"] == ""
+    assert peers["security-reviewer"]["recent_activity_direction"] == "none"
+
+
 def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
     from mycode.server.routes import orchestration as orch_route
 
@@ -340,11 +366,11 @@ def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
 
 
 def test_run_history_survives_app_recreation(tmp_path, monkeypatch):
+    import mycode.storage.database as dbmod
     from mycode.orchestration.runtime.context import SpawnOutput
     from mycode.orchestration.runtime.swarm import SwarmResult
     from mycode.server.app import create_app
     from mycode.server.routes import orchestration as orch_route
-    import mycode.storage.database as dbmod
 
     monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "orchestration-history.db"))
     monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))

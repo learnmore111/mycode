@@ -161,6 +161,11 @@ class LiteLLMAgentRunner:
         system_prompt = build_system(agent_prompt=agent.prompt)
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
 
+        # Orchestration runners may execute without going through the normal
+        # session prompt bootstrap, so populate the process-local registry here
+        # before deriving the tool schema.
+        tool_registry.register_builtins()
+
         # Build the tool allow-list: honour agent.tools if declared,
         # otherwise full registry minus the subagent-excluded ones.
         all_tools = tool_registry.to_llm_tools()

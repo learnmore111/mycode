@@ -169,6 +169,30 @@ class FileMailbox:
             None, self._read_since_offset
         )
 
+    async def wait_for_message(self, timeout: float | None = None) -> bool:
+        """Poll the JSONL inbox until a complete line is available.
+
+        File-backed mailboxes may be shared across processes, so they
+        cannot rely on an in-process condition variable. This method is
+        intentionally a lightweight size check; ``drain()`` remains the
+        only method that advances the read offset.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self._closed:
+            try:
+                if self.path.stat().st_size > self._read_offset:
+                    return True
+            except FileNotFoundError:
+                pass
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                await asyncio.sleep(min(0.05, remaining))
+            else:
+                await asyncio.sleep(0.05)
+        return False
+
     def _read_since_offset(self) -> list[Envelope]:
         try:
             size = self.path.stat().st_size

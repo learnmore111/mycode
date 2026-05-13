@@ -123,6 +123,13 @@ def _envelope_preview(env: Any, limit: int = 160) -> str:
     return _preview(summary or content, limit)
 
 
+def _meaningful_peer_output(text: str) -> str:
+    preview = _preview(text or "")
+    if preview.strip() in {"", "(no output)", "_(no output)_"}:
+        return ""
+    return preview
+
+
 def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
     context = getattr(result, "context", None)
     stage_order = getattr(context, "stage_order", None)
@@ -211,7 +218,7 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
     for name in sorted(peers):
         out = peers[name]
         activity = peer_activity[name]
-        output_preview = _preview(out.output)
+        output_preview = _meaningful_peer_output(out.output)
         if activity["last_sent_preview"]:
             activity_direction = "sent"
             activity_partner = activity["last_sent_to"]

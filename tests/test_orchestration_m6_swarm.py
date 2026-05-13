@@ -34,9 +34,11 @@ from mycode.agent.agent import AgentInfo
 from mycode.orchestration.registry.agent_registry import AgentRegistry
 from mycode.orchestration.runtime import (
     Envelope,
+    LiteLLMAgentRunner,
     LiteLLMSwarmRunner,
     MailboxSystem,
     SpawnOutput,
+    SpawnRequest,
     SwarmAgentContext,
     SwarmError,
     SwarmResult,
@@ -151,6 +153,20 @@ async def test_send_message_tool_routes_to_main_alias():
     drained = await sys.inboxes["lead"].drain()
     assert [e.content for e in drained] == ["done"]
     assert await sys.inboxes["worker"].drain() == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_rejects_self_target_after_main_alias_resolution():
+    sys = MailboxSystem.inprocess(["lead", "worker"])
+    tool = _SendMessageTool(sys, sender="lead", lead_name="lead")
+    ctx = ToolContext(session_id="t", message_id="m", agent="lead")
+    result = await tool.execute(
+        {"type": "message", "recipient": "main", "content": "loop"},
+        ctx,
+    )
+    assert result.is_error
+    assert "sending to yourself" in result.output
+    assert await sys.inboxes["lead"].drain() == []
 
 
 @pytest.mark.asyncio
@@ -338,11 +354,12 @@ class ScriptedRunner:
 # ---------------------------------------------------------------------------
 
 
-def _agent_info(name: str) -> AgentInfo:
+def _agent_info(name: str, tools: list[str] | None = None) -> AgentInfo:
     return AgentInfo(
         name=name,
         description=f"test agent {name}",
         mode="all",
+        tools=tools,
         native=False,
         source="project",
     )
@@ -688,6 +705,101 @@ def test_swarm_types_reexported_at_package_root():
 
 
 @pytest.mark.asyncio
+async def test_litellm_swarm_runner_registers_builtin_tools_before_schema(monkeypatch):
+    """Regression: orchestration can run in a fresh process before the
+    normal prompt path registers built-in tools. Swarm peers should still
+    expose their declared file tools plus the runtime send_message tool."""
+
+    from mycode.session.llm import FinishEvent
+    from mycode.tool import registry as tool_registry
+
+    seen_tools: list[str] = []
+
+    async def _fake_stream(stream_input):
+        seen_tools.extend(t["function"]["name"] for t in stream_input.tools or [])
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=True),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    tool_registry.clear()
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+
+    system = MailboxSystem.inprocess(["lead", "peer"])
+    runner = LiteLLMSwarmRunner(idle_poll_seconds=0.0, max_idle_polls=0)
+    result = await runner(
+        SwarmAgentContext(
+            agent=_agent_info("peer", tools=["read", "grep", "glob", "send_message"]),
+            sender_name="peer",
+            system=system,
+            lead_name="lead",
+            initial_task="review src/auth",
+            max_turns=1,
+            should_stop=lambda: False,
+        ),
+    )
+
+    assert result.turns == 1
+    assert {"read", "grep", "glob", "send_message"}.issubset(seen_tools)
+
+
+@pytest.mark.asyncio
+async def test_litellm_agent_runner_registers_builtin_tools_before_schema(monkeypatch):
+    """Non-swarm orchestration spawns need the same bootstrap as swarm
+    peers when the registry starts empty."""
+
+    from mycode.session.llm import FinishEvent
+    from mycode.tool import registry as tool_registry
+
+    seen_tools: list[str] = []
+
+    async def _fake_stream(stream_input):
+        seen_tools.extend(t["function"]["name"] for t in stream_input.tools or [])
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=True),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    tool_registry.clear()
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+
+    runner = LiteLLMAgentRunner(max_turns=1)
+    result = await runner(
+        SpawnRequest(
+            agent=_agent_info("reviewer", tools=["read", "grep", "glob"]),
+            task="review src/auth",
+        )
+    )
+
+    assert result.turns == 1
+    assert {"read", "grep", "glob"}.issubset(seen_tools)
+
+
+@pytest.mark.asyncio
 async def test_litellm_swarm_runner_exits_when_mailbox_goes_quiet(monkeypatch):
     """A peer that has already seen one message should not keep taking
     empty turns forever just because its conversation history is non-empty."""
@@ -737,4 +849,303 @@ async def test_litellm_swarm_runner_exits_when_mailbox_goes_quiet(monkeypatch):
 
     assert len(stream_calls) == 1
     assert result.tool_calls == 0
-    assert result.turns <= 2
+    assert result.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_litellm_swarm_runner_reminds_lead_to_delegate(monkeypatch):
+    """The entry peer should be nudged to use ``send_message`` before
+    it can quietly continue solo."""
+
+    from mycode.session.llm import FinishEvent, ToolCallDelta
+
+    stream_inputs: list[list[dict[str, object]]] = []
+
+    async def _fake_stream(stream_input):
+        stream_inputs.append(stream_input.messages)
+        call_no = len(stream_inputs)
+        if call_no == 1:
+            yield FinishEvent(reason="stop", usage={}, cost=0.0)
+            return
+        if call_no == 2:
+            reminder = str(stream_input.messages[-1]["content"])
+            assert "send_message" in reminder
+            yield ToolCallDelta(
+                tool_call_id="call-1",
+                tool_name="send_message",
+                args='{"type":"message","recipient":"peer","content":"please review auth.py"}',
+            )
+            yield FinishEvent(reason="tool-calls", usage={}, cost=0.0)
+            return
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=True),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+    monkeypatch.setattr("mycode.tool.registry.to_llm_tools", lambda: [])
+
+    system = MailboxSystem.inprocess(["lead", "peer"])
+    runner = LiteLLMSwarmRunner(idle_poll_seconds=0.0, max_idle_polls=0)
+    result = await runner(
+        SwarmAgentContext(
+            agent=_agent_info("lead"),
+            sender_name="lead",
+            system=system,
+            lead_name="lead",
+            initial_task="review src/auth",
+            max_turns=6,
+            should_stop=lambda: False,
+        ),
+    )
+
+    delivered = await system.inboxes["peer"].drain()
+    assert [env.content for env in delivered] == ["please review auth.py"]
+    assert result.turns == 3
+    assert result.tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_litellm_swarm_runner_waits_for_first_message_before_idling_out(monkeypatch):
+    """Non-entry peers should stay alive until they either receive work or
+    the global stop condition fires."""
+
+    stream_calls: list[int] = []
+
+    async def _fake_stream(_stream_input):
+        stream_calls.append(1)
+        from mycode.session.llm import FinishEvent
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=False),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+    monkeypatch.setattr("mycode.tool.registry.to_llm_tools", lambda: [])
+
+    system = MailboxSystem.inprocess(["lead", "peer"])
+    runner = LiteLLMSwarmRunner(idle_poll_seconds=0.0, max_idle_polls=0)
+
+    async def delayed_send():
+        await asyncio.sleep(0)
+        await system.send(sender="lead", recipient="peer", content="please inspect auth.py")
+
+    send_task = asyncio.create_task(delayed_send())
+    result = await runner(
+        SwarmAgentContext(
+            agent=_agent_info("peer"),
+            sender_name="peer",
+            system=system,
+            lead_name="lead",
+            initial_task=None,
+            max_turns=8,
+            should_stop=lambda: False,
+        ),
+    )
+    await send_task
+
+    assert len(stream_calls) == 1
+    assert result.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_litellm_swarm_runner_does_not_spend_turn_budget_waiting_for_first_message(monkeypatch):
+    """Regression: peers used to exhaust ``max_turns`` while polling an
+    empty inbox, so a later delegation was recorded as received but never
+    processed."""
+
+    stream_calls: list[int] = []
+
+    async def _fake_stream(_stream_input):
+        stream_calls.append(1)
+        from mycode.session.llm import FinishEvent
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=False),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+    monkeypatch.setattr("mycode.tool.registry.to_llm_tools", lambda: [])
+
+    system = MailboxSystem.inprocess(["lead", "peer"])
+    runner = LiteLLMSwarmRunner(idle_poll_seconds=0.001, max_idle_polls=0)
+    entry_done = {"value": False}
+
+    async def delayed_send():
+        await asyncio.sleep(0.02)
+        await system.send(sender="lead", recipient="peer", content="late but valid delegation")
+
+    send_task = asyncio.create_task(delayed_send())
+    result = await runner(
+        SwarmAgentContext(
+            agent=_agent_info("peer"),
+            sender_name="peer",
+            system=system,
+            lead_name="lead",
+            initial_task=None,
+            max_turns=1,
+            should_stop=lambda: False,
+            entry_peer_done=lambda: entry_done["value"],
+        ),
+    )
+    await send_task
+
+    assert len(stream_calls) == 1
+    assert result.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_run_swarm_late_delegation_reaches_live_peer(monkeypatch):
+    """The full runtime should keep non-entry peers alive while the entry
+    agent spends several LLM turns before sending its first delegation."""
+
+    from mycode.session.llm import FinishEvent, ToolCallDelta
+
+    stream_calls: dict[str, int] = {}
+    lead_sent = {"value": False}
+
+    async def _fake_stream(stream_input):
+        agent_name = "peer" if any("late delegation" in str(m.get("content", "")) for m in stream_input.messages) else "lead"
+        stream_calls[agent_name] = stream_calls.get(agent_name, 0) + 1
+        lead_call_no = stream_calls.get("lead", 0)
+        if agent_name == "lead" and lead_call_no < 4:
+            yield FinishEvent(reason="stop", usage={}, cost=0.0)
+            return
+        if agent_name == "lead" and not lead_sent["value"]:
+            lead_sent["value"] = True
+            yield ToolCallDelta(
+                tool_call_id="call-1",
+                tool_name="send_message",
+                args='{"type":"message","recipient":"peer","content":"late delegation"}',
+            )
+            yield FinishEvent(reason="tool-calls", usage={}, cost=0.0)
+            return
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=True),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+    monkeypatch.setattr("mycode.tool.registry.to_llm_tools", lambda: [])
+
+    agents = {
+        "lead": AgentInfo(name="lead", mode="all", tools=["send_message"]),
+        "peer": AgentInfo(name="peer", mode="all", tools=["send_message"]),
+    }
+    spec = _swarm_spec(["lead", "peer"], lead="lead")
+    result = await run_swarm(
+        spec,
+        agents,
+        user_task="review after several lead turns",
+        max_turns=6,
+        walltime_seconds=5.0,
+        runner=LiteLLMSwarmRunner(idle_poll_seconds=0.001, max_idle_polls=0),
+    )
+
+    assert result.peers["lead"].tool_calls == 1
+    assert result.peers["peer"].turns == 1
+    assert any(env.sender == "lead" and env.recipient == "peer" for env in result.transcript)
+
+
+@pytest.mark.asyncio
+async def test_entry_peer_waits_until_other_peers_finish(monkeypatch):
+    """The entry peer should not quietly exit while teammates are still running."""
+
+    async def _fake_default_model():
+        return ("test", "dummy")
+
+    async def _fake_get_model(_provider_id, _model_id):
+        return SimpleNamespace(
+            capabilities=SimpleNamespace(toolcall=False),
+            api=SimpleNamespace(url=None),
+        )
+
+    async def _fake_get_api_key(_provider_id):
+        return None
+
+    async def _fake_stream(_stream_input):
+        from mycode.session.llm import FinishEvent
+        yield FinishEvent(reason="stop", usage={}, cost=0.0)
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", _fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", _fake_get_model)
+    monkeypatch.setattr("mycode.provider.provider.get_api_key", _fake_get_api_key)
+    monkeypatch.setattr("mycode.session.llm.stream", _fake_stream)
+    monkeypatch.setattr("mycode.tool.registry.to_llm_tools", lambda: [])
+
+    lead_runner = LiteLLMSwarmRunner(idle_poll_seconds=0.0, max_idle_polls=0)
+
+    class CompositeRunner:
+        async def __call__(self, sctx: SwarmAgentContext) -> SpawnOutput:
+            if sctx.sender_name == sctx.lead_name:
+                return await lead_runner(sctx)
+            await asyncio.sleep(0)
+            await sctx.system.send(sender=sctx.sender_name, recipient=sctx.lead_name, content="peer finished review")
+            return SpawnOutput(
+                agent=sctx.sender_name,
+                task="",
+                output="peer done",
+                is_error=False,
+                turns=1,
+            )
+
+    agents = {n: _agent_info(n) for n in ["lead", "peer"]}
+    spec = _swarm_spec(["lead", "peer"], lead="lead")
+    result = await run_swarm(
+        spec,
+        agents,
+        user_task="",
+        runner=CompositeRunner(),
+        max_turns=8,
+    )
+
+    assert result.peers["lead"].turns == 1
+    assert any(env.sender == "peer" and env.recipient == "lead" for env in result.transcript)

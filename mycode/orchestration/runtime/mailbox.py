@@ -143,6 +143,15 @@ class Mailbox(Protocol):
         empty)."""
         ...
 
+    async def wait_for_message(self, timeout: float | None = None) -> bool:
+        """Wait until at least one envelope is available.
+
+        Returns ``True`` when a subsequent ``drain()`` should see work,
+        or ``False`` when the optional timeout elapsed. Implementations
+        must not consume the envelope while waiting.
+        """
+        ...
+
     async def close(self) -> None:
         """Release any resources (e.g. file handles).  Idempotent."""
         ...
@@ -159,6 +168,7 @@ class InprocessMailbox:
     def __init__(self, owner: str) -> None:
         self.owner = owner
         self._queue: asyncio.Queue[Envelope] = asyncio.Queue()
+        self._condition = asyncio.Condition()
         self._closed: bool = False
 
     async def put(self, env: Envelope) -> None:
@@ -167,7 +177,26 @@ class InprocessMailbox:
             # runtime wants during teardown: the agent is gone, so a
             # laggy send should not raise.
             return
-        await self._queue.put(env)
+        async with self._condition:
+            await self._queue.put(env)
+            self._condition.notify_all()
+
+    async def wait_for_message(self, timeout: float | None = None) -> bool:
+        if not self._queue.empty():
+            return True
+        if self._closed:
+            return False
+
+        async def _wait_until_ready() -> bool:
+            async with self._condition:
+                while self._queue.empty() and not self._closed:
+                    await self._condition.wait()
+                return not self._queue.empty()
+
+        try:
+            return await asyncio.wait_for(_wait_until_ready(), timeout=timeout)
+        except TimeoutError:
+            return False
 
     async def drain(self) -> list[Envelope]:
         """Grab whatever is queued right now and return it.  Drains in
@@ -183,6 +212,8 @@ class InprocessMailbox:
 
     async def close(self) -> None:
         self._closed = True
+        async with self._condition:
+            self._condition.notify_all()
 
 
 # ---------------------------------------------------------------------------

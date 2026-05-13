@@ -28,6 +28,9 @@ agents:
     tools: [send_message, read, grep, glob]
     prompt: |
       You are the starting peer for a swarm code review.
+      Your first substantive action must be two `send_message` tool calls:
+      one to `security-reviewer` and one to `perf-reviewer`.
+      Do not start deep file inspection until both delegation messages have been sent.
       Start by splitting the user task into at least two focused requests:
       one for `security-reviewer` and one for `perf-reviewer`.
       Do not jump straight to a final answer after delegating.
@@ -55,6 +58,7 @@ agents:
       Focus on auth boundaries, secrets handling, input validation,
       injection vectors, unsafe deserialization, and permission bypasses.
 
+      On your first turn after receiving work, send at least one message.
       Send an early status update to `reviewer-starter` even if your conclusion is
       "no major issue found yet". Include the files or areas you checked.
       You must also send at least one direct message to `perf-reviewer` during
@@ -72,6 +76,7 @@ agents:
       Focus on unnecessary I/O, repeated scans, hot loops, broad queries,
       high-cost startup work, and concurrency bottlenecks.
 
+      On your first turn after receiving work, send at least one message.
       Send an early status update to `reviewer-starter` even if your conclusion is
       "nothing serious yet". Include the files or paths you inspected.
       You must also send at least one direct message to `security-reviewer`

@@ -1450,6 +1450,7 @@ function buildAgentBoardCards(
     if (ev.event === 'orchestration.message.sent') {
       const sender = asText(ev.data.sender)
       const recipient = asText(ev.data.recipient)
+      const isBroadcastSummary = recipient === '*'
       const senderCard = ensure(sender)
       if (senderCard) {
         senderCard.sentCount += 1
@@ -1458,10 +1459,12 @@ function buildAgentBoardCards(
         senderCard.updatedAt = Math.max(senderCard.updatedAt ?? 0, ev.time)
         senderCard.lastPreview = asText(ev.data.summary) || asText(ev.data.content_preview) || `发给 ${recipient || '队友'} 的协作消息`
       }
-      const recipientCard = ensure(recipient)
-      if (recipientCard) {
-        recipientCard.receivedCount += 1
-        recipientCard.updatedAt = Math.max(recipientCard.updatedAt ?? 0, ev.time)
+      if (!isBroadcastSummary) {
+        const recipientCard = ensure(recipient)
+        if (recipientCard) {
+          recipientCard.receivedCount += 1
+          recipientCard.updatedAt = Math.max(recipientCard.updatedAt ?? 0, ev.time)
+        }
       }
     }
   })
@@ -1473,7 +1476,7 @@ function buildAgentBoardCards(
       if (!card) return
       card.status = peer.is_error ? 'error' : 'done'
       card.label = peer.is_error ? '异常' : '已完成'
-      card.turnCount = Math.max(card.turnCount, peer.turns)
+      card.turnCount = Math.max(card.turnCount, getEffectivePeerTurns(peer))
       card.toolCount = Math.max(card.toolCount, peer.tool_calls)
       card.sentCount = Math.max(card.sentCount, peer.sent_count ?? 0)
       card.receivedCount = Math.max(card.receivedCount, peer.received_count ?? 0)
@@ -1508,10 +1511,11 @@ function buildAgentBoardCards(
   })
 }
 
-function AgentOrchestrationBoard({ cards, selectedAgent, onSelectAgent }: {
+function AgentOrchestrationBoard({ cards, selectedAgent, onSelectAgent, runDone = false }: {
   cards: AgentBoardCard[]
   selectedAgent: string | null
   onSelectAgent: (agent: string) => void
+  runDone?: boolean
 }) {
   const columns: Array<{ status: AgentBoardStatus; title: string }> = [
     { status: 'waiting', title: 'Backlog' },
@@ -1521,9 +1525,12 @@ function AgentOrchestrationBoard({ cards, selectedAgent, onSelectAgent }: {
     { status: 'done', title: 'Done' },
     { status: 'error', title: 'Blocked' },
   ]
+  const persistentColumns = runDone
+    ? new Set<AgentBoardStatus>([])
+    : new Set<AgentBoardStatus>(['active', 'collaborating', 'review'])
   const activeColumns = columns
     .map((column) => ({ ...column, cards: cards.filter((card) => card.status === column.status) }))
-    .filter((column) => column.cards.length > 0 || column.status !== 'error')
+    .filter((column) => column.cards.length > 0 || persistentColumns.has(column.status))
 
   if (cards.length === 0) {
     return (
@@ -1535,7 +1542,13 @@ function AgentOrchestrationBoard({ cards, selectedAgent, onSelectAgent }: {
 
   return (
     <div className="overflow-x-auto pb-2">
-      <div className="grid min-w-[920px] auto-cols-[minmax(210px,1fr)] grid-flow-col gap-3">
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: `repeat(${activeColumns.length}, minmax(180px, 1fr))`,
+          minWidth: `${Math.max(activeColumns.length * 180, 360)}px`,
+        }}
+      >
         {activeColumns.map((column) => {
           const tone = getAgentStatusTone(column.status)
           const Icon = tone.icon
@@ -1657,6 +1670,23 @@ function getSwarmPeerNarrative(peer: SwarmPeerSummary): string {
       }
       return peer.output_preview || '没有留下可见的文本或消息痕迹。'
   }
+}
+
+function hasMeaningfulPeerOutput(peer: SwarmPeerSummary): boolean {
+  const preview = (peer.output_preview || '').trim()
+  return preview !== '' && preview !== '(no output)' && preview !== '_(no output)_'
+}
+
+function getEffectivePeerTurns(peer: SwarmPeerSummary): number {
+  if (
+    (peer.sent_count ?? 0) === 0 &&
+    (peer.received_count ?? 0) === 0 &&
+    peer.tool_calls === 0 &&
+    !hasMeaningfulPeerOutput(peer)
+  ) {
+    return 0
+  }
+  return peer.turns
 }
 
 export default function OrchestrationWorkbench({ onBack }: Props) {
@@ -2050,7 +2080,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-5 py-5">
+        <div className={tab === 'runs' ? 'w-full px-5 py-5 xl:px-6 2xl:px-8' : 'max-w-5xl mx-auto px-5 py-5'}>
           {tab === 'agents' && (
             <div>
               <div className="flex items-center justify-between mb-5">
@@ -2192,22 +2222,30 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
 
           {tab === 'runs' && (
             <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className={cardStyle + ' px-4 py-3'}>
-                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">总运行数</div>
-                  <div className="mt-2 text-[24px] font-semibold text-[#0F0F0F]">{runs.length}</div>
-                </div>
-                <div className={cardStyle + ' px-4 py-3'}>
-                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">进行中</div>
-                  <div className="mt-2 text-[24px] font-semibold text-[#d97706]">{runs.filter((run) => !run.done).length}</div>
-                </div>
-                <div className={cardStyle + ' px-4 py-3'}>
-                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">失败 / 取消</div>
-                  <div className="mt-2 text-[24px] font-semibold text-[#dc2626]">{runs.filter((run) => run.status === 'failed' || run.status === 'cancelled').length}</div>
+              <div className={cardStyle + ' px-5 py-4'}>
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <div className="text-[13px] font-bold text-[#0F0F0F]">运行监控</div>
+                    <div className="mt-1 text-[11px] leading-5 text-[#8A8A85]">查看最近运行、进入成员看板，并跟踪实时事件流。</div>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[520px]">
+                    <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] px-4 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">总运行数</div>
+                      <div className="mt-1.5 text-[24px] font-semibold text-[#0F0F0F]">{runs.length}</div>
+                    </div>
+                    <div className="rounded-2xl border border-[#E5E4E0] bg-[#FFF7ED] px-4 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#C27A19]">进行中</div>
+                      <div className="mt-1.5 text-[24px] font-semibold text-[#d97706]">{runs.filter((run) => !run.done).length}</div>
+                    </div>
+                    <div className="rounded-2xl border border-[#E5E4E0] bg-[#FEF2F2] px-4 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#B75A5A]">失败 / 取消</div>
+                      <div className="mt-1.5 text-[24px] font-semibold text-[#dc2626]">{runs.filter((run) => run.status === 'failed' || run.status === 'cancelled').length}</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1.25fr)] 2xl:grid-cols-[300px_minmax(0,1.45fr)]">
                 <div className={cardStyle + ' overflow-hidden h-fit'}>
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E4E0] bg-white">
                     <div>
@@ -2422,6 +2460,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                               <AgentOrchestrationBoard
                                 cards={activeAgentCards}
                                 selectedAgent={selectedAgentPanel}
+                                runDone={Boolean(activeRun.done)}
                                 onSelectAgent={(agent) => {
                                   setSelectedAgentPanel(agent)
                                   if (agentPanels[agent]) setRunDetailTab('transcripts')
@@ -2436,7 +2475,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 <div className={sectionTitle}><Bot size={12} className="text-[#3D3BF3]" />子 Agent 运行窗口</div>
                                 <button type="button" onClick={() => setRunDetailTab('board')} className={btnGhost}>返回看板</button>
                               </div>
-                            <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                            <div className="grid gap-4 xl:grid-cols-[240px_minmax(0,1.35fr)] 2xl:grid-cols-[260px_minmax(0,1.5fr)]">
                               <div className="space-y-2">
                                 {Object.keys(agentPanels).length > 0 ? Object.entries(agentPanels).map(([agentName, items]) => (
                                   (() => {
@@ -2603,7 +2642,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                       <span className={`inline-flex rounded-lg px-2 py-0.5 text-[9px] font-bold ${peer.is_error ? 'bg-[#dc2626]/10 text-[#dc2626]' : 'bg-[#16a34a]/10 text-[#16a34a]'}`}>{peer.is_error ? '异常' : '完成'}</span>
                                     </div>
                                     <div className="mt-3 flex items-center gap-3 text-[10px] text-[#8A8A85]">
-                                      <span>{peer.turns} turns</span>
+                                      <span>{getEffectivePeerTurns(peer)} turns</span>
                                       <span>{peer.tool_calls} tools</span>
                                       <span>{peer.sent_count ?? 0} sent</span>
                                       <span>{peer.received_count ?? 0} recv</span>

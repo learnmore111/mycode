@@ -1,7 +1,8 @@
 """Tests for the permission system."""
 from mycode.permission.evaluate import evaluate
-from mycode.permission.schema import Rule
 from mycode.permission.permission import from_config, merge
+from mycode.permission.schema import Rule
+
 
 def test_evaluate_default_ask():
     result = evaluate("bash", "ls")
@@ -17,20 +18,24 @@ def test_evaluate_deny():
     result = evaluate("edit", "file.py", rules)
     assert result.action == "deny"
 
-def test_evaluate_deny_beats_later_allow():
-    """Deny short-circuits — a later matching allow cannot override it.
-
-    This is a security-first choice (see mycode/permission/evaluate.py):
-    we explicitly changed the semantics from "last match wins" to
-    "deny wins" so runtime `always-allow` replies cannot accidentally
-    override a deny rule declared in project config or an agent ruleset.
-    """
+def test_evaluate_deny_beats_equally_specific_later_allow():
+    """Deny wins ties so runtime approvals cannot override exact denies."""
     rules = [
         Rule(permission="bash", pattern="*", action="deny"),
         Rule(permission="bash", pattern="*", action="allow"),
     ]
     result = evaluate("bash", "ls", rules)
     assert result.action == "deny"
+
+
+def test_evaluate_specific_allow_overrides_broad_deny():
+    """Supports deny-by-default agent rules such as explore's tool policy."""
+    rules = [
+        Rule(permission="*", pattern="*", action="deny"),
+        Rule(permission="read", pattern="*", action="allow"),
+    ]
+    result = evaluate("read", "file.py", rules)
+    assert result.action == "allow"
 
 
 def test_evaluate_last_allow_wins_among_non_deny():
@@ -67,6 +72,14 @@ def test_evaluate_deny_beats_always_reply():
     approved = [Rule(permission="edit", pattern="*", action="allow")]
     result = evaluate("edit", ".env", base, approved)
     assert result.action == "deny"
+
+
+def test_evaluate_specific_pattern_deny_beats_broad_allow():
+    rules = [
+        Rule(permission="read", pattern="*", action="allow"),
+        Rule(permission="read", pattern="*.env", action="deny"),
+    ]
+    assert evaluate("read", ".env", rules).action == "deny"
 
 
 def test_merge():
