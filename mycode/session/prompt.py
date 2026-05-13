@@ -10,7 +10,9 @@ Features:
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -387,7 +389,7 @@ async def prompt(
         # Initialize incremental reminder state from history so we don't
         # re-send the full skills/date reminder on every new prompt() call
         # when the session already contains previous reminders.
-        prev_skills, prev_date = _extract_reminder_state_from_history(history)
+        prev_skills, prev_date, prev_memory_index_hash = _extract_reminder_state_from_history(history)
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
@@ -463,7 +465,12 @@ async def prompt(
             # to the current user message instead of injecting a separate message.
             # This keeps ContextViewer clean and avoids visual separation.
             # Still track the reminder dict for DB persistence as a meta message.
-            reminder_text, prev_skills, prev_date = _build_system_reminders(prompt_input, prev_skills, prev_date)
+            reminder_text, prev_skills, prev_date, prev_memory_index_hash = _build_system_reminders(
+                prompt_input,
+                prev_skills,
+                prev_date,
+                prev_memory_index_hash,
+            )
             if reminder_text:
                 _attach_reminder_to_last_user_message(messages, reminder_text)
                 _reminder_user_messages.append({"content": reminder_text})
@@ -768,7 +775,7 @@ def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str
 
 def _extract_reminder_state_from_history(
     history: list[dict[str, Any]] | None,
-) -> tuple[list[dict[str, str]] | None, str | None]:
+) -> tuple[list[dict[str, str]] | None, str | None, str | None]:
     """Scan history for previously persisted system-reminder messages.
 
     Returns ``(prev_skills, prev_date)`` extracted from the **last** reminder
@@ -777,12 +784,12 @@ def _extract_reminder_state_from_history(
     next call as the initial (full) send.
     """
     if not history:
-        return None, None
+        return None, None, None
 
-    import re
 
     prev_skills: list[dict[str, str]] | None = None
     prev_date: str | None = None
+    memory_index_hash: str | None = None
 
     # Walk history in order; later reminders overwrite earlier ones.
     for msg in history:
@@ -791,6 +798,9 @@ def _extract_reminder_state_from_history(
         content: str = msg.get("content") or ""
         if "<system-reminder>" not in content:
             continue
+        hash_match = re.search(r'<memory_index[^>]*hash="([^"]+)"', content)
+        if hash_match:
+            memory_index_hash = hash_match.group(1)
 
         # --- Extract skills ---
         # Full list format: "The following skills are available ..."
@@ -848,14 +858,15 @@ def _extract_reminder_state_from_history(
         if date_match:
             prev_date = date_match.group(1).strip()
 
-    return prev_skills, prev_date
+    return prev_skills, prev_date, memory_index_hash
 
 
 def _build_system_reminders(
     prompt_input: PromptInput,
     prev_skills: list[dict[str, str]] | None,
     prev_date: str | None,
-) -> tuple[str, list[dict[str, str]], str]:
+    prev_memory_index_hash: str | None,
+) -> tuple[str, list[dict[str, str]], str, str | None]:
     """Build <system-reminder> content for skills, memory, and date.
 
     All sections are merged into a **single** <system-reminder> block so
@@ -896,17 +907,19 @@ def _build_system_reminders(
         inner_sections.append(date_text)
 
     # --- Memory section ---
-    memory_text = _build_memory_reminder(prompt_input)
+    memory_text, current_memory_index_hash = _build_memory_reminder(prev_memory_index_hash)
     if memory_text:
         inner_sections.append(memory_text)
+    if current_memory_index_hash:
+        prev_memory_index_hash = current_memory_index_hash
 
     if not inner_sections:
-        return "", current_skills, current_date
+        return "", current_skills, current_date, prev_memory_index_hash
 
     # Wrap all sections in a single <system-reminder> tag
     body = "\n\n".join(inner_sections)
     reminder = f"<system-reminder>\n{body}\n</system-reminder>"
-    return reminder, current_skills, current_date
+    return reminder, current_skills, current_date, prev_memory_index_hash
 
 
 def _attach_reminder_to_last_user_message(
@@ -998,35 +1011,52 @@ def _build_date_reminder(current: str, prev: str | None) -> str:
     return ""
 
 
-def _build_memory_reminder(prompt_input: PromptInput) -> str:
+def _build_memory_reminder(prev_index_hash: str | None) -> tuple[str, str | None]:
     """Build the memory reminder section (plain content, no wrapper tags).
 
-    Returns empty string if no relevant memories found.
+    Returns ``(text, current_index_hash)``. The MEMORY.md index is included
+    on the first turn and whenever it changes after a memory tool write/update.
     """
     try:
         from mycode.project.instance import current_or_none
-        from mycode.session.memory.memdir import format_memories_for_context
-        from mycode.session.memory.retrieval import find_relevant_memories
+        from mycode.session.memory.memdir import load_memory_index, memory_index_path
 
         inst = current_or_none()
         if not inst:
-            return ""
+            return "", None
 
-        query = ""
-        for part in prompt_input.parts:
-            if part.get("type") == "text":
-                query += part.get("content", "")
+        index_text = load_memory_index(inst.directory)
+        if not index_text:
+            return _memory_tool_guidance(inst.directory), None
 
-        if not query:
-            return ""
+        current_hash = hashlib.sha256(index_text.encode("utf-8")).hexdigest()[:16]
+        if current_hash == prev_index_hash:
+            return "", current_hash
 
-        memories = find_relevant_memories(inst.directory, query, max_results=5)
-        if not memories:
-            return ""
-
-        context = format_memories_for_context(memories, include_freshness=True)
-        if context:
-            return f"<relevant_memories>\n{context}\n</relevant_memories>"
+        path = memory_index_path(inst.directory)
+        reason = "updated" if prev_index_hash else "initial"
+        text = (
+            f'<memory_index hash="{current_hash}" status="{reason}">\n'
+            f"Contents of {path} (user's auto-memory, persists across conversations):\n\n"
+            f"{index_text}\n"
+            "</memory_index>\n\n"
+            f"{_memory_tool_guidance(inst.directory)}"
+        )
+        return text, current_hash
     except Exception:
         pass  # Memory injection is best-effort
-    return ""
+    return "", prev_index_hash
+
+
+def _memory_tool_guidance(project_path: str) -> str:
+    from mycode.session.memory.memdir import memdir_path
+
+    return (
+        "<memory_tool_guidance>\n"
+        "Use the `memory` tool to inspect or maintain long-term memories. "
+        "The index above is only a directory; call `memory` with action=\"read\" before relying on a specific memory's details. "
+        "Call `memory` with action=\"write\" or \"update\" only for durable user preferences, feedback, project facts, or references "
+        "that cannot be derived from code, git history, or CLAUDE.md. "
+        f"The memory directory already exists at {memdir_path(project_path)}; write to it through the memory tool rather than checking or creating it.\n"
+        "</memory_tool_guidance>"
+    )

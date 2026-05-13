@@ -62,6 +62,7 @@ from mycode.orchestration.runtime.swarm import (
     SwarmAgentRunner,
     SwarmError,
     SwarmResult,
+    run_supervisor_collaboration,
     run_swarm,
 )
 
@@ -95,5 +96,6 @@ __all__ = [
     "SwarmResult",
     "TmuxMailbox",
     "run_coordinator",
+    "run_supervisor_collaboration",
     "run_swarm",
 ]

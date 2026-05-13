@@ -145,6 +145,7 @@ def test_builtin_flows_load() -> None:
     registry = FlowRegistry(global_dir=Path("/__does_not_exist__"))
     names = [f.name for f in registry.list_flows()]
     assert "research" in names
+    assert "supervised-review" in names
     assert "pair-review" in names
 
     spec = registry.load("research")
@@ -153,4 +154,8 @@ def test_builtin_flows_load() -> None:
 
     spec_swarm = registry.load("pair-review")
     assert spec_swarm.mode == "swarm"
-    assert spec_swarm.lead == "reviewer-lead"
+    assert spec_swarm.lead == "reviewer-starter"
+
+    spec_hybrid = registry.load("supervised-review")
+    assert spec_hybrid.mode == "hybrid"
+    assert spec_hybrid.coordinator == "review-supervisor"

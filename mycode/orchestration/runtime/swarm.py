@@ -169,6 +169,11 @@ class _SendMessageTool(CallableTool[SendMessageParams]):
             recipient = self._resolve_recipient(params.recipient)
 
             if kind == "message":
+                if recipient == self._sender:
+                    return ToolError(
+                        "recipient resolves to the current agent; continue in-place instead of sending to yourself",
+                        title="send_message",
+                    )
                 env = await self._system.send(
                     sender=self._sender,
                     recipient=recipient,
@@ -182,6 +187,11 @@ class _SendMessageTool(CallableTool[SendMessageParams]):
                 )
 
             if kind == "shutdown_request":
+                if recipient == self._sender:
+                    return ToolError(
+                        "cannot send shutdown_request to yourself",
+                        title="send_message (shutdown_request)",
+                    )
                 env = await self._system.shutdown_request(
                     sender=self._sender,
                     recipient=recipient,
@@ -194,6 +204,11 @@ class _SendMessageTool(CallableTool[SendMessageParams]):
                 )
 
             if kind == "shutdown_response":
+                if recipient == self._sender:
+                    return ToolError(
+                        "cannot send shutdown_response to yourself",
+                        title="send_message (shutdown_response)",
+                    )
                 env = await self._system.shutdown_response(
                     sender=self._sender,
                     recipient=recipient,
@@ -238,6 +253,12 @@ class SwarmAgentContext:
     # decide whether the global budget is exhausted.  Returning True
     # tells the runner to stop cleanly.
     should_stop: Callable[[], bool]
+    # Lets the entry peer hold open until every other peer has finished.
+    all_other_peers_done: Callable[[], bool] | None = None
+    # Lets non-entry peers stop waiting for first work once the entry peer
+    # has ended without delegating to them.
+    entry_peer_done: Callable[[], bool] | None = None
+    events: OrchestrationEventEmitter | None = None
 
     @property
     def entry_name(self) -> str:
@@ -309,6 +330,11 @@ class LiteLLMSwarmRunner:
         system_prompt = build_system(agent_prompt=agent.prompt)
         agent_ruleset = build_agent_ruleset(agent)
 
+        # Swarm peers can be launched outside the normal session prompt path,
+        # so make sure the process-local registry is populated before we
+        # build each peer's schema.
+        tool_registry.register_builtins()
+
         # Build the per-peer tool allow-list and inject the bound send_message.
         all_tools = tool_registry.to_llm_tools()
         if agent.tools is not None:
@@ -330,19 +356,64 @@ class LiteLLMSwarmRunner:
         messages: list[dict[str, Any]] = []
         if sctx.initial_task:
             messages.append({"role": "user", "content": sctx.initial_task})
+            if sctx.events is not None:
+                await sctx.events.agent_message(
+                    stage_id=None,
+                    spawn_index=None,
+                    agent=agent.name,
+                    role="user",
+                    kind="task",
+                    content=sctx.initial_task,
+                    turn=0,
+                )
 
         output_parts: list[str] = []
         total_tool_calls = 0
         last_text = ""
-        turn = 0
+        llm_turns = 0
         idle_polls = 0
+        awaiting_tool_followup = False
+        has_seen_work = bool(sctx.initial_task)
+        peer_names = [name for name in sctx.system.inboxes if name != sctx.sender_name]
+        delegated_recipients: set[str] = set()
+        requires_peer_delegation = bool(sctx.initial_task) and sctx.sender_name == sctx.lead_name and bool(peer_names)
 
         effective_max_turns = min(
             sctx.max_turns,
             agent.max_turns or sctx.max_turns,
         )
 
-        for turn in range(effective_max_turns):
+        def _delegation_reminder() -> str:
+            missing = [name for name in peer_names if name not in delegated_recipients]
+            if not missing:
+                return ""
+            targets = ", ".join(f"`{name}`" for name in missing)
+            if len(missing) == len(peer_names):
+                return (
+                    "Reminder: this swarm cannot proceed solo. Before continuing, use "
+                    f"`send_message` to delegate focused review tasks to {targets}."
+                )
+            return (
+                "Reminder: before final synthesis, you still need to delegate to "
+                f"{targets} via `send_message`."
+            )
+
+        def _mark_delegation(tool_name: str, args: dict[str, Any]) -> None:
+            if tool_name != "send_message":
+                return
+            kind = str(args.get("type") or "message").strip().lower()
+            if kind == "broadcast":
+                delegated_recipients.update(peer_names)
+                return
+            if kind != "message":
+                return
+            recipient = str(args.get("recipient") or "").strip()
+            if recipient == "main":
+                recipient = sctx.lead_name
+            if recipient in peer_names:
+                delegated_recipients.add(recipient)
+
+        while llm_turns < effective_max_turns:
             if sctx.should_stop():
                 break
 
@@ -350,22 +421,47 @@ class LiteLLMSwarmRunner:
             envs = await sctx.system.inboxes[sctx.sender_name].drain()
             received_shutdown = False
             for env in envs:
+                has_seen_work = True
                 messages.append({"role": "user", "content": env.format_for_llm()})
                 if env.kind == "shutdown_request":
                     received_shutdown = True
+                if sctx.events is not None:
+                    await sctx.events.agent_message(
+                        stage_id=None,
+                        spawn_index=None,
+                        agent=agent.name,
+                        role="user",
+                        kind=env.kind,
+                        recipient=env.sender,
+                        content=env.format_for_llm(),
+                        turn=llm_turns + 1,
+                    )
 
-            # If there's nothing to react to and no seed task on this turn,
-            # poll a few times before giving up so we don't exit the very
-            # first tick when peers haven't produced yet.
-            if not envs and not messages:
+            # After a peer has already seen earlier messages, its history
+            # remains non-empty forever. We only want another LLM turn when
+            # there is *fresh* inbox input, a seed task, or a pending
+            # follow-up after tool execution.
+            has_seed_input = llm_turns == 0 and bool(sctx.initial_task)
+            should_take_turn = bool(envs) or has_seed_input or awaiting_tool_followup
+            if not should_take_turn:
+                if sctx.sender_name == sctx.lead_name and sctx.all_other_peers_done is not None and not sctx.all_other_peers_done():
+                    await sctx.system.inboxes[sctx.sender_name].wait_for_message(timeout=self._idle_poll_seconds)
+                    continue
+                if not has_seen_work and sctx.sender_name != sctx.lead_name:
+                    if sctx.entry_peer_done is not None and sctx.entry_peer_done():
+                        break
+                    await sctx.system.inboxes[sctx.sender_name].wait_for_message(timeout=self._idle_poll_seconds)
+                    continue
                 if idle_polls >= self._max_idle_polls:
                     break
                 idle_polls += 1
-                await asyncio.sleep(self._idle_poll_seconds)
+                await sctx.system.inboxes[sctx.sender_name].wait_for_message(timeout=self._idle_poll_seconds)
                 continue
             idle_polls = 0
+            awaiting_tool_followup = False
 
             # 2) Take one LLM turn.
+            llm_turns += 1
             stream_input = llmmod.StreamInput(
                 model=model,
                 messages=messages,
@@ -392,7 +488,7 @@ class LiteLLMSwarmRunner:
                         task=sctx.initial_task or "(swarm peer)",
                         output="".join(output_parts) + f"\n\nError: {event.error}",
                         is_error=True,
-                        turns=turn + 1,
+                        turns=llm_turns,
                         tool_calls=total_tool_calls,
                     )
 
@@ -400,6 +496,15 @@ class LiteLLMSwarmRunner:
             if assistant_text:
                 output_parts.append(assistant_text)
                 last_text = assistant_text
+                if sctx.events is not None:
+                    await sctx.events.agent_message(
+                        stage_id=None,
+                        spawn_index=None,
+                        agent=agent.name,
+                        role="assistant",
+                        content=assistant_text,
+                        turn=llm_turns,
+                    )
 
             # 3) Execute tool calls (incl. send_message).
             if pending and finish == "tool-calls":
@@ -448,19 +553,47 @@ class LiteLLMSwarmRunner:
                         })
                         continue
 
+                    _mark_delegation(tc.tool_name, args)
+
                     try:
                         result = await impl.execute(args, ctx)
                         tool_output = result.output
                     except Exception as exc:  # noqa: BLE001
                         tool_output = f"Error: {exc}"
 
+                    if sctx.events is not None:
+                        await sctx.events.agent_tool(
+                            stage_id=None,
+                            spawn_index=None,
+                            agent=agent.name,
+                            tool_name=tc.tool_name,
+                            args_preview=tc.args or "",
+                            output_preview=tool_output,
+                            turn=llm_turns,
+                        )
+
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.tool_call_id,
                         "content": tool_output,
                     })
+                if requires_peer_delegation and len(delegated_recipients) < len(peer_names):
+                    reminder = _delegation_reminder()
+                    if reminder:
+                        messages.append({"role": "user", "content": reminder})
                 # Continue loop: maybe more responses land in the inbox.
+                awaiting_tool_followup = True
                 continue
+
+            if assistant_text:
+                messages.append({"role": "assistant", "content": assistant_text})
+
+            if requires_peer_delegation and len(delegated_recipients) < len(peer_names):
+                reminder = _delegation_reminder()
+                if reminder:
+                    messages.append({"role": "user", "content": reminder})
+                    awaiting_tool_followup = True
+                    continue
 
             # 4) No tool call this turn. If we received a shutdown request
             #    already delivered to the LLM and the LLM chose not to act,
@@ -477,19 +610,19 @@ class LiteLLMSwarmRunner:
             task=sctx.initial_task or "(swarm peer)",
             output=last_text or "".join(output_parts) or "(no output)",
             is_error=False,
-            turns=turn + 1,
+            turns=llm_turns,
             tool_calls=total_tool_calls,
         )
 
 
 # ---------------------------------------------------------------------------
-# SwarmResult + run_swarm top-level API
+# SwarmResult + mailbox-collaboration top-level APIs
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class SwarmResult:
-    """Aggregated outcome of a swarm run."""
+    """Aggregated outcome of a mailbox-based multi-agent run."""
 
     flow_name: str
     # Name of the entry agent (initial task receiver).  Kept as ``lead`` for
@@ -504,6 +637,9 @@ class SwarmResult:
     # Convenience: the entry agent's final text is commonly the swarm answer.
     lead_output: str = ""
     terminated_reason: str = ""  # "lead-quiet" | "turn-budget" | "walltime" | "shutdown"
+    # ``hybrid`` reuses the same mailbox result shape, with ``lead`` naming
+    # the supervisor/facilitator whose final output is surfaced first.
+    kind: str = "swarm"
 
     @property
     def entry(self) -> str:
@@ -516,63 +652,33 @@ class SwarmResult:
         return self.lead_output
 
 
-async def run_swarm(
+def _first_declared_agent(spec: OrchestrationSpec, agents: dict[str, AgentInfo]) -> str:
+    if spec.agents:
+        return spec.agents[0].name
+    return next(iter(agents), "")
+
+
+async def _run_mailbox_team(
     spec: OrchestrationSpec,
     agents: dict[str, AgentInfo],
     *,
     user_task: str,
+    lead: str,
+    kind: str,
     runner: SwarmAgentRunner | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     walltime_seconds: float = 300.0,
     events: OrchestrationEventEmitter | None = None,
 ) -> SwarmResult:
-    """Execute an orchestration spec in ``swarm`` mode.
-
-    Parameters
-    ----------
-    spec:
-        Validated spec with ``mode='swarm'``.  ``spec.entry`` (or the
-        legacy alias ``spec.lead``) names the initial task receiver; when
-        neither is set the runtime falls back to the first declared agent.
-    agents:
-        Resolved ``{name → AgentInfo}`` from :mod:`agent_resolver`.
-    user_task:
-        The initial prompt delivered to the entry agent's inbox.
-    runner:
-        Per-peer loop.  Defaults to :class:`LiteLLMSwarmRunner`; tests
-        inject a deterministic fake.
-    max_turns:
-        Per-peer turn budget.  A peer that hits it is politely stopped.
-    walltime_seconds:
-        Hard deadline for the whole swarm; blown budgets terminate the
-        run even if peers are still chatting.
-    events:
-        Optional lifecycle emitter.  When supplied, the runtime publishes
-        ``orchestration.swarm.started`` / ``.swarm.finished`` and hooks
-        the mailbox so every routed envelope produces an
-        ``orchestration.message.sent`` event.
-    """
-    if spec.mode != "swarm":
-        raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
+    """Shared mailbox runtime for swarm and supervisor-collaboration modes."""
     if not agents:
-        raise SwarmError("swarm requires at least 1 agent")
+        raise SwarmError(f"{kind} requires at least 1 agent")
     if len(agents) < 2:
-        raise SwarmError("swarm requires at least 2 agents")
-
-    # Resolve the entry agent.  Prefer the new ``entry`` field; fall back
-    # to the legacy ``lead`` alias; finally use the first declared agent
-    # as a sensible default so a fully-decentralized swarm spec (no entry
-    # pinned) still has a deterministic task-seeding target.
-    entry_name = spec.entry or spec.lead
-    if not entry_name:
-        # ``spec.agents`` preserves declaration order; ``agents`` is a dict
-        # rebuilt from it, but we re-derive from the spec to be explicit.
-        entry_name = spec.agents[0].name if spec.agents else next(iter(agents))
-    if entry_name not in agents:
+        raise SwarmError(f"{kind} requires at least 2 agents")
+    if lead not in agents:
         raise SwarmError(
-            f"entry agent {entry_name!r} not in resolved agents: {sorted(agents)}"
+            f"{kind} lead agent {lead!r} not in resolved agents: {sorted(agents)}"
         )
-    lead = entry_name  # kept for readability below (callbacks, events)
 
     peer_runner = runner or LiteLLMSwarmRunner()
     # Honour the backend hint from the spec.  ``None`` / ``auto`` /
@@ -609,6 +715,13 @@ async def run_swarm(
         return False
 
     async def _run_peer(name: str) -> tuple[str, SpawnOutput]:
+        def _all_other_peers_done() -> bool:
+            return all(tasks_by_name[peer].done() for peer in agents if peer != name)
+
+        def _entry_peer_done() -> bool:
+            task = tasks_by_name.get(lead)
+            return bool(task and task.done())
+
         sctx = SwarmAgentContext(
             agent=agents[name],
             sender_name=name,
@@ -616,6 +729,9 @@ async def run_swarm(
             lead_name=lead,
             initial_task=user_task if name == lead else None,
             max_turns=max_turns,
+            all_other_peers_done=_all_other_peers_done if name == lead else None,
+            entry_peer_done=_entry_peer_done if name != lead else None,
+            events=events,
             should_stop=should_stop,
         )
         out = await peer_runner(sctx)
@@ -626,9 +742,12 @@ async def run_swarm(
         peer_names = [n for n in agents if n != lead]
         await events.swarm_started(lead=lead, peers=peer_names, user_task=user_task)
 
-    tasks = [asyncio.create_task(_run_peer(name)) for name in agents]
+    tasks_by_name = {
+        name: asyncio.create_task(_run_peer(name))
+        for name in agents
+    }
     try:
-        done_results = await asyncio.gather(*tasks, return_exceptions=False)
+        done_results = await asyncio.gather(*tasks_by_name.values(), return_exceptions=False)
     finally:
         await system.close()
 
@@ -653,6 +772,73 @@ async def run_swarm(
         transcript=list(system.event_log),
         lead_output=(lead_out.output if lead_out else ""),
         terminated_reason=terminated_reason["value"],
+        kind=kind,
+    )
+
+
+async def run_swarm(
+    spec: OrchestrationSpec,
+    agents: dict[str, AgentInfo],
+    *,
+    user_task: str,
+    runner: SwarmAgentRunner | None = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    walltime_seconds: float = 300.0,
+    events: OrchestrationEventEmitter | None = None,
+) -> SwarmResult:
+    """Execute an orchestration spec in ``swarm`` mode.
+
+    ``spec.entry`` (or the legacy alias ``spec.lead``) names the initial
+    task receiver. When omitted, the runtime falls back to the first
+    declared agent, preserving decentralized swarm semantics.
+    """
+    if spec.mode != "swarm":
+        raise SwarmError(f"run_swarm requires mode=swarm, got {spec.mode!r}")
+    entry_name = spec.entry or spec.lead or _first_declared_agent(spec, agents)
+    return await _run_mailbox_team(
+        spec,
+        agents,
+        user_task=user_task,
+        lead=entry_name,
+        kind="swarm",
+        runner=runner,
+        max_turns=max_turns,
+        walltime_seconds=walltime_seconds,
+        events=events,
+    )
+
+
+async def run_supervisor_collaboration(
+    spec: OrchestrationSpec,
+    agents: dict[str, AgentInfo],
+    *,
+    user_task: str,
+    runner: SwarmAgentRunner | None = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    walltime_seconds: float = 300.0,
+    events: OrchestrationEventEmitter | None = None,
+) -> SwarmResult:
+    """Execute ``hybrid`` as supervisor-led mailbox collaboration.
+
+    The supervisor receives the initial task, can delegate to peers through
+    ``send_message``, and is addressable as ``main`` so specialists can
+    report back. The final result surfaces the supervisor's output first.
+    """
+    if spec.mode != "hybrid":
+        raise SwarmError(
+            f"run_supervisor_collaboration requires mode=hybrid, got {spec.mode!r}"
+        )
+    supervisor = spec.coordinator or spec.entry or spec.lead or _first_declared_agent(spec, agents)
+    return await _run_mailbox_team(
+        spec,
+        agents,
+        user_task=user_task,
+        lead=supervisor,
+        kind="hybrid",
+        runner=runner,
+        max_turns=max_turns,
+        walltime_seconds=walltime_seconds,
+        events=events,
     )
 
 
@@ -663,5 +849,6 @@ __all__ = [
     "SwarmAgentRunner",
     "SwarmError",
     "SwarmResult",
+    "run_supervisor_collaboration",
     "run_swarm",
 ]

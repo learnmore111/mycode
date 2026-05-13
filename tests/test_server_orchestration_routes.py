@@ -59,9 +59,9 @@ def test_list_flows_returns_shipped_flows(client):
     data = resp.json()
     assert isinstance(data, list)
     names = {f["name"] for f in data}
-    # ``research`` and ``pair-review`` are the two flows shipped with the
-    # package since M1; both must surface here.
+    # Built-in examples cover workflow, supervisor collaboration, and swarm.
     assert "research" in names
+    assert "supervised-review" in names
     assert "pair-review" in names
 
 
@@ -201,8 +201,180 @@ def test_get_run_detail_returns_swarm_summary(client, monkeypatch):
     assert detail["done"] is True
     assert detail["result"]["kind"] == "swarm"
     assert detail["result"]["terminated_reason"] == "lead-quiet"
+    assert detail["result"]["lead_output"] == "final swarm answer"
+    assert detail["result"]["entry_output"] == "final swarm answer"
     assert detail["result"]["lead_output_preview"] == "final swarm answer"
     assert detail["result"]["peer_count"] >= 2
+    peers = {peer["name"]: peer for peer in detail["result"]["peers"]}
+    assert peers[spec_lead := detail["result"]["lead"]]["output"] == f"output from {spec_lead}"
+
+
+def test_get_run_detail_returns_coordinator_full_outputs(client, monkeypatch):
+    from mycode.orchestration.runtime.context import RunContext, SpawnOutput, StageOutput
+    from mycode.orchestration.runtime.coordinator import CoordinatorResult
+    from mycode.server.routes import orchestration as orch_route
+
+    async def _fake_run_coordinator(spec, agents, *, events=None, **kw):
+        ctx = RunContext(flow_name=spec.name)
+        research = StageOutput(
+            stage_id="research",
+            spawns=[
+                SpawnOutput(agent="explorer", task="map code", output="full explorer output", turns=2, tool_calls=1),
+            ],
+        )
+        synth = StageOutput(
+            stage_id="synthesize",
+            spawns=[
+                SpawnOutput(agent="coordinator", task="write brief", output="full spawn output", turns=1, tool_calls=0),
+            ],
+            coordinator_output="full coordinator brief",
+            coordinator_agent="coordinator",
+        )
+        ctx.record(research)
+        ctx.record(synth)
+        return CoordinatorResult(context=ctx, last_stage=synth)
+
+    monkeypatch.setattr(orch_route, "run_coordinator", _fake_run_coordinator)
+    resp = client.post("/orchestration/run", json={"flow": "research"})
+    assert resp.status_code == 200, resp.text
+
+    detail = _wait_for_run_status(client, resp.json()["run_id"], "completed")
+    assert detail["result"]["kind"] == "coordinator"
+    assert detail["result"]["last_output"] == "full coordinator brief"
+    synth = detail["result"]["stages"][1]
+    assert synth["coordinator_output"] == "full coordinator brief"
+    assert synth["output"] == "full coordinator brief"
+    assert synth["spawns"][0]["output"] == "full spawn output"
+
+
+def test_post_run_hybrid_dispatches_to_supervisor_collaboration(client, monkeypatch, tmp_path):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    flow_dir = tmp_path / ".mycode" / "orchestrations"
+    flow_dir.mkdir(parents=True)
+    (flow_dir / "supervised-review.yaml").write_text(
+        """
+name: supervised-review
+mode: hybrid
+coordinator: supervisor
+agents:
+  - name: supervisor
+    role: coordinator
+  - name: specialist
+    role: teammate
+""".strip(),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    async def _fake_run_supervisor_collaboration(spec, agents, *, user_task, events=None, **kw):
+        seen["mode"] = spec.mode
+        seen["task"] = user_task
+        return SwarmResult(
+            flow_name=spec.name,
+            lead=spec.coordinator or "",
+            peers={
+                name: SpawnOutput(
+                    agent=name,
+                    task=f"task for {name}",
+                    output=f"output from {name}",
+                    turns=1,
+                    tool_calls=0,
+                )
+                for name in agents
+            },
+            transcript=[],
+            lead_output="supervisor answer",
+            terminated_reason="lead-quiet",
+            kind="hybrid",
+        )
+
+    async def _unexpected_run_coordinator(*args, **kwargs):
+        raise AssertionError("hybrid should not use coordinator runtime")
+
+    monkeypatch.setattr(orch_route, "run_supervisor_collaboration", _fake_run_supervisor_collaboration)
+    monkeypatch.setattr(orch_route, "run_coordinator", _unexpected_run_coordinator)
+
+    resp = client.post(
+        "/orchestration/run",
+        json={"flow": "supervised-review", "task": "coordinate this", "directory": str(tmp_path)},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["mode"] == "hybrid"
+    detail = _wait_for_run_status(client, resp.json()["run_id"], "completed")
+
+    assert seen == {"mode": "hybrid", "task": "coordinate this"}
+    assert detail["result"]["kind"] == "hybrid"
+    assert detail["result"]["lead"] == "supervisor"
+    assert detail["result"]["lead_output"] == "supervisor answer"
+    assert detail["result"]["lead_output_preview"] == "supervisor answer"
+
+
+def test_swarm_summary_includes_collaboration_metrics(client):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.mailbox import Envelope
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    result = SwarmResult(
+        flow_name="pair-review",
+        lead="reviewer-starter",
+        peers={
+            "reviewer-starter": SpawnOutput(agent="reviewer-starter", task="lead", output="final summary", turns=3, tool_calls=2),
+            "security-reviewer": SpawnOutput(agent="security-reviewer", task="sec", output="", turns=2, tool_calls=1),
+            "perf-reviewer": SpawnOutput(agent="perf-reviewer", task="perf", output="", turns=2, tool_calls=1),
+        },
+        transcript=[
+            Envelope(kind="message", sender="reviewer-starter", recipient="security-reviewer", content="check auth", seq=1),
+            Envelope(kind="message", sender="reviewer-starter", recipient="perf-reviewer", content="check hot paths", seq=2),
+            Envelope(kind="message", sender="security-reviewer", recipient="reviewer-starter", content="auth looks okay", seq=3),
+            Envelope(kind="message", sender="perf-reviewer", recipient="reviewer-starter", content="cache misses in repo", seq=4),
+        ],
+        lead_output="final summary",
+        terminated_reason="lead-quiet",
+    )
+
+    summary = orch_route._summarize_swarm_result(result)
+    assert summary is not None
+    assert summary["collaboration_count"] == 4
+    assert summary["active_peer_count"] == 3
+    assert len(summary["message_routes"]) == 4
+    assert summary["lead_output"] == "final summary"
+    assert summary["transcript"][-1]["content"] == "cache misses in repo"
+    peers = {peer["name"]: peer for peer in summary["peers"]}
+    assert peers["reviewer-starter"]["output"] == "final summary"
+    assert peers["reviewer-starter"]["sent_count"] == 2
+    assert peers["reviewer-starter"]["received_count"] == 2
+    assert peers["security-reviewer"]["recent_activity_direction"] == "sent"
+    assert summary["recent_messages"][-1]["preview"] == "cache misses in repo"
+
+
+def test_swarm_summary_ignores_placeholder_no_output_for_activity(client):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    result = SwarmResult(
+        flow_name="pair-review",
+        lead="reviewer-starter",
+        peers={
+            "reviewer-starter": SpawnOutput(agent="reviewer-starter", task="lead", output="final summary", turns=3, tool_calls=2),
+            "security-reviewer": SpawnOutput(agent="security-reviewer", task="sec", output="(no output)", turns=0, tool_calls=0),
+            "perf-reviewer": SpawnOutput(agent="perf-reviewer", task="perf", output="(no output)", turns=0, tool_calls=0),
+        },
+        transcript=[],
+        lead_output="final summary",
+        terminated_reason="lead-quiet",
+    )
+
+    summary = orch_route._summarize_swarm_result(result)
+    assert summary is not None
+    assert summary["active_peer_count"] == 1
+    peers = {peer["name"]: peer for peer in summary["peers"]}
+    assert peers["security-reviewer"]["output_preview"] == ""
+    assert peers["security-reviewer"]["recent_activity_direction"] == "none"
 
 
 def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
@@ -239,12 +411,66 @@ def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
     assert flags["cancelled"] is True
 
 
+def test_delete_completed_run_removes_history(client, monkeypatch):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    async def _fake_run_swarm(spec, agents, *, user_task, events=None, **kw):
+        return SwarmResult(
+            flow_name=spec.name,
+            lead=spec.lead or "",
+            peers={
+                name: SpawnOutput(agent=name, task=f"task for {name}", output=f"output from {name}")
+                for name in agents
+            },
+            transcript=[],
+            lead_output="delete me",
+            terminated_reason="lead-quiet",
+        )
+
+    monkeypatch.setattr(orch_route, "run_swarm", _fake_run_swarm)
+    resp = client.post("/orchestration/run", json={"flow": "pair-review", "task": "temporary"})
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    _wait_for_run_status(client, run_id, "completed")
+
+    delete_resp = client.delete(f"/orchestration/run/{run_id}")
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert delete_resp.json() == {"ok": True, "run_id": run_id, "deleted": True}
+
+    detail_resp = client.get(f"/orchestration/run/{run_id}")
+    assert detail_resp.status_code == 404
+    list_resp = client.get("/orchestration/run")
+    assert list_resp.status_code == 200
+    assert all(run["run_id"] != run_id for run in list_resp.json())
+
+
+def test_delete_running_run_is_rejected(client, monkeypatch):
+    from mycode.server.routes import orchestration as orch_route
+
+    run_id = "active-delete-test"
+    orch_route._runs[run_id] = orch_route._RunRecord(  # noqa: SLF001 - route-owned active run registry
+        run_id=run_id,
+        flow="pair-review",
+        mode="swarm",
+        directory=None,
+        task_text="stay alive",
+        status="running",
+    )
+    try:
+        delete_resp = client.delete(f"/orchestration/run/{run_id}")
+        assert delete_resp.status_code == 409
+    finally:
+        orch_route._runs.pop(run_id, None)  # noqa: SLF001
+
+
 def test_run_history_survives_app_recreation(tmp_path, monkeypatch):
+    import mycode.storage.database as dbmod
     from mycode.orchestration.runtime.context import SpawnOutput
     from mycode.orchestration.runtime.swarm import SwarmResult
     from mycode.server.app import create_app
     from mycode.server.routes import orchestration as orch_route
-    import mycode.storage.database as dbmod
 
     monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "orchestration-history.db"))
     monkeypatch.setattr("mycode.util.paths.GlobalPaths.data", staticmethod(lambda: tmp_path / "data"))
@@ -301,6 +527,7 @@ def test_run_history_survives_app_recreation(tmp_path, monkeypatch):
         assert detail_resp.status_code == 200, detail_resp.text
         detail = detail_resp.json()
         assert detail["status"] == "completed"
+        assert detail["result"]["lead_output"] == "persistent answer"
         assert detail["result"]["lead_output_preview"] == "persistent answer"
 
         list_resp = client2.get("/orchestration/run")

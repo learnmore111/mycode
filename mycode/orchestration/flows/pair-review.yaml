@@ -1,43 +1,89 @@
 # Built-in "pair-review" swarm.
 #
-# Three peer reviewers coordinate via named mailboxes. Swarm mode is
-# **decentralized / peer-to-peer** — the ``entry`` field below just marks
-# which agent receives the initial user task; it is *not* a central
-# controller.  All peers can ``send_message`` to each other freely.
+# Three peer reviewers coordinate via named mailboxes. This flow is meant
+# to showcase a realistic Swarm review pattern:
+#   - one starting agent opens the review process,
+#   - specialists exchange focused findings,
+#   - the final report is assembled after peer feedback.
+#
+# Swarm mode is **decentralized / peer-to-peer**. This example intentionally
+# requires reviewer-to-reviewer messages so the final answer is produced after
+# dynamic peer interaction, not by a fixed supervisor or stage DAG.
+#
+# The ``entry`` field below only marks the initial task receiver; it is *not*
+# a central controller. Peers may challenge, clarify, and route messages among
+# themselves during the run.
 #
 # ``entry`` is the canonical field; ``lead`` is retained as a deprecated
 # alias for backward compatibility with flows authored pre-v0.x.
 name: pair-review
-description: Security + performance + general code review via swarm mailboxes
+description: Multi-specialist swarm code review with peer handoff and synthesis
 mode: swarm
-entry: reviewer-lead
+entry: reviewer-starter
 
 agents:
-  - name: reviewer-lead
+  - name: reviewer-starter
     extends: build
     role: entry
-    tools: [send_message, team_create, read, grep, task_stop]
+    tools: [send_message, read, grep, glob]
     prompt: |
-      You are the review entry point. Delegate security concerns to
-      `security-reviewer` and performance concerns to `perf-reviewer`
-      via `send_message`. Collect responses and produce the final report.
+      You are the starting peer for a swarm code review.
+      Your first substantive action must be two `send_message` tool calls:
+      one to `security-reviewer` and one to `perf-reviewer`.
+      Do not start deep file inspection until both delegation messages have been sent.
+      Start by splitting the user task into at least two focused requests:
+      one for `security-reviewer` and one for `perf-reviewer`.
+      Do not jump straight to a final answer after delegating.
+      Wait for both reviewers to respond. If one response is vague or missing,
+      send a follow-up question or a progress ping.
+      Require at least one direct reviewer-to-reviewer exchange before your
+      final answer. If the specialists have not cross-checked each other yet,
+      explicitly ask one reviewer to validate or challenge the other's finding.
+      Before writing the final report, ask for at least one clarification,
+      cross-check, or challenge whenever the reviewers' conclusions overlap,
+      conflict, or leave an important gap.
+
+      Your final answer should group findings by severity and include:
+      - what was observed,
+      - why it matters,
+      - which peer raised or validated it,
+      - what direct peer-to-peer check happened during the review.
 
   - name: security-reviewer
     extends: explore
     role: teammate
     tools: [read, grep, glob, send_message]
     prompt: |
-      You are a security specialist. Focus on injection, auth, secrets, and
-      unsafe deserialization. Report findings back to reviewer-lead via
-      `send_message` (plain text is not visible to teammates).
+      You are a security specialist.
+      Focus on auth boundaries, secrets handling, input validation,
+      injection vectors, unsafe deserialization, and permission bypasses.
+
+      On your first turn after receiving work, send at least one message.
+      Send an early status update to `reviewer-starter` even if your conclusion is
+      "no major issue found yet". Include the files or areas you checked.
+      You must also send at least one direct message to `perf-reviewer` during
+      the run. Use it to request validation, challenge an assumption, or flag
+      a performance-sensitive security concern.
+      If you find no clear bug, still report residual risk and what remains
+      unverified.
 
   - name: perf-reviewer
     extends: explore
     role: teammate
     tools: [read, grep, glob, bash, send_message]
     prompt: |
-      You are a performance specialist. Focus on N+1 queries, hot loops, and
-      unnecessary I/O. Report findings to reviewer-lead via `send_message`.
+      You are a performance and scalability specialist.
+      Focus on unnecessary I/O, repeated scans, hot loops, broad queries,
+      high-cost startup work, and concurrency bottlenecks.
+
+      On your first turn after receiving work, send at least one message.
+      Send an early status update to `reviewer-starter` even if your conclusion is
+      "nothing serious yet". Include the files or paths you inspected.
+      You must also send at least one direct message to `security-reviewer`
+      during the run. Use it to confirm a correctness assumption, challenge a
+      risk boundary, or request validation for a suspected bottleneck.
+      If you find no clear regression, still report residual performance risk
+      and what evidence is still missing.
 
 backend:
   prefer: auto

@@ -41,13 +41,14 @@ from mycode.orchestration.registry import (
 )
 from mycode.orchestration.run_store import (
     OrchestrationRunInfo,
+    delete_run_record,
     get_run_record,
     list_run_records,
     save_run_record,
 )
 from mycode.orchestration.runtime.coordinator import run_coordinator
 from mycode.orchestration.runtime.events import BusOrchestrationEmitter
-from mycode.orchestration.runtime.swarm import run_swarm
+from mycode.orchestration.runtime.swarm import run_supervisor_collaboration, run_swarm
 from mycode.orchestration.topology import resolve_all_agents
 from mycode.orchestration.topology.loader import OrchestrationLoadError
 from mycode.orchestration.topology.validator import OrchestrationValidationError
@@ -117,6 +118,29 @@ def _stage_output_preview(stage: Any) -> str:
     return ""
 
 
+def _stage_output_text(stage: Any) -> str:
+    coordinator_output = getattr(stage, "coordinator_output", None)
+    if coordinator_output:
+        return coordinator_output
+    spawns = getattr(stage, "spawns", []) or []
+    if spawns:
+        return getattr(spawns[0], "output", "")
+    return ""
+
+
+def _envelope_preview(env: Any, limit: int = 160) -> str:
+    summary = (getattr(env, "summary", "") or "").strip()
+    content = (getattr(env, "content", "") or "").strip()
+    return _preview(summary or content, limit)
+
+
+def _meaningful_peer_output(text: str) -> str:
+    preview = _preview(text or "")
+    if preview.strip() in {"", "(no output)", "_(no output)_"}:
+        return ""
+    return preview
+
+
 def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
     context = getattr(result, "context", None)
     stage_order = getattr(context, "stage_order", None)
@@ -140,7 +164,23 @@ def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
             "ok_count": len(stage.ok_spawns()),
             "error_count": error_count,
             "coordinator_agent": stage.coordinator_agent,
+            "coordinator_output": stage.coordinator_output or "",
+            "output": _stage_output_text(stage),
             "output_preview": _stage_output_preview(stage),
+            "spawns": [
+                {
+                    "agent": spawn.agent,
+                    "task": spawn.task,
+                    "title": spawn.title,
+                    "is_error": spawn.is_error,
+                    "turns": spawn.turns,
+                    "tool_calls": spawn.tool_calls,
+                    "output": spawn.output,
+                    "output_preview": _preview(spawn.output),
+                    "metadata": dict(spawn.metadata or {}),
+                }
+                for spawn in stage.spawns
+            ],
         })
 
     last_stage = getattr(result, "last_stage", None)
@@ -152,6 +192,7 @@ def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
         "total_error_count": total_error_count,
         "has_errors": any(stage["is_error"] or stage["error_count"] > 0 for stage in stages),
         "last_stage_id": getattr(last_stage, "stage_id", None),
+        "last_output": _stage_output_text(last_stage) if last_stage is not None else "",
         "last_output_preview": _stage_output_preview(last_stage) if last_stage is not None else "",
         "stages": stages,
     }
@@ -162,28 +203,133 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
     if peers is None:
         return None
 
+    transcript = list(getattr(result, "transcript", []) or [])
+    delivered_messages = [env for env in transcript if getattr(env, "recipient", "") != "*"]
+    peer_activity: dict[str, dict[str, Any]] = {
+        name: {
+            "sent_count": 0,
+            "received_count": 0,
+            "last_sent_to": "",
+            "last_sent_preview": "",
+            "last_received_from": "",
+            "last_received_preview": "",
+        }
+        for name in peers
+    }
+    route_counts: dict[tuple[str, str], int] = {}
+    recent_messages: list[dict[str, Any]] = []
+
+    for env in delivered_messages:
+        sender = getattr(env, "sender", "")
+        recipient = getattr(env, "recipient", "")
+        preview = _envelope_preview(env)
+        route_counts[(sender, recipient)] = route_counts.get((sender, recipient), 0) + 1
+
+        if sender in peer_activity:
+            peer_activity[sender]["sent_count"] += 1
+            peer_activity[sender]["last_sent_to"] = recipient
+            peer_activity[sender]["last_sent_preview"] = preview
+        if recipient in peer_activity:
+            peer_activity[recipient]["received_count"] += 1
+            peer_activity[recipient]["last_received_from"] = sender
+            peer_activity[recipient]["last_received_preview"] = preview
+
+        recent_messages.append({
+            "seq": getattr(env, "seq", 0),
+            "kind": getattr(env, "kind", ""),
+            "sender": sender,
+            "recipient": recipient,
+            "summary": getattr(env, "summary", ""),
+            "content": getattr(env, "content", ""),
+            "preview": preview,
+            "timestamp": getattr(env, "timestamp", 0.0),
+        })
+
     peer_summaries = []
     for name in sorted(peers):
         out = peers[name]
+        activity = peer_activity[name]
+        output_preview = _meaningful_peer_output(out.output)
+        if activity["last_sent_preview"]:
+            activity_direction = "sent"
+            activity_partner = activity["last_sent_to"]
+            activity_preview = activity["last_sent_preview"]
+        elif activity["last_received_preview"]:
+            activity_direction = "received"
+            activity_partner = activity["last_received_from"]
+            activity_preview = activity["last_received_preview"]
+        elif output_preview:
+            activity_direction = "output"
+            activity_partner = ""
+            activity_preview = output_preview
+        else:
+            activity_direction = "none"
+            activity_partner = ""
+            activity_preview = ""
         peer_summaries.append({
             "name": name,
             "agent": out.agent,
             "is_error": out.is_error,
             "turns": out.turns,
             "tool_calls": out.tool_calls,
-            "output_preview": _preview(out.output),
+            "output": out.output,
+            "output_preview": output_preview,
+            "task": out.task,
+            "title": out.title,
+            "metadata": dict(out.metadata or {}),
+            "sent_count": activity["sent_count"],
+            "received_count": activity["received_count"],
+            "recent_activity_direction": activity_direction,
+            "recent_activity_partner": activity_partner,
+            "recent_activity_preview": activity_preview,
         })
 
+    active_peer_count = sum(
+        1
+        for peer in peer_summaries
+        if peer["sent_count"] > 0
+        or peer["received_count"] > 0
+        or peer["tool_calls"] > 0
+        or bool(peer["output_preview"])
+    )
+    message_routes = [
+        {"sender": sender, "recipient": recipient, "count": count}
+        for (sender, recipient), count in sorted(
+            route_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )
+    ]
+
+    kind = getattr(result, "kind", "swarm") or "swarm"
     return {
-        "kind": "swarm",
+        "kind": kind,
         "lead": getattr(result, "lead", ""),
         "entry": getattr(result, "entry", "") or getattr(result, "lead", ""),
         "peer_count": len(peers),
         "terminated_reason": getattr(result, "terminated_reason", ""),
-        "message_count": len(getattr(result, "transcript", []) or []),
+        "message_count": len(transcript),
+        "collaboration_count": len(delivered_messages),
+        "active_peer_count": active_peer_count,
         "has_errors": any(peer["is_error"] for peer in peer_summaries),
+        "lead_output": getattr(result, "lead_output", ""),
+        "entry_output": getattr(result, "lead_output", ""),
         "lead_output_preview": _preview(getattr(result, "lead_output", "")),
         "entry_output_preview": _preview(getattr(result, "lead_output", "")),
+        "message_routes": message_routes[:6],
+        "transcript": [
+            {
+                "seq": getattr(env, "seq", 0),
+                "kind": getattr(env, "kind", ""),
+                "sender": getattr(env, "sender", ""),
+                "recipient": getattr(env, "recipient", ""),
+                "summary": getattr(env, "summary", ""),
+                "content": getattr(env, "content", ""),
+                "preview": _envelope_preview(env),
+                "timestamp": getattr(env, "timestamp", 0.0),
+            }
+            for env in delivered_messages
+        ],
+        "recent_messages": recent_messages[-6:],
         "peers": peer_summaries,
     }
 
@@ -238,27 +384,59 @@ async def get_flow(name: str, directory: str | None = Query(default=None)) -> An
 
     return {
         "name": spec.name,
+        "description": spec.description,
         "mode": spec.mode,
+        "extends": spec.extends,
+        "model": spec.model,
+        "max_depth": spec.max_depth,
         "lead": spec.lead,
         "entry": spec.entry or spec.lead,
         "coordinator": spec.coordinator,
         "agents": [
-            {"name": a.name, "extends": a.extends, "role": a.role, "prompt": a.prompt}
+            {
+                "name": a.name,
+                "extends": a.extends,
+                "role": a.role,
+                "description": a.description,
+                "prompt": a.prompt,
+                "model": a.model,
+                "temperature": a.temperature,
+                "top_p": a.top_p,
+                "tools": list(a.tools or []),
+                "disallowed_tools": list(a.disallowed_tools),
+                "permission": [rule.model_dump() for rule in a.permission],
+                "isolation": a.isolation,
+                "max_turns": a.max_turns,
+                "background": a.background,
+                "omit_claudemd": a.omit_claudemd,
+            }
             for a in spec.agents
         ],
         "stages": [
             {
                 "id": s.id,
+                "description": s.description,
                 "parallel": s.parallel,
+                "max_concurrency": s.max_concurrency,
                 "runs_on": s.runs_on,
                 "fan_out_from": s.fan_out_from,
                 "depends_on": list(s.depends_on),
                 "inputs": list(s.inputs),
-                "spawns": [{"agent": sp.agent, "task": sp.task} for sp in s.spawn],
+                "prompt": s.prompt,
+                "spawns": [
+                    {
+                        "agent": sp.agent,
+                        "task": sp.task,
+                        "vars": dict(sp.vars),
+                        "timeout_seconds": sp.timeout_seconds,
+                    }
+                    for sp in s.spawn
+                ],
             }
             for s in spec.stages
         ],
         "vars": dict(spec.vars),
+        "backend": spec.backend.model_dump() if spec.backend is not None else None,
     }
 
 
@@ -285,6 +463,50 @@ async def list_agents(directory: str | None = Query(default=None)) -> Any:
     return entries
 
 
+@router.get("/agent/{name}")
+async def get_agent(name: str, directory: str | None = Query(default=None)) -> Any:
+    """Resolve one agent and return the full editable definition."""
+    project_dir = _resolve_project_dir(directory)
+    reg = get_default_agent_registry(project_dir=project_dir, refresh=True)
+
+    entry = next((item for item in reg.list_entries() if item.name == name), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+
+    try:
+        info = reg.resolve(name)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "name": info.name,
+        "source": entry.source,
+        "description": info.description or "",
+        "extends": info.extends,
+        "role": info.role,
+        "mode": info.mode,
+        "hidden": info.hidden,
+        "tools": list(info.tools or []),
+        "prompt": info.prompt or "",
+        "model": (
+            f"{info.model['providerID']}/{info.model['modelID']}"
+            if info.model and info.model.get("providerID") and info.model.get("modelID")
+            else None
+        ),
+        "temperature": info.temperature,
+        "top_p": info.top_p,
+        "color": info.color,
+        "variant": info.variant,
+        "options": dict(info.options or {}),
+        "steps": info.steps,
+        "max_turns": info.max_turns,
+        "isolation": info.isolation,
+        "omit_claudemd": info.omit_claudemd,
+        "permission": list(info.permission or []),
+        "scope": entry.source if entry.source in {"project", "global"} else "project",
+    }
+
+
 # --- Agent CRUD ------------------------------------------------------------
 
 
@@ -296,11 +518,16 @@ class _AgentBody(BaseModel):
     extends: str | None = None
     role: str | None = None
     mode: str = "all"
+    hidden: bool = False
     tools: list[str] | None = None
     prompt: str = ""
     model: str | None = None
     temperature: float | None = None
     top_p: float | None = None
+    color: str | None = None
+    variant: str | None = None
+    options: dict[str, Any] | None = None
+    steps: int | None = None
     max_turns: int | None = None
     isolation: str = "none"
     omit_claudemd: bool = False
@@ -321,6 +548,8 @@ def _agent_to_md(body: _AgentBody) -> str:
         fm["role"] = body.role
     if body.mode and body.mode != "all":
         fm["mode"] = body.mode
+    if body.hidden:
+        fm["hidden"] = True
     if body.tools is not None:
         fm["tools"] = body.tools
     if body.model:
@@ -329,6 +558,14 @@ def _agent_to_md(body: _AgentBody) -> str:
         fm["temperature"] = body.temperature
     if body.top_p is not None:
         fm["top_p"] = body.top_p
+    if body.color:
+        fm["color"] = body.color
+    if body.variant:
+        fm["variant"] = body.variant
+    if body.options:
+        fm["options"] = body.options
+    if body.steps is not None:
+        fm["steps"] = body.steps
     if body.max_turns is not None:
         fm["max_turns"] = body.max_turns
     if body.isolation and body.isolation != "none":
@@ -429,15 +666,18 @@ class _FlowBody(BaseModel):
     name: str
     description: str = ""
     mode: str = "coordinator"
-    # ``entry`` is the preferred field for the swarm initial task receiver.
-    # ``lead`` is kept for backwards-compat and mirrored to ``entry`` on
-    # persist.  Clients may send either; the server normalizes.
+    extends: str | None = None
+    model: str | None = None
+    max_depth: int | None = None
+    # ``entry`` is the preferred field for the initial task receiver in
+    # collaboration/swarm-style flows. ``lead`` is kept for backwards-compat
+    # and mirrored to ``entry`` on persist. Clients may send either.
     entry: str | None = None
     lead: str | None = None
-    # ``coordinator`` names the leader agent in coordinator/hybrid mode
-    # (orchestrator-worker pattern).  Required for coordinator mode unless
-    # exactly one agent already has ``role: coordinator`` — in which case
-    # the schema layer derives it automatically.
+    # ``coordinator`` names the coordinating/facilitating agent in
+    # orchestration/collaboration flows. Required for coordinator mode unless
+    # exactly one agent already has ``role: coordinator`` — in which case the
+    # schema layer derives it automatically.
     coordinator: str | None = None
     agents: list[dict[str, Any]] = []
     stages: list[dict[str, Any]] = []
@@ -479,6 +719,12 @@ async def create_flow(body: _FlowBody) -> Any:
     spec: dict[str, Any] = {"name": name, "mode": body.mode}
     if body.description:
         spec["description"] = body.description
+    if body.extends:
+        spec["extends"] = body.extends
+    if body.model:
+        spec["model"] = body.model
+    if body.max_depth is not None:
+        spec["max_depth"] = body.max_depth
     entry_name = body.resolved_entry()
     if entry_name:
         # Persist as ``entry`` (the canonical key).  Loaders still accept
@@ -529,6 +775,12 @@ async def update_flow(name: str, body: _FlowBody) -> Any:
     spec: dict[str, Any] = {"name": name, "mode": body.mode}
     if body.description:
         spec["description"] = body.description
+    if body.extends:
+        spec["extends"] = body.extends
+    if body.model:
+        spec["model"] = body.model
+    if body.max_depth is not None:
+        spec["max_depth"] = body.max_depth
     entry_name = body.resolved_entry()
     if entry_name:
         spec["entry"] = entry_name
@@ -609,8 +861,8 @@ async def start_run(body: _RunBody) -> Any:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"agent resolution failed: {exc}") from exc
 
-    if spec.mode == "swarm" and not body.task:
-        raise HTTPException(status_code=400, detail="swarm mode requires 'task' in body")
+    if spec.mode in ("swarm", "hybrid") and not body.task:
+        raise HTTPException(status_code=400, detail=f"{spec.mode} mode requires 'task' in body")
 
     run_id = uuid.uuid4().hex[:16]
     entry = _RunRecord(
@@ -631,6 +883,15 @@ async def start_run(body: _RunBody) -> Any:
         try:
             if spec.mode == "swarm":
                 result = await run_swarm(
+                    spec, agents,
+                    user_task=body.task or "",
+                    max_turns=body.max_turns,
+                    walltime_seconds=body.walltime_seconds,
+                    events=emitter,
+                )
+                entry.result = _summarize_swarm_result(result)
+            elif spec.mode == "hybrid":
+                result = await run_supervisor_collaboration(
                     spec, agents,
                     user_task=body.task or "",
                     max_turns=body.max_turns,
@@ -706,6 +967,19 @@ async def cancel_run(run_id: str) -> Any:
     return {"ok": True, "run_id": run_id, "status": "cancelling"}
 
 
+@router.delete("/run/{run_id}")
+async def delete_run(run_id: str) -> Any:
+    """Delete one completed orchestration run from durable history."""
+    run = _runs.get(run_id)
+    if run is not None and not run.is_done():
+        raise HTTPException(status_code=409, detail=f"Run '{run_id}' is still active")
+    _runs.pop(run_id, None)
+    deleted = delete_run_record(run_id)
+    if not deleted and run is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return {"ok": True, "run_id": run_id, "deleted": True}
+
+
 # --- SSE stream ------------------------------------------------------------
 
 
@@ -716,6 +990,8 @@ _ORCHESTRATION_TYPES = frozenset({
     bus_events.ORCHESTRATION_STAGE_FINISHED.type,
     bus_events.ORCHESTRATION_SPAWN_STARTED.type,
     bus_events.ORCHESTRATION_SPAWN_FINISHED.type,
+    bus_events.ORCHESTRATION_AGENT_MESSAGE.type,
+    bus_events.ORCHESTRATION_AGENT_TOOL.type,
     bus_events.ORCHESTRATION_MESSAGE_SENT.type,
     bus_events.ORCHESTRATION_SWARM_STARTED.type,
     bus_events.ORCHESTRATION_SWARM_FINISHED.type,

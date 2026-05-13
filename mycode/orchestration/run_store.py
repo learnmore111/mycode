@@ -117,6 +117,16 @@ def get_run_record(run_id: str) -> OrchestrationRunInfo | None:
         return _from_row(row) if row is not None else None
 
 
+def delete_run_record(run_id: str) -> bool:
+    with session_scope() as db:
+        row = db.query(OrchestrationRunTable).filter(OrchestrationRunTable.run_id == run_id).first()
+        if row is None:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+
+
 def list_run_records(*, limit: int | None = None) -> list[OrchestrationRunInfo]:
     with session_scope() as db:
         query = db.query(OrchestrationRunTable).order_by(OrchestrationRunTable.started_at.desc())
@@ -125,4 +135,4 @@ def list_run_records(*, limit: int | None = None) -> list[OrchestrationRunInfo]:
         return [_from_row(row) for row in query.all()]
 
 
-__all__ = ["OrchestrationRunInfo", "get_run_record", "list_run_records", "save_run_record"]
+__all__ = ["OrchestrationRunInfo", "delete_run_record", "get_run_record", "list_run_records", "save_run_record"]

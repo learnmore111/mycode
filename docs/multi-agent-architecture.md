@@ -34,14 +34,14 @@
 ### 运行时
 
 - `mycode/orchestration/runtime/coordinator.py`：执行声明式 DAG flow
-- `mycode/orchestration/runtime/swarm.py`：执行 mailbox 驱动的 swarm 协作
+- `mycode/orchestration/runtime/swarm.py`：执行 mailbox 驱动的 swarm 协作与主管协作
 - `mycode/orchestration/runtime/context.py`：保存 stage 输出和变量上下文
 - `mycode/orchestration/runtime/spawn.py`：执行单个 agent 节点
 - `mycode/orchestration/runtime/mailbox.py` / `mailbox_file.py`：提供消息后端抽象
 
 ---
 
-## 当前两种主要运行模型
+## 当前三种主要运行模型
 
 ### Coordinator
 
@@ -64,14 +64,24 @@ Swarm 当前具备较完整的协作运行时能力：
 
 从协作模型上看，Swarm 是当前仓库里最接近“多 Agent 团队协作”的实现。
 
+### Supervisor Collaboration
+
+主管协作式对应 `mode: hybrid`。它复用 mailbox 协作能力，但语义上有稳定主管：
+
+- `coordinator` 是主管 / facilitator
+- 主管接收初始任务并通过 `send_message` 分派专家
+- 专家可以用 `recipient: main` 回到主管
+- 最终结果优先展示主管输出
+
 ---
 
 ## 内置示例
 
-当前仓库内置了至少两类示例 flow：
+当前仓库内置了三类示例 flow：
 
 - `research.yaml`：并行研究 + 综合
-- `pair-review.yaml`：基于 swarm 的多人 review 示例
+- `supervised-review.yaml`：主管组织架构与风险专家做评审
+- `pair-review.yaml`：基于 swarm 的多人 peer review 示例
 
 这些 flow 用于展示 registry、loader、runtime、CLI 与 UI 的联动方式。
 

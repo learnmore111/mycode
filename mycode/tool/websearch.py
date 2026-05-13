@@ -1,12 +1,14 @@
 """WebSearch tool — search the web.
 
-Uses DuckDuckGo HTML (no API key needed) with multiple parsing strategies
-for resilience against HTML structure changes.
+Uses multiple public search endpoints (no API key needed) with graceful
+fallbacks for resilience against outages and HTML structure changes.
 """
 from __future__ import annotations
 
 import html
 import re
+import xml.etree.ElementTree as ET
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import unquote
 
@@ -39,32 +41,88 @@ class WebSearchTool(CallableTool[WebSearchParams]):
         if not query.strip():
             return ToolError("Search query cannot be empty.", title="Search")
 
+        errors: list[str] = []
+        empty_backends: list[str] = []
+
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
-                resp = await client.get(
-                    "https://html.duckduckgo.com/html/",
-                    params={"q": query},
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; MyCode/1.0)"},
-                )
-                resp.raise_for_status()
+            timeout = httpx.Timeout(12.0, connect=5.0)
+            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+                for backend_name, backend in _SEARCH_BACKENDS:
+                    try:
+                        results = await backend(client, query, max_results)
+                    except Exception as e:
+                        errors.append(_format_backend_error(backend_name, e))
+                        continue
 
-            results = _parse_ddg_results(resp.text, max_results)
+                    if results:
+                        output = "\n".join(results)
+                        metadata: dict[str, Any] = {
+                            "query": query,
+                            "results": len(results),
+                            "backend": backend_name,
+                        }
+                        if errors:
+                            metadata["fallback_errors"] = errors
+                        return ToolOk(output, title=f"Search: {query[:50]}", metadata=metadata)
 
-            if not results:
+                    empty_backends.append(backend_name)
+
+            if empty_backends and not errors:
                 return ToolOk(
                     "No results found.",
                     title=f"Search: {query[:50]}",
-                    metadata={"query": query, "results": 0},
+                    metadata={"query": query, "results": 0, "backends": empty_backends},
                 )
 
-            output = "\n".join(results)
-            return ToolOk(
-                output,
+            details = "; ".join(errors) if errors else "All search backends returned no results."
+            return ToolError(
+                f"Search failed. {details}",
                 title=f"Search: {query[:50]}",
-                metadata={"query": query, "results": len(results)},
+                metadata={"query": query, "errors": errors, "empty_backends": empty_backends},
             )
         except Exception as e:
-            return ToolError(f"Search error: {e}", title=f"Search: {query[:50]}")
+            detail = str(e).strip() or repr(e)
+            return ToolError(f"Search error: {type(e).__name__}: {detail}", title=f"Search: {query[:50]}")
+
+
+SearchBackend = Callable[[httpx.AsyncClient, str, int], Awaitable[list[str]]]
+
+
+async def _search_bing_rss(client: httpx.AsyncClient, query: str, max_results: int) -> list[str]:
+    resp = await client.get(
+        "https://www.bing.com/search",
+        params={"q": query, "format": "rss"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; MyCode/1.0)"},
+    )
+    resp.raise_for_status()
+    return _parse_bing_rss_results(resp.text, max_results)
+
+
+async def _search_ddg_html(client: httpx.AsyncClient, query: str, max_results: int) -> list[str]:
+    resp = await client.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; MyCode/1.0)"},
+    )
+    resp.raise_for_status()
+    return _parse_ddg_results(resp.text, max_results)
+
+
+async def _search_bing_html(client: httpx.AsyncClient, query: str, max_results: int) -> list[str]:
+    resp = await client.get(
+        "https://www.bing.com/search",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; MyCode/1.0)"},
+    )
+    resp.raise_for_status()
+    return _parse_bing_html_results(resp.text, max_results)
+
+
+_SEARCH_BACKENDS: tuple[tuple[str, SearchBackend], ...] = (
+    ("bing_rss", _search_bing_rss),
+    ("duckduckgo_html", _search_ddg_html),
+    ("bing_html", _search_bing_html),
+)
 
 
 def _strip_tags(text: str) -> str:
@@ -81,6 +139,33 @@ def _extract_url(raw_url: str) -> str:
     if raw_url.startswith("http"):
         return raw_url
     return raw_url
+
+
+def _format_backend_error(backend_name: str, error: Exception) -> str:
+    detail = str(error).strip() or repr(error)
+    return f"{backend_name}: {type(error).__name__}: {detail}"
+
+
+def _parse_bing_rss_results(body: str, max_results: int) -> list[str]:
+    """Parse Bing RSS results."""
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return []
+
+    results: list[str] = []
+    for item in root.findall("./channel/item"):
+        title = (item.findtext("title") or "").strip()
+        url = (item.findtext("link") or "").strip()
+        snippet = _strip_tags(item.findtext("description") or "")
+        if title and url:
+            if snippet:
+                results.append(f"**{title}**\n{url}\n{snippet}\n")
+            else:
+                results.append(f"**{title}**\n{url}\n")
+        if len(results) >= max_results:
+            break
+    return results
 
 
 def _parse_ddg_results(body: str, max_results: int) -> list[str]:
@@ -123,6 +208,26 @@ def _parse_ddg_results(body: str, max_results: int) -> list[str]:
         if "duckduckgo" not in url:
             results.append(f"**{title.strip()}**\n{url}\n")
 
+    return results
+
+
+def _parse_bing_html_results(body: str, max_results: int) -> list[str]:
+    """Parse Bing HTML results using common result containers."""
+    results: list[str] = []
+    blocks = re.findall(
+        r'<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>.*?<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>(.*?)</a></h2>'
+        r'.*?(?:<p[^>]*>(.*?)</p>)?',
+        body,
+        re.DOTALL,
+    )
+    for url, title_html, snippet_html in blocks[:max_results]:
+        title = _strip_tags(title_html)
+        snippet = _strip_tags(snippet_html or "")
+        if title and url:
+            if snippet:
+                results.append(f"**{title}**\n{url}\n{snippet}\n")
+            else:
+                results.append(f"**{title}**\n{url}\n")
     return results
 
 

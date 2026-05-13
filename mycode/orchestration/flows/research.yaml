@@ -1,29 +1,40 @@
-# Built-in "research" orchestration.
+# Built-in "research" workflow.
 #
-# Multi-explorer parallel investigation + coordinator synthesis.
+# A showcase workflow-style coordinator flow demonstrating:
+#   1. parallelized worker exploration,
+#   2. deterministic fan-out follow-up investigation, and
+#   3. coordinator-authored synthesis from declared inputs.
+#
+# This is the right shape for tasks with known steps and a stable DAG. The
+# coordinator is a synthesis node in the workflow, not a live team supervisor.
+#
 # Usage:
 #   mycode orchestrate inspect research
 #   mycode orchestrate run research --vars q1="..." --vars q2="..."
 #
 # Agents reference built-in registry agents via "extends:".
 name: research
-description: Parallel research with coordinator synthesis
+description: Workflow-style parallel exploration, fan-out follow-up, and synthesis
 mode: coordinator
 
 vars:
-  q1: "Describe the module layout"
-  q2: "List all TODOs in the codebase"
+  q1: "Describe the codebase structure and major subsystems"
+  q2: "Identify the most important maintenance risks or TODO hotspots"
 
 agents:
   - name: coordinator
+    extends: build
     role: coordinator
-    description: Synthesizes findings from explorer workers
-    tools: [task, send_message, task_stop]
+    description: Synthesizes worker findings into an actionable report
+    tools: [read, grep]
     prompt: |
-      You are the coordinator. You do NOT execute research tools directly.
-      Use `task` to dispatch explorer workers, then synthesize their findings
-      into a cohesive report. Never write "based on your findings" — be
-      specific and cite each worker's output.
+      You are the coordinator for a structured research workflow.
+      Your job is not to redo the workers' exploration. Instead:
+      1. compare the worker outputs,
+      2. highlight the strongest signals,
+      3. preserve disagreements or uncertainty, and
+      4. end with concrete follow-up recommendations.
+      Be specific about which worker observation supports each conclusion.
 
   - name: explorer
     extends: explore
@@ -31,7 +42,7 @@ agents:
 
 stages:
   - id: research
-    description: Parallel exploration
+    description: Parallel first-pass exploration from two complementary angles
     parallel: true
     max_concurrency: 4
     spawn:
@@ -40,12 +51,30 @@ stages:
       - agent: explorer
         task: "{{ vars.q2 }}"
 
+  - id: deep-dive
+    description: Turn each first-pass finding into a sharper follow-up question
+    fan_out_from: research
+    spawn:
+      - agent: explorer
+        task: |
+          Based on the following earlier finding, identify one concrete follow-up
+          detail that a maintainer should investigate next. Include why it matters.
+
+          Prior finding:
+          {{ $item }}
+
   - id: synthesize
-    description: Coordinator synthesizes the parallel findings
+    description: Coordinator combines initial findings and deep-dive results
     runs_on: coordinator
-    depends_on: [research]
-    inputs: [research.*]
+    depends_on: [deep-dive]
+    inputs: [research.*, deep-dive.*]
     prompt: |
-      Synthesize the explorer findings into a single well-structured
-      markdown report. Preserve distinct perspectives; do not collapse
-      contradictory observations.
+      Produce a concise markdown research brief with these sections:
+      1. System Snapshot
+      2. Key Risks / Hotspots
+      3. Important Unknowns
+      4. Suggested Next Actions
+
+      Preserve distinct perspectives from the workers. If two findings pull in
+      different directions, call that out explicitly instead of averaging them
+      away.

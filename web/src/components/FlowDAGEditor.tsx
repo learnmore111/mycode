@@ -35,6 +35,7 @@ interface FlowDAGEditorProps {
   onAddStage: () => void
   agentSelectOptions: Array<{ value: string; label: string }>
   onSelectSpawnAgent: (stageIdx: number, spawnIdx: number, v: string) => void
+  onUpdateSpawnTask: (stageIdx: number, spawnIdx: number, task: string) => void
   onUpdateStageField: (idx: number, field: keyof StageData, val: string | boolean) => void
   onRemoveStage: (idx: number) => void
   onAddSpawn: (si: number) => void
@@ -42,7 +43,7 @@ interface FlowDAGEditorProps {
 }
 
 // ── Stage Node Component ──
-function StageNode({ data, id }: NodeProps<Node<{ stageData: StageData; index: number; agentSelectOptions: Array<{ value: string; label: string }>; onSelectSpawnAgent: (stageIdx: number, spawnIdx: number, v: string) => void; onUpdateStageField: (idx: number, field: keyof StageData, val: string | boolean) => void; onRemoveStage: (idx: number) => void; onAddSpawn: (si: number) => void; onRemoveSpawn: (si: number, spi: number) => void }>>) {
+function StageNode({ data }: NodeProps<Node<{ stageData: StageData; index: number; agentSelectOptions: Array<{ value: string; label: string }>; onSelectSpawnAgent: (stageIdx: number, spawnIdx: number, v: string) => void; onUpdateSpawnTask: (stageIdx: number, spawnIdx: number, task: string) => void; onUpdateStageField: (idx: number, field: keyof StageData, val: string | boolean) => void; onRemoveStage: (idx: number) => void; onAddSpawn: (si: number) => void; onRemoveSpawn: (si: number, spi: number) => void }>>) {
   const [expanded, setExpanded] = useState(false)
   const s = data.stageData
 
@@ -122,16 +123,7 @@ function StageNode({ data, id }: NodeProps<Node<{ stageData: StageData; index: n
                 </select>
                 <input
                   value={sp.task}
-                  onChange={(e) => {
-                    const newSpawns = [...s.spawns]
-                    newSpawns[spi] = { ...newSpawns[spi], task: e.target.value }
-                    // We need to update through a different mechanism since we don't have direct setStages
-                    // Use a hidden input approach or callback
-                    const event = new CustomEvent('dag:spawn-update', {
-                      detail: { stageIdx: data.index, spawnIdx: spi, task: e.target.value },
-                    })
-                    window.dispatchEvent(event)
-                  }}
+                  onChange={(e) => data.onUpdateSpawnTask(data.index, spi, e.target.value)}
                   placeholder="任务描述"
                   className="flex-1 bg-white rounded px-1.5 py-1 text-[10px] outline-none border border-[#E5E4E0] focus:border-[#3D3BF3]/30 font-[JetBrains_Mono,monospace]"
                 />
@@ -278,6 +270,7 @@ export default function FlowDAGEditor({
   onAddStage,
   agentSelectOptions,
   onSelectSpawnAgent,
+  onUpdateSpawnTask,
   onUpdateStageField,
   onRemoveStage,
   onAddSpawn,
@@ -298,6 +291,7 @@ export default function FlowDAGEditor({
             index: i,
             agentSelectOptions,
             onSelectSpawnAgent,
+            onUpdateSpawnTask,
             onUpdateStageField,
             onRemoveStage,
             onAddSpawn,
@@ -306,7 +300,7 @@ export default function FlowDAGEditor({
         }
       })
     },
-    [agentSelectOptions, onSelectSpawnAgent, onUpdateStageField, onRemoveStage, onAddSpawn, onRemoveSpawn],
+    [agentSelectOptions, onSelectSpawnAgent, onUpdateSpawnTask, onUpdateStageField, onRemoveStage, onAddSpawn, onRemoveSpawn],
   )
 
   const buildEdges = useCallback(
@@ -352,23 +346,6 @@ export default function FlowDAGEditor({
     setNodes(newNodes)
     setEdges(newEdges)
   }, [stages, buildNodes, buildEdges, setNodes, setEdges])
-
-  // Listen for spawn updates from inside node components
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { stageIdx: number; spawnIdx: number; task: string }
-      const updated = [...stages]
-      if (updated[detail.stageIdx]?.spawns[detail.spawnIdx]) {
-        updated[detail.stageIdx].spawns[detail.spawnIdx] = {
-          ...updated[detail.stageIdx].spawns[detail.spawnIdx],
-          task: detail.task,
-        }
-        onChange(updated)
-      }
-    }
-    window.addEventListener('dag:spawn-update', handler)
-    return () => window.removeEventListener('dag:spawn-update', handler)
-  }, [stages, onChange])
 
   const onConnect = useCallback(
     (connection: Connection) => {

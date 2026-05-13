@@ -66,6 +66,8 @@ ORCHESTRATION_STAGE_STARTED = EventDef("orchestration.stage.started")
 ORCHESTRATION_STAGE_FINISHED = EventDef("orchestration.stage.finished")
 ORCHESTRATION_SPAWN_STARTED = EventDef("orchestration.spawn.started")
 ORCHESTRATION_SPAWN_FINISHED = EventDef("orchestration.spawn.finished")
+ORCHESTRATION_AGENT_MESSAGE = EventDef("orchestration.agent.message")
+ORCHESTRATION_AGENT_TOOL = EventDef("orchestration.agent.tool")
 # Swarm mode: peer-to-peer message delivered through the mailbox.
 ORCHESTRATION_MESSAGE_SENT = EventDef("orchestration.message.sent")
 # Swarm mode: lifecycle events — started/finished/terminated differ from

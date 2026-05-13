@@ -4,7 +4,10 @@ import contextlib
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from sqlalchemy import and_, or_
 
 from mycode.project.instance import current, current_or_none
 from mycode.storage.database import get_session as get_db_session
@@ -129,6 +132,7 @@ def create(*, parent_id: str | None = None, title: str | None = None) -> Session
         directory=ctx.directory,
         title=title or f"New session - {time.strftime('%Y-%m-%dT%H:%M:%S')}",
         parent_id=parent_id,
+        workspace_id=ctx.directory,
         time_created=now,
         time_updated=now,
     )
@@ -139,6 +143,14 @@ def create(*, parent_id: str | None = None, title: str | None = None) -> Session
     finally:
         db.close()
     return info
+
+
+def _resolve_directory(value: str | None) -> str | None:
+    if not value:
+        return None
+    with contextlib.suppress(OSError, ValueError):
+        return str(Path(value).expanduser().resolve())
+    return value
 
 
 def get(session_id: str) -> SessionInfo:
@@ -152,13 +164,21 @@ def get(session_id: str) -> SessionInfo:
         db.close()
 
 
-def list_sessions(*, project_id: str | None = None, limit: int = 100) -> list[SessionInfo]:
+def list_sessions(*, project_id: str | None = None, directory: str | None = None, limit: int = 100) -> list[SessionInfo]:
     ctx = current_or_none()
     pid = project_id or (ctx.project.id if ctx else None)
+    workspace_id = _resolve_directory(directory) or (ctx.directory if ctx else None)
     db = get_db_session()
     try:
         q = db.query(SessionTable).filter(SessionTable.visible == 1)
-        if pid:
+        if workspace_id:
+            q = q.filter(
+                or_(
+                    SessionTable.workspace_id == workspace_id,
+                    and_(SessionTable.workspace_id.is_(None), SessionTable.directory == workspace_id),
+                )
+            )
+        elif pid:
             q = q.filter(SessionTable.project_id == pid)
         rows = q.order_by(SessionTable.time_updated.desc()).limit(limit).all()
         return [_from_row(r) for r in rows]
@@ -220,14 +240,22 @@ def restore(session_id: str) -> None:
         db.close()
 
 
-def list_deleted(*, project_id: str | None = None, limit: int = 100) -> list[SessionInfo]:
+def list_deleted(*, project_id: str | None = None, directory: str | None = None, limit: int = 100) -> list[SessionInfo]:
     """List soft-deleted sessions."""
     ctx = current_or_none()
     pid = project_id or (ctx.project.id if ctx else None)
+    workspace_id = _resolve_directory(directory) or (ctx.directory if ctx else None)
     db = get_db_session()
     try:
         q = db.query(SessionTable).filter(SessionTable.visible == 0)
-        if pid:
+        if workspace_id:
+            q = q.filter(
+                or_(
+                    SessionTable.workspace_id == workspace_id,
+                    and_(SessionTable.workspace_id.is_(None), SessionTable.directory == workspace_id),
+                )
+            )
+        elif pid:
             q = q.filter(SessionTable.project_id == pid)
         rows = q.order_by(SessionTable.time_updated.desc()).limit(limit).all()
         return [_from_row(r) for r in rows]

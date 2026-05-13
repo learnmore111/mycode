@@ -45,10 +45,26 @@ interface Props {
 
 type ActiveView = 'flows' | 'agents' | 'runs'
 
-const MODE_CONFIG: Record<string, { icon: typeof Network; label: string; color: string }> = {
-  coordinator: { icon: Network, label: 'Coordinator', color: 'text-accent' },
-  swarm: { icon: Users, label: 'Swarm', color: 'text-status-warning' },
-  hybrid: { icon: Workflow, label: 'Hybrid', color: 'text-status-success' },
+const MODE_CONFIG: Record<string, { icon: typeof Network; label: string; description: string; color: string }> = {
+  coordinator: { icon: Workflow, label: '工作流式', description: '阶段化 DAG，由协调者分派并汇总', color: 'text-accent' },
+  hybrid: { icon: Users, label: '主管协作式', description: '主管 Agent 组织专家协同产出', color: 'text-status-success' },
+  swarm: { icon: Network, label: 'Swarm 式', description: '去中心化 peer-to-peer 协作', color: 'text-status-warning' },
+}
+
+function getModeConfig(mode?: string) {
+  return MODE_CONFIG[mode || 'coordinator'] || MODE_CONFIG.coordinator
+}
+
+function modeUsesEntry(mode?: string): boolean {
+  return mode === 'swarm' || mode === 'hybrid'
+}
+
+function modeUsesCoordinator(mode?: string): boolean {
+  return mode === 'coordinator' || mode === 'hybrid'
+}
+
+function coordinatorRoleLabel(mode?: string): string {
+  return mode === 'hybrid' ? '主管 Agent' : '协调 Agent'
 }
 
 const SOURCE_BADGE: Record<string, { bg: string; text: string }> = {
@@ -385,7 +401,7 @@ export default function OrchestrationSidebar({ loading: _parentLoading, onRefres
                               {/* Mode badge */}
                               <div className="flex items-center gap-2">
                                 {(() => {
-                                  const cfg = MODE_CONFIG[flowDetail.mode] || MODE_CONFIG.coordinator
+                                  const cfg = getModeConfig(flowDetail.mode)
                                   const ModeIcon = cfg.icon
                                   return (
                                     <span
@@ -397,12 +413,12 @@ export default function OrchestrationSidebar({ loading: _parentLoading, onRefres
                                     </span>
                                   )
                                 })()}
-                                {flowDetail.mode === 'coordinator' && flowDetail.coordinator && (
+                                {modeUsesCoordinator(flowDetail.mode) && flowDetail.coordinator && (
                                   <span className="text-[10px] text-ink-muted">
-                                    Lead: <span className="font-mono font-medium text-ink-secondary">{flowDetail.coordinator}</span>
+                                    {coordinatorRoleLabel(flowDetail.mode)}: <span className="font-mono font-medium text-ink-secondary">{flowDetail.coordinator}</span>
                                   </span>
                                 )}
-                                {flowDetail.mode !== 'coordinator' && (flowDetail.entry || flowDetail.lead) && (
+                                {modeUsesEntry(flowDetail.mode) && (flowDetail.entry || flowDetail.lead) && (
                                   <span className="text-[10px] text-ink-muted">
                                     入口: <span className="font-mono font-medium text-ink-secondary">{flowDetail.entry || flowDetail.lead}</span>
                                   </span>
@@ -438,7 +454,7 @@ export default function OrchestrationSidebar({ loading: _parentLoading, onRefres
                                 </div>
                               </div>
 
-                              {/* Stages section (coordinator mode) */}
+                              {/* Stages section (orchestration/collaboration modes) */}
                               {flowDetail.stages.length > 0 && (
                                 <div>
                                   <div className="flex items-center gap-1.5 mb-1.5">
@@ -691,7 +707,7 @@ export default function OrchestrationSidebar({ loading: _parentLoading, onRefres
                   运行 {showRunDialog}
                 </span>
                 {(() => {
-                  const cfg = MODE_CONFIG[flowDetail.mode] || MODE_CONFIG.coordinator
+                  const cfg = getModeConfig(flowDetail.mode)
                   return (
                     <span className={`text-[10px] font-medium ${cfg.color}`}>
                       {cfg.label}

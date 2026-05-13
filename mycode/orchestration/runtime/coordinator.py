@@ -124,9 +124,9 @@ class Coordinator:
         runner: AgentRunner | None = None,
         events: OrchestrationEventEmitter | None = None,
     ) -> None:
-        if spec.mode not in ("coordinator", "hybrid"):
+        if spec.mode != "coordinator":
             raise CoordinatorError(
-                f"Coordinator runtime requires mode=coordinator|hybrid, got {spec.mode!r}"
+                f"Coordinator runtime requires mode=coordinator, got {spec.mode!r}"
             )
         self.spec = spec
         self.agents = agents
@@ -267,6 +267,15 @@ class Coordinator:
                 await self.events.spawn_started(
                     stage_id=stage.id, spawn_index=idx, agent=agent.name, task=sp.task,
                 )
+                await self.events.agent_message(
+                    stage_id=stage.id,
+                    spawn_index=idx,
+                    agent=agent.name,
+                    role="user",
+                    kind="task",
+                    content=sp.task if not inputs_block else f"{sp.task}\n\n---\n\n## Prior stage outputs\n\n{inputs_block}",
+                    turn=0,
+                )
             t0 = time.monotonic()
             out = await self.runner(SpawnRequest(
                 agent=agent,
@@ -274,6 +283,9 @@ class Coordinator:
                 inputs_block=inputs_block,
                 vars=dict(sp.vars) if sp.vars else None,
                 timeout_seconds=sp.timeout_seconds,
+                stage_id=stage.id,
+                spawn_index=idx,
+                events=self.events,
             ))
             if self.events:
                 await self.events.spawn_finished(
@@ -353,11 +365,23 @@ class Coordinator:
             await self.events.spawn_started(
                 stage_id=stage.id, spawn_index=0, agent=agent.name, task=prompt_body,
             )
+            await self.events.agent_message(
+                stage_id=stage.id,
+                spawn_index=0,
+                agent=agent.name,
+                role="user",
+                kind="task",
+                content=prompt_body if not inputs_block else f"{prompt_body}\n\n---\n\n## Prior stage outputs\n\n{inputs_block}",
+                turn=0,
+            )
         t0 = time.monotonic()
         spawn = await self.runner(SpawnRequest(
             agent=agent,
             task=prompt_body,
             inputs_block=inputs_block,
+            stage_id=stage.id,
+            spawn_index=0,
+            events=self.events,
         ))
         if self.events:
             await self.events.spawn_finished(

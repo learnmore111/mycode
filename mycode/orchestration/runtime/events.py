@@ -77,6 +77,31 @@ class OrchestrationEventEmitter(Protocol):
         duration_seconds: float,
     ) -> None: ...
 
+    async def agent_message(
+        self,
+        *,
+        stage_id: str | None,
+        spawn_index: int | None,
+        agent: str,
+        role: str,
+        content: str,
+        turn: int,
+        kind: str = "message",
+        recipient: str | None = None,
+    ) -> None: ...
+
+    async def agent_tool(
+        self,
+        *,
+        stage_id: str | None,
+        spawn_index: int | None,
+        agent: str,
+        tool_name: str,
+        args_preview: str,
+        output_preview: str,
+        turn: int,
+    ) -> None: ...
+
     async def message_sent(self, env: Envelope) -> None: ...
 
     async def swarm_started(self, *, lead: str, peers: list[str], user_task: str) -> None: ...
@@ -190,6 +215,55 @@ class BusOrchestrationEmitter:
             "output_preview": _preview(spawn.output),
         }
         await self.bus.publish(ev.ORCHESTRATION_SPAWN_FINISHED, payload)
+
+    async def agent_message(
+        self,
+        *,
+        stage_id: str | None,
+        spawn_index: int | None,
+        agent: str,
+        role: str,
+        content: str,
+        turn: int,
+        kind: str = "message",
+        recipient: str | None = None,
+    ) -> None:
+        payload = {
+            **self._base(),
+            "stage_id": stage_id,
+            "spawn_index": spawn_index,
+            "agent": agent,
+            "role": role,
+            "kind": kind,
+            "turn": turn,
+            "content_preview": _preview(content),
+        }
+        if recipient:
+            payload["recipient"] = recipient
+        await self.bus.publish(ev.ORCHESTRATION_AGENT_MESSAGE, payload)
+
+    async def agent_tool(
+        self,
+        *,
+        stage_id: str | None,
+        spawn_index: int | None,
+        agent: str,
+        tool_name: str,
+        args_preview: str,
+        output_preview: str,
+        turn: int,
+    ) -> None:
+        payload = {
+            **self._base(),
+            "stage_id": stage_id,
+            "spawn_index": spawn_index,
+            "agent": agent,
+            "tool_name": tool_name,
+            "args_preview": _preview(args_preview),
+            "output_preview": _preview(output_preview),
+            "turn": turn,
+        }
+        await self.bus.publish(ev.ORCHESTRATION_AGENT_TOOL, payload)
 
     async def message_sent(self, env: Envelope) -> None:
         payload = {
@@ -311,6 +385,54 @@ class RecordingEmitter:
             "turns": spawn.turns,
             "tool_calls": spawn.tool_calls,
             "duration_seconds": duration_seconds,
+        }))
+
+    async def agent_message(
+        self,
+        *,
+        stage_id: str | None,
+        spawn_index: int | None,
+        agent: str,
+        role: str,
+        content: str,
+        turn: int,
+        kind: str = "message",
+        recipient: str | None = None,
+    ) -> None:
+        payload = {
+            **self._base(),
+            "stage_id": stage_id,
+            "spawn_index": spawn_index,
+            "agent": agent,
+            "role": role,
+            "kind": kind,
+            "turn": turn,
+            "content_preview": _preview(content),
+        }
+        if recipient:
+            payload["recipient"] = recipient
+        self.events.append((ev.ORCHESTRATION_AGENT_MESSAGE.type, payload))
+
+    async def agent_tool(
+        self,
+        *,
+        stage_id: str | None,
+        spawn_index: int | None,
+        agent: str,
+        tool_name: str,
+        args_preview: str,
+        output_preview: str,
+        turn: int,
+    ) -> None:
+        self.events.append((ev.ORCHESTRATION_AGENT_TOOL.type, {
+            **self._base(),
+            "stage_id": stage_id,
+            "spawn_index": spawn_index,
+            "agent": agent,
+            "tool_name": tool_name,
+            "args_preview": _preview(args_preview),
+            "output_preview": _preview(output_preview),
+            "turn": turn,
         }))
 
     async def message_sent(self, env: Envelope) -> None:

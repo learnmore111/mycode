@@ -10,7 +10,7 @@
 - [一、系统架构总览](#一系统架构总览)
 - [二、Agent 系统](#二agent-系统)
 - [三、Flow 编排流](#三flow-编排流)
-- [四、Swarm 模式详解](#四swarm-模式详解)
+- [四、三类多 Agent 模式](#四三类多-agent-模式)
 - [五、Subagent 工具（传统路径）](#五subagent-工具传统路径)
 - [六、内置 Flow 示例](#六内置-flow-示例)
 - [七、运行时操作](#七运行时操作)
@@ -46,7 +46,13 @@ Coordinator        Swarm
 | **subagent 工具** | `task` / `subagent` 工具 | 主会话内一次性委派（3 种模式） |
 | **编排子系统** | `mycode/orchestration/` | 基于 Flow YAML 的独立执行框架 |
 
-编排子系统又包含 **两种运行模式**：**Coordinator**（DAG 中央调度）和 **Swarm**（去中心化 P2P 邮箱）。
+编排子系统面向用户定位为 **三类多 Agent 模式**。底层 YAML 仍使用 `mode` 字段，以兼容现有实现：
+
+| 产品定位 | 底层 `mode` | 核心心智 | 适合场景 |
+|----------|-------------|----------|----------|
+| **工作流式** | `coordinator` | 明确阶段 / DAG / coordinator 分派与汇总 | 研究流水线、批量探索、分阶段综合 |
+| **主管协作式** | `hybrid` | supervisor / orchestrator 接收任务、组织专家协同并最终综合 | 评审会、方案共创、需要单一负责人拍板的多角色校验 |
+| **Swarm 式** | `swarm` | 去中心化 peer-to-peer，成员通过消息自由推进 | 动态协作、开放式 review、无需预设阶段的讨论 |
 
 ### 如何选择？
 
@@ -55,8 +61,9 @@ Coordinator        Swarm
 | 单个复杂多步骤任务 | `subagent` delegate 模式 |
 | 多个独立的搜索/研究任务 | `subagent` parallel 模式 |
 | 需要安全隔离的文件修改 | `subagent` isolated 模式 |
-| 已知拓扑的多阶段流水线（研究→综合） | Coordinator Flow YAML |
-| 多角色动态协作（代码审查、头脑风暴） | Swarm Flow YAML |
+| 已知拓扑的多阶段流水线（研究→综合） | 工作流式 Flow YAML |
+| 有主管 / 协调者组织专家产出 | 主管协作式 Flow YAML |
+| 多角色动态协作（代码审查、头脑风暴） | Swarm 式 Flow YAML |
 
 ---
 
@@ -318,7 +325,21 @@ stages:
 
 ---
 
-## 四、Swarm 模式详解
+## 四、三类多 Agent 模式
+
+### 4.1 工作流式
+
+工作流式对应底层 `mode: coordinator`。它强调明确阶段、DAG 拓扑和 coordinator 汇总，适合“先并行探索，再 fan-out 深挖，最后综合报告”这类确定流程。
+
+### 4.2 主管协作式
+
+主管协作式对应底层 `mode: hybrid`。它由一个 supervisor / orchestrator Agent 接收初始任务，通过 `send_message` 组织多个专家协作，专家可以用 `main` 回到主管，最后优先展示主管的综合输出。它不再复用工作流式的 stage DAG。
+
+### 4.3 Swarm 式
+
+Swarm 式对应底层 `mode: swarm`。它是去中心化 P2P 邮箱协作，没有预设 stage DAG；`entry` 只是初始任务接收者，不是中央控制器。
+
+### 4.4 Swarm 细节
 
 ### 4.1 核心概念
 
@@ -328,13 +349,13 @@ Swarm 是**去中心化 P2P** 架构，没有中央控制器：
 用户任务
   │
   ▼
-Entry Agent (reviewer-lead)
+Entry Agent (reviewer-starter)
   │  ├─ send_message ──► security-reviewer ( teammate )
-  │  │                      ├─ send_message ──► reviewer-lead
+  │  │                      ├─ send_message ──► reviewer-starter
   │  │                      └─ ...
   │  │
   │  └─ send_message ──► perf-reviewer ( teammate )
-  │                         ├─ send_message ──► reviewer-lead
+  │                         ├─ send_message ──► reviewer-starter
   │                         └─ ...
   │
   ▼
@@ -428,16 +449,17 @@ subagent(
 name: research
 mode: coordinator
 vars:
-  q1: "描述模块结构"
-  q2: "列出所有 TODO"
+  q1: "描述代码库结构与主要子系统"
+  q2: "识别最值得关注的维护风险或 TODO 热点"
 
 agents:
   - name: coordinator
+    extends: build
     role: coordinator
-    tools: [task, send_message]
+    tools: [read, grep]
     prompt: |
-      你是协调者。不直接执行研究。
-      用 task 派发 explorer worker，然后综合发现。
+      你是协调者。不要重复 worker 的探索工作，
+      而是比较、归纳、指出分歧，并给出后续建议。
 
   - name: explorer
     extends: explore          # 继承内置 explore
@@ -453,54 +475,116 @@ stages:
       - agent: explorer
         task: "{{ vars.q2 }}"
 
+  - id: deep-dive
+    fan_out_from: research
+    spawn:
+      - agent: explorer
+        task: |
+          基于以下前序发现，补充一个最值得继续深挖的点，并解释原因：
+
+          {{ $item }}
+
   - id: synthesize
     runs_on: coordinator
-    depends_on: [research]
-    inputs: [research.*]
+    depends_on: [deep-dive]
+    inputs: [research.*, deep-dive.*]
     prompt: |
-      综合探索发现为一份 markdown 报告。
+      输出一份 markdown 研究简报，包含：
+      1. 系统概览
+      2. 关键风险 / 热点
+      3. 重要未知项
+      4. 建议下一步
 ```
 
 **执行流程**：
 ```
-[research stage] ─┬─► explorer: 描述模块结构
-                  └─► explorer: 列出 TODO
+[research stage] ─┬─► explorer: 结构与子系统
+                  └─► explorer: 风险与 TODO 热点
+                        │
+                        ▼
+             [deep-dive stage] ─► explorer: 补充后续调查点
                         │
                         ▼ (depends_on + inputs)
-              [synthesize stage] ─► coordinator: 综合报告
+              [synthesize stage] ─► coordinator: 综合简报
 ```
 
-### 6.2 pair-review.yaml（Swarm 模式）
+### 6.2 supervised-review.yaml（主管协作式）
+
+```yaml
+name: supervised-review
+mode: hybrid
+coordinator: review-supervisor
+
+agents:
+  - name: review-supervisor
+    extends: build
+    role: coordinator
+    tools: [send_message, read, grep, glob]
+    prompt: |
+      你是主管。先把任务分派给架构专家和风险专家，
+      等两者都回复后，再输出 ship / follow-up / block 决策。
+
+  - name: architecture-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, send_message]
+    prompt: |
+      你是架构专家，关注模块边界、耦合、数据流和扩展性。
+      将发现发送给 main。
+
+  - name: risk-reviewer
+    extends: explore
+    role: teammate
+    tools: [read, grep, glob, bash, send_message]
+    prompt: |
+      你是风险专家，关注回归、缺失测试、权限边界和发布风险。
+      将发现发送给 main。
+```
+
+**协作流程**：
+```
+用户任务 ─► review-supervisor
+              ├─► architecture-reviewer ─┐
+              └─► risk-reviewer ─────────┤
+                    ▲                     │
+                    └── 可互相询问 ───────┘
+                         │
+                         ▼
+              review-supervisor: 最终决策与综合
+```
+
+### 6.3 pair-review.yaml（Swarm 模式）
 
 ```yaml
 name: pair-review
 mode: swarm
-entry: reviewer-lead
+entry: reviewer-starter
 
 agents:
-  - name: reviewer-lead
+  - name: reviewer-starter
     extends: build
     role: entry
-    tools: [send_message, read, grep]
+    tools: [send_message, read, grep, glob]
     prompt: |
-      你是审查入口。委派安全问题给 security-reviewer，
-      性能问题给 perf-reviewer。收集响应后产出最终报告。
+      你是 swarm code review 的起始 peer。
+      先把任务拆给不同专家，并要求专家之间直接交叉验证。
+      注意：entry 不是中央主管，只是初始任务接收者。
 
   - name: security-reviewer
     extends: explore
     role: teammate
     tools: [read, grep, glob, send_message]
     prompt: |
-      你是安全专家。关注注入、auth、secrets。
-      通过 send_message 报告给 reviewer-lead。
+      你是安全专家。关注 auth、secrets、输入校验、
+      注入与权限绕过；必要时可直接联系 perf-reviewer 交叉确认。
 
   - name: perf-reviewer
     extends: explore
     role: teammate
     tools: [read, grep, glob, bash, send_message]
     prompt: |
-      你是性能专家。关注 N+1、热循环、不必要的 I/O。
-      报告给 reviewer-lead。
+      你是性能专家。关注不必要的 I/O、热循环、广域扫描、
+      启动成本和并发瓶颈；必要时与 security-reviewer 互相确认假设。
 ```
 
 ---
@@ -522,6 +606,10 @@ mycode orchestrate run research --json                     # JSON 输出
 
 # 运行 swarm flow
 mycode orchestrate run pair-review --task "审查 src/auth/" \
+    --max-turns 15 --walltime 600
+
+# 运行主管协作式 flow
+mycode orchestrate run supervised-review --task "评审最近的 API 改动" \
     --max-turns 15 --walltime 600
 
 # 列出 agents
