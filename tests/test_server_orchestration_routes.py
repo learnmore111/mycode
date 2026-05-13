@@ -201,8 +201,50 @@ def test_get_run_detail_returns_swarm_summary(client, monkeypatch):
     assert detail["done"] is True
     assert detail["result"]["kind"] == "swarm"
     assert detail["result"]["terminated_reason"] == "lead-quiet"
+    assert detail["result"]["lead_output"] == "final swarm answer"
+    assert detail["result"]["entry_output"] == "final swarm answer"
     assert detail["result"]["lead_output_preview"] == "final swarm answer"
     assert detail["result"]["peer_count"] >= 2
+    peers = {peer["name"]: peer for peer in detail["result"]["peers"]}
+    assert peers[spec_lead := detail["result"]["lead"]]["output"] == f"output from {spec_lead}"
+
+
+def test_get_run_detail_returns_coordinator_full_outputs(client, monkeypatch):
+    from mycode.orchestration.runtime.context import RunContext, SpawnOutput, StageOutput
+    from mycode.orchestration.runtime.coordinator import CoordinatorResult
+    from mycode.server.routes import orchestration as orch_route
+
+    async def _fake_run_coordinator(spec, agents, *, events=None, **kw):
+        ctx = RunContext(flow_name=spec.name)
+        research = StageOutput(
+            stage_id="research",
+            spawns=[
+                SpawnOutput(agent="explorer", task="map code", output="full explorer output", turns=2, tool_calls=1),
+            ],
+        )
+        synth = StageOutput(
+            stage_id="synthesize",
+            spawns=[
+                SpawnOutput(agent="coordinator", task="write brief", output="full spawn output", turns=1, tool_calls=0),
+            ],
+            coordinator_output="full coordinator brief",
+            coordinator_agent="coordinator",
+        )
+        ctx.record(research)
+        ctx.record(synth)
+        return CoordinatorResult(context=ctx, last_stage=synth)
+
+    monkeypatch.setattr(orch_route, "run_coordinator", _fake_run_coordinator)
+    resp = client.post("/orchestration/run", json={"flow": "research"})
+    assert resp.status_code == 200, resp.text
+
+    detail = _wait_for_run_status(client, resp.json()["run_id"], "completed")
+    assert detail["result"]["kind"] == "coordinator"
+    assert detail["result"]["last_output"] == "full coordinator brief"
+    synth = detail["result"]["stages"][1]
+    assert synth["coordinator_output"] == "full coordinator brief"
+    assert synth["output"] == "full coordinator brief"
+    assert synth["spawns"][0]["output"] == "full spawn output"
 
 
 def test_post_run_hybrid_dispatches_to_supervisor_collaboration(client, monkeypatch, tmp_path):
@@ -266,6 +308,7 @@ agents:
     assert seen == {"mode": "hybrid", "task": "coordinate this"}
     assert detail["result"]["kind"] == "hybrid"
     assert detail["result"]["lead"] == "supervisor"
+    assert detail["result"]["lead_output"] == "supervisor answer"
     assert detail["result"]["lead_output_preview"] == "supervisor answer"
 
 
@@ -298,7 +341,10 @@ def test_swarm_summary_includes_collaboration_metrics(client):
     assert summary["collaboration_count"] == 4
     assert summary["active_peer_count"] == 3
     assert len(summary["message_routes"]) == 4
+    assert summary["lead_output"] == "final summary"
+    assert summary["transcript"][-1]["content"] == "cache misses in repo"
     peers = {peer["name"]: peer for peer in summary["peers"]}
+    assert peers["reviewer-starter"]["output"] == "final summary"
     assert peers["reviewer-starter"]["sent_count"] == 2
     assert peers["reviewer-starter"]["received_count"] == 2
     assert peers["security-reviewer"]["recent_activity_direction"] == "sent"
@@ -365,6 +411,60 @@ def test_post_run_cancel_marks_run_cancelled(client, monkeypatch):
     assert flags["cancelled"] is True
 
 
+def test_delete_completed_run_removes_history(client, monkeypatch):
+    from mycode.orchestration.runtime.context import SpawnOutput
+    from mycode.orchestration.runtime.swarm import SwarmResult
+    from mycode.server.routes import orchestration as orch_route
+
+    async def _fake_run_swarm(spec, agents, *, user_task, events=None, **kw):
+        return SwarmResult(
+            flow_name=spec.name,
+            lead=spec.lead or "",
+            peers={
+                name: SpawnOutput(agent=name, task=f"task for {name}", output=f"output from {name}")
+                for name in agents
+            },
+            transcript=[],
+            lead_output="delete me",
+            terminated_reason="lead-quiet",
+        )
+
+    monkeypatch.setattr(orch_route, "run_swarm", _fake_run_swarm)
+    resp = client.post("/orchestration/run", json={"flow": "pair-review", "task": "temporary"})
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    _wait_for_run_status(client, run_id, "completed")
+
+    delete_resp = client.delete(f"/orchestration/run/{run_id}")
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert delete_resp.json() == {"ok": True, "run_id": run_id, "deleted": True}
+
+    detail_resp = client.get(f"/orchestration/run/{run_id}")
+    assert detail_resp.status_code == 404
+    list_resp = client.get("/orchestration/run")
+    assert list_resp.status_code == 200
+    assert all(run["run_id"] != run_id for run in list_resp.json())
+
+
+def test_delete_running_run_is_rejected(client, monkeypatch):
+    from mycode.server.routes import orchestration as orch_route
+
+    run_id = "active-delete-test"
+    orch_route._runs[run_id] = orch_route._RunRecord(  # noqa: SLF001 - route-owned active run registry
+        run_id=run_id,
+        flow="pair-review",
+        mode="swarm",
+        directory=None,
+        task_text="stay alive",
+        status="running",
+    )
+    try:
+        delete_resp = client.delete(f"/orchestration/run/{run_id}")
+        assert delete_resp.status_code == 409
+    finally:
+        orch_route._runs.pop(run_id, None)  # noqa: SLF001
+
+
 def test_run_history_survives_app_recreation(tmp_path, monkeypatch):
     import mycode.storage.database as dbmod
     from mycode.orchestration.runtime.context import SpawnOutput
@@ -427,6 +527,7 @@ def test_run_history_survives_app_recreation(tmp_path, monkeypatch):
         assert detail_resp.status_code == 200, detail_resp.text
         detail = detail_resp.json()
         assert detail["status"] == "completed"
+        assert detail["result"]["lead_output"] == "persistent answer"
         assert detail["result"]["lead_output_preview"] == "persistent answer"
 
         list_resp = client2.get("/orchestration/run")

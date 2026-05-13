@@ -113,6 +113,7 @@ def register_builtins() -> None:
         glob_tool,
         grep,
         listdir,
+        memory,
         question,
         read,
         skill,
@@ -122,7 +123,7 @@ def register_builtins() -> None:
         websearch,
         write,
     )
-    for mod in [bash, read, edit, write, glob_tool, grep, listdir, subagent, webfetch, websearch, question, todo, skill, create_skill, apply_patch_mod]:
+    for mod in [bash, read, edit, write, glob_tool, grep, listdir, subagent, webfetch, websearch, question, todo, skill, memory, create_skill, apply_patch_mod]:
         if hasattr(mod, "tool"):
             register(mod.tool)
 

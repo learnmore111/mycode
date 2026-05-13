@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -116,6 +117,11 @@ def memdir_path(project_path: str) -> str:
     return os.path.join(memory_base_dir(project_path), "memdir")
 
 
+def memory_index_path(project_path: str) -> str:
+    """Get the MEMORY.md index path for structured memories."""
+    return os.path.join(memdir_path(project_path), "MEMORY.md")
+
+
 def validate_memory_path(path: str) -> str | None:
     """Validate a memory file path for safety.
 
@@ -216,23 +222,21 @@ type: {memory_type}
 def scan_memory_files(project_path: str) -> list[MemoryEntry]:
     """Scan the memdir directory for all memory files with frontmatter.
 
-    Reads up to MAX_MEMORY_FILES files from the memdir directory.
-    Parses frontmatter to extract name, description, and type.
+    Scans markdown memory files, parses frontmatter to extract name,
+    description, and type, then returns the newest MAX_MEMORY_FILES entries.
     """
     base = memdir_path(project_path)
     if not os.path.isdir(base):
         return []
 
     entries: list[MemoryEntry] = []
-    count = 0
-
     for name in sorted(os.listdir(base)):
-        if count >= MAX_MEMORY_FILES:
-            break
         fp = os.path.join(base, name)
         if not os.path.isfile(fp):
             continue
         if not name.endswith(".md"):
+            continue
+        if name == "MEMORY.md":
             continue
 
         try:
@@ -253,12 +257,12 @@ def scan_memory_files(project_path: str) -> list[MemoryEntry]:
                 mtime_ms=stat.st_mtime * 1000,
                 size_bytes=stat.st_size,
             ))
-            count += 1
         except (OSError, UnicodeDecodeError) as e:
             logger.warn("failed to read memory file", path=fp, error=str(e))
             continue
 
-    return entries
+    entries.sort(key=lambda e: e.mtime_ms, reverse=True)
+    return entries[:MAX_MEMORY_FILES]
 
 
 def scan_memory_index(project_path: str) -> MemoryIndex:
@@ -278,14 +282,67 @@ def scan_memory_index(project_path: str) -> MemoryIndex:
 def format_memory_manifest(entries: list[MemoryEntry]) -> str:
     """Format memory entries as a manifest for LLM-based retrieval.
 
-    Output format (one per line):
-    <filename> [type] — <description>
+    Output format mirrors Claude Code's selector manifest:
+    - [type] filename (ISO timestamp): description
     """
     lines: list[str] = []
     for entry in entries:
         desc = entry.description or "(no description)"
-        lines.append(f"{entry.filename} [{entry.memory_type}] — {desc}")
+        ts = datetime.fromtimestamp(entry.mtime_ms / 1000, tz=UTC).isoformat()
+        lines.append(f"- [{entry.memory_type}] {entry.filename} ({ts}): {desc}")
     return "\n".join(lines)
+
+
+def load_memory_index(project_path: str) -> str:
+    """Load the MEMORY.md index using Claude Code-style startup limits.
+
+    Claude Code treats the top-level memory file as a lightweight entry point:
+    it is always safe to include the first 200 lines or 25KB, while detailed
+    files are fetched on demand. Keep the same constraints here so the index
+    can guide the model without crowding out task context.
+    """
+    path = memory_index_path(project_path)
+    if not os.path.isfile(path):
+        return ""
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+    lines = raw.splitlines()
+    was_line_truncated = len(lines) > MAX_MEMORY_INDEX_LINES
+    truncated = "\n".join(lines[:MAX_MEMORY_INDEX_LINES] if was_line_truncated else lines)
+
+    was_byte_truncated = len(truncated.encode("utf-8")) > MAX_MEMORY_INDEX_SIZE
+    if was_byte_truncated:
+        kept: list[str] = []
+        total = 0
+        for line in truncated.splitlines():
+            line_bytes = len((line + "\n").encode("utf-8"))
+            if total + line_bytes > MAX_MEMORY_INDEX_SIZE:
+                break
+            kept.append(line)
+            total += line_bytes
+        if kept:
+            truncated = "\n".join(kept)
+        else:
+            truncated = truncated.encode("utf-8")[:MAX_MEMORY_INDEX_SIZE].decode("utf-8", errors="ignore")
+
+    if was_line_truncated or was_byte_truncated:
+        reasons = []
+        if was_line_truncated:
+            reasons.append(f"longer than {MAX_MEMORY_INDEX_LINES} lines")
+        if was_byte_truncated:
+            reasons.append(f"larger than {MAX_MEMORY_INDEX_SIZE} bytes")
+        reason = " and ".join(reasons)
+        warning = (
+            f"> WARNING: MEMORY.md is {reason}. Only part of it was loaded. "
+            "Keep index entries to one line under ~200 chars; move detail into topic files."
+        )
+        truncated = f"{truncated}\n\n{warning}" if truncated else warning
+
+    return truncated.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +381,7 @@ def update_memory_index(project_path: str) -> str:
 
     base = memdir_path(project_path)
     os.makedirs(base, exist_ok=True)
-    index_path = os.path.join(base, "MEMORY.md")
+    index_path = memory_index_path(project_path)
     Path(index_path).write_text(content, encoding="utf-8")
     logger.debug("updated memory index", path=index_path, count=len(entries))
     return index_path

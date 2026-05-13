@@ -41,6 +41,7 @@ from mycode.orchestration.registry import (
 )
 from mycode.orchestration.run_store import (
     OrchestrationRunInfo,
+    delete_run_record,
     get_run_record,
     list_run_records,
     save_run_record,
@@ -117,6 +118,16 @@ def _stage_output_preview(stage: Any) -> str:
     return ""
 
 
+def _stage_output_text(stage: Any) -> str:
+    coordinator_output = getattr(stage, "coordinator_output", None)
+    if coordinator_output:
+        return coordinator_output
+    spawns = getattr(stage, "spawns", []) or []
+    if spawns:
+        return getattr(spawns[0], "output", "")
+    return ""
+
+
 def _envelope_preview(env: Any, limit: int = 160) -> str:
     summary = (getattr(env, "summary", "") or "").strip()
     content = (getattr(env, "content", "") or "").strip()
@@ -153,7 +164,23 @@ def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
             "ok_count": len(stage.ok_spawns()),
             "error_count": error_count,
             "coordinator_agent": stage.coordinator_agent,
+            "coordinator_output": stage.coordinator_output or "",
+            "output": _stage_output_text(stage),
             "output_preview": _stage_output_preview(stage),
+            "spawns": [
+                {
+                    "agent": spawn.agent,
+                    "task": spawn.task,
+                    "title": spawn.title,
+                    "is_error": spawn.is_error,
+                    "turns": spawn.turns,
+                    "tool_calls": spawn.tool_calls,
+                    "output": spawn.output,
+                    "output_preview": _preview(spawn.output),
+                    "metadata": dict(spawn.metadata or {}),
+                }
+                for spawn in stage.spawns
+            ],
         })
 
     last_stage = getattr(result, "last_stage", None)
@@ -165,6 +192,7 @@ def _summarize_coordinator_result(result: Any) -> dict[str, Any] | None:
         "total_error_count": total_error_count,
         "has_errors": any(stage["is_error"] or stage["error_count"] > 0 for stage in stages),
         "last_stage_id": getattr(last_stage, "stage_id", None),
+        "last_output": _stage_output_text(last_stage) if last_stage is not None else "",
         "last_output_preview": _stage_output_preview(last_stage) if last_stage is not None else "",
         "stages": stages,
     }
@@ -211,7 +239,10 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
             "kind": getattr(env, "kind", ""),
             "sender": sender,
             "recipient": recipient,
+            "summary": getattr(env, "summary", ""),
+            "content": getattr(env, "content", ""),
             "preview": preview,
+            "timestamp": getattr(env, "timestamp", 0.0),
         })
 
     peer_summaries = []
@@ -241,7 +272,11 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
             "is_error": out.is_error,
             "turns": out.turns,
             "tool_calls": out.tool_calls,
+            "output": out.output,
             "output_preview": output_preview,
+            "task": out.task,
+            "title": out.title,
+            "metadata": dict(out.metadata or {}),
             "sent_count": activity["sent_count"],
             "received_count": activity["received_count"],
             "recent_activity_direction": activity_direction,
@@ -276,9 +311,24 @@ def _summarize_swarm_result(result: Any) -> dict[str, Any] | None:
         "collaboration_count": len(delivered_messages),
         "active_peer_count": active_peer_count,
         "has_errors": any(peer["is_error"] for peer in peer_summaries),
+        "lead_output": getattr(result, "lead_output", ""),
+        "entry_output": getattr(result, "lead_output", ""),
         "lead_output_preview": _preview(getattr(result, "lead_output", "")),
         "entry_output_preview": _preview(getattr(result, "lead_output", "")),
         "message_routes": message_routes[:6],
+        "transcript": [
+            {
+                "seq": getattr(env, "seq", 0),
+                "kind": getattr(env, "kind", ""),
+                "sender": getattr(env, "sender", ""),
+                "recipient": getattr(env, "recipient", ""),
+                "summary": getattr(env, "summary", ""),
+                "content": getattr(env, "content", ""),
+                "preview": _envelope_preview(env),
+                "timestamp": getattr(env, "timestamp", 0.0),
+            }
+            for env in delivered_messages
+        ],
         "recent_messages": recent_messages[-6:],
         "peers": peer_summaries,
     }
@@ -915,6 +965,19 @@ async def cancel_run(run_id: str) -> Any:
     _persist_run(run)
     run.task.cancel()
     return {"ok": True, "run_id": run_id, "status": "cancelling"}
+
+
+@router.delete("/run/{run_id}")
+async def delete_run(run_id: str) -> Any:
+    """Delete one completed orchestration run from durable history."""
+    run = _runs.get(run_id)
+    if run is not None and not run.is_done():
+        raise HTTPException(status_code=409, detail=f"Run '{run_id}' is still active")
+    _runs.pop(run_id, None)
+    deleted = delete_run_record(run_id)
+    if not deleted and run is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return {"ok": True, "run_id": run_id, "deleted": True}
 
 
 # --- SSE stream ------------------------------------------------------------

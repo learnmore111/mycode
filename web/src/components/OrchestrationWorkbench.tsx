@@ -34,7 +34,7 @@ import {
   getOrchestrationAgent,
   createAgent, updateAgent, deleteAgent,
   createFlow, updateFlow, deleteFlow,
-  startRun, listRuns, getRun, cancelRun,
+  startRun, listRuns, getRun, cancelRun, deleteRun,
 } from '../api/orchestration'
 import type {
   AgentLiveMessageEvent,
@@ -1710,6 +1710,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
   const [activeRunFlowDetail, setActiveRunFlowDetail] = useState<FlowDetail | null>(null)
   const [runDetailLoading, setRunDetailLoading] = useState(false)
   const [cancellingRun, setCancellingRun] = useState(false)
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
   const [agentPanels, setAgentPanels] = useState<Record<string, AgentTranscriptItem[]>>({})
   const [selectedAgentPanel, setSelectedAgentPanel] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -1988,6 +1989,33 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
       fire('error', `取消失败: ${err}`)
     } finally {
       setCancellingRun(false)
+    }
+  }
+
+  const handleDeleteRun = async (runId: string) => {
+    const target = runs.find((run) => run.run_id === runId) ?? activeRun
+    if (target && !target.done) {
+      fire('error', '运行仍在进行中，请先取消或等待结束')
+      return
+    }
+    if (!confirm(`确定删除运行记录 "${runId}"？`)) return
+    setDeletingRunId(runId)
+    try {
+      await deleteRun(runId)
+      fire('success', '运行记录已删除')
+      setRuns((items) => items.filter((item) => item.run_id !== runId))
+      if (activeRunId === runId) {
+        setActiveRunId(null)
+        setActiveRun(null)
+        setRunEvents([])
+        setAgentPanels({})
+        setSelectedAgentPanel(null)
+      }
+      await refresh({ silent: true })
+    } catch (err) {
+      fire('error', `删除失败: ${err}`)
+    } finally {
+      setDeletingRunId(null)
     }
   }
 
@@ -2283,7 +2311,31 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 <span className={`inline-flex rounded-lg px-2 py-0.5 text-[9px] font-bold ${tone.badge}`}>{getRunStatusLabel(run)}</span>
                                 <span className="text-[10px] text-[#ABABAB] whitespace-nowrap">{formatRunTime(run.started_at)}</span>
                               </div>
-                              <div className="mt-1 text-[10px] text-[#ABABAB]">{formatRunElapsed(run)}</div>
+                              <div className="mt-1 flex items-center justify-between gap-2">
+                                <span className="text-[10px] text-[#ABABAB]">{formatRunElapsed(run)}</span>
+                                {run.done && (
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      void handleDeleteRun(run.run_id)
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault()
+                                        event.stopPropagation()
+                                        void handleDeleteRun(run.run_id)
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-[#ABABAB] transition-colors hover:bg-[#dc2626]/8 hover:text-[#dc2626]"
+                                    title="删除运行记录"
+                                  >
+                                    {deletingRunId === run.run_id ? <RefreshCcw size={10} className="animate-spin" /> : <Trash2 size={10} />}
+                                    删除
+                                  </span>
+                                )}
+                              </div>
                               {run.error && <div className="mt-2 text-[10px] text-[#dc2626] line-clamp-2">{run.error}</div>}
                             </div>
                           </div>
@@ -2324,6 +2376,13 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 className="inline-flex items-center gap-1.5 rounded-xl border border-[#dc2626]/25 bg-[#dc2626]/10 px-3 py-2 text-[12px] font-semibold text-[#dc2626] transition-all hover:bg-[#dc2626]/14 disabled:cursor-not-allowed disabled:opacity-50">
                                 {cancellingRun ? <RefreshCcw size={12} className="animate-spin" /> : <X size={12} />}
                                 取消运行
+                              </button>
+                            )}
+                            {activeRun.done && (
+                              <button onClick={() => void handleDeleteRun(activeRun.run_id)} disabled={deletingRunId === activeRun.run_id}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-[#dc2626]/25 bg-[#dc2626]/10 px-3 py-2 text-[12px] font-semibold text-[#dc2626] transition-all hover:bg-[#dc2626]/14 disabled:cursor-not-allowed disabled:opacity-50">
+                                {deletingRunId === activeRun.run_id ? <RefreshCcw size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                                删除记录
                               </button>
                             )}
                           </div>
@@ -2597,8 +2656,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 </div>
                               </div>
                               <div className="rounded-2xl border border-[#d97706]/15 bg-[#d97706]/[0.04] p-4">
-                                <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#b45309]">最终汇总预览</div>
-                                <p className="mt-2 text-[12px] leading-6 text-[#6B4D1F]">{activeRun.result.entry_output_preview || activeRun.result.lead_output_preview || '起始 Agent 还没有留下最终汇总文本。'}</p>
+                                <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#b45309]">最终汇总</div>
+                                <p className="mt-2 whitespace-pre-wrap text-[12px] leading-6 text-[#6B4D1F]">{activeRun.result.entry_output || activeRun.result.lead_output || activeRun.result.entry_output_preview || activeRun.result.lead_output_preview || '起始 Agent 还没有留下最终汇总文本。'}</p>
                               </div>
                               <div className="grid gap-3 md:grid-cols-2">
                                 <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] p-4">
@@ -2618,11 +2677,11 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 <div className="rounded-2xl border border-[#E5E4E0] bg-[#FAFAF8] p-4">
                                   <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8A8A85]">最近协作</div>
                                   <div className="mt-3 space-y-2">
-                                    {(activeRun.result.recent_messages ?? []).length > 0 ? (
-                                      (activeRun.result.recent_messages ?? []).map((message) => (
+                                    {((activeRun.result.transcript ?? activeRun.result.recent_messages) ?? []).length > 0 ? (
+                                      ((activeRun.result.transcript ?? activeRun.result.recent_messages) ?? []).map((message) => (
                                         <div key={message.seq} className="rounded-xl border border-[#E5E4E0] bg-white px-3 py-2">
                                           <div className="text-[10px] font-semibold text-[#0F0F0F]">{message.sender} → {message.recipient}</div>
-                                          <div className="mt-1 text-[11px] leading-5 text-[#5C5C5C]">{message.preview || '已发送一条团队消息。'}</div>
+                                          <div className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#5C5C5C]">{message.content || message.preview || '已发送一条团队消息。'}</div>
                                         </div>
                                       ))
                                     ) : (
@@ -2647,7 +2706,7 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                       <span>{peer.sent_count ?? 0} sent</span>
                                       <span>{peer.received_count ?? 0} recv</span>
                                     </div>
-                                    <p className="mt-3 text-[11px] leading-6 text-[#5C5C5C]">{getSwarmPeerNarrative(peer)}</p>
+                                    <p className="mt-3 whitespace-pre-wrap text-[11px] leading-6 text-[#5C5C5C]">{peer.output || getSwarmPeerNarrative(peer)}</p>
                                   </div>
                                 ))}
                               </div>
@@ -2676,8 +2735,8 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                 </div>
                               </div>
                               <div className="rounded-2xl border border-[#3D3BF3]/12 bg-[#3D3BF3]/[0.04] p-4">
-                                <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#3D3BF3]">最终输出预览</div>
-                                <p className="mt-2 text-[12px] leading-6 text-[#5C5C5C]">{activeRun.result.last_output_preview || '暂无最终输出摘要。'}</p>
+                                <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#3D3BF3]">最终输出</div>
+                                <p className="mt-2 whitespace-pre-wrap text-[12px] leading-6 text-[#5C5C5C]">{activeRun.result.last_output || activeRun.result.last_output_preview || '暂无最终输出摘要。'}</p>
                               </div>
                               <div className="space-y-2.5">
                                 {activeRun.result.stages.map((stage) => (
@@ -2692,7 +2751,21 @@ export default function OrchestrationWorkbench({ onBack }: Props) {
                                       <span>{stage.ok_count} ok</span>
                                       <span>{stage.error_count} errors</span>
                                     </div>
-                                    <p className="mt-2 text-[11px] leading-6 text-[#5C5C5C]">{stage.output_preview || '暂无阶段输出摘要。'}</p>
+                                    <p className="mt-2 whitespace-pre-wrap text-[11px] leading-6 text-[#5C5C5C]">{stage.output || stage.output_preview || '暂无阶段输出摘要。'}</p>
+                                    {(stage.spawns ?? []).length > 0 && (
+                                      <div className="mt-3 space-y-2">
+                                        {(stage.spawns ?? []).map((spawn, index) => (
+                                          <div key={`${stage.stage_id}-${spawn.agent}-${index}`} className="rounded-xl border border-[#E5E4E0] bg-white px-3 py-2">
+                                            <div className="flex items-center justify-between gap-3">
+                                              <div className="font-[JetBrains_Mono,monospace] text-[10px] font-semibold text-[#0F0F0F]">{spawn.agent}</div>
+                                              <span className={`rounded-lg px-2 py-0.5 text-[9px] font-bold ${spawn.is_error ? 'bg-[#dc2626]/10 text-[#dc2626]' : 'bg-[#16a34a]/10 text-[#16a34a]'}`}>{spawn.is_error ? '异常' : '完成'}</span>
+                                            </div>
+                                            <div className="mt-1 text-[10px] leading-5 text-[#8A8A85]">{spawn.task}</div>
+                                            <div className="mt-2 whitespace-pre-wrap text-[11px] leading-6 text-[#5C5C5C]">{spawn.output || spawn.output_preview || '暂无输出。'}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 ))}
                               </div>

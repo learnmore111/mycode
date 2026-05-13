@@ -85,7 +85,11 @@ export interface SwarmPeerSummary {
   is_error: boolean
   turns: number
   tool_calls: number
+  output?: string
   output_preview: string
+  task?: string
+  title?: string
+  metadata?: Record<string, unknown>
   sent_count?: number
   received_count?: number
   recent_activity_direction?: 'sent' | 'received' | 'output' | 'none'
@@ -104,7 +108,10 @@ export interface SwarmRecentMessage {
   kind: string
   sender: string
   recipient: string
+  summary?: string
+  content?: string
   preview: string
+  timestamp?: number
 }
 
 export interface SwarmRunResult {
@@ -119,13 +126,30 @@ export interface SwarmRunResult {
   collaboration_count?: number
   active_peer_count?: number
   has_errors: boolean
+  /** Preferred: full final output from the entry/supervisor agent. */
+  entry_output?: string
+  /** @deprecated Alias of {@link entry_output}. */
+  lead_output?: string
   /** Preferred: preview of the entry/supervisor agent's final output. */
   entry_output_preview: string
   /** @deprecated Alias of {@link entry_output_preview}. */
   lead_output_preview: string
   message_routes?: SwarmMessageRoute[]
+  transcript?: SwarmRecentMessage[]
   recent_messages?: SwarmRecentMessage[]
   peers: SwarmPeerSummary[]
+}
+
+export interface CoordinatorSpawnSummary {
+  agent: string
+  task: string
+  title?: string
+  is_error: boolean
+  turns: number
+  tool_calls: number
+  output: string
+  output_preview: string
+  metadata?: Record<string, unknown>
 }
 
 export interface CoordinatorStageSummary {
@@ -135,7 +159,10 @@ export interface CoordinatorStageSummary {
   ok_count: number
   error_count: number
   coordinator_agent?: string
+  coordinator_output?: string
+  output?: string
   output_preview: string
+  spawns?: CoordinatorSpawnSummary[]
 }
 
 export interface CoordinatorRunResult {
@@ -146,6 +173,7 @@ export interface CoordinatorRunResult {
   total_error_count: number
   has_errors: boolean
   last_stage_id?: string | null
+  last_output?: string
   last_output_preview: string
   stages: CoordinatorStageSummary[]
 }
@@ -216,6 +244,12 @@ export interface CancelRunResponse {
   run_id: string
   status: string
   already_finished?: boolean
+}
+
+export interface DeleteRunResponse {
+  ok: boolean
+  run_id: string
+  deleted: boolean
 }
 
 // --- Agent CRUD types ---
@@ -299,6 +333,12 @@ export async function getRun(runId: string): Promise<RunDetail> {
 export async function cancelRun(runId: string): Promise<CancelRunResponse> {
   return apiFetch<CancelRunResponse>(`/orchestration/run/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
+  })
+}
+
+export async function deleteRun(runId: string): Promise<DeleteRunResponse> {
+  return apiFetch<DeleteRunResponse>(`/orchestration/run/${encodeURIComponent(runId)}`, {
+    method: 'DELETE',
   })
 }
 

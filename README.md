@@ -11,21 +11,43 @@
 ## 快速开始
 
 ```bash
-# 安装
-uv sync
+# 安装（含开发依赖）
+uv sync --extra dev
 
 # 查看帮助
 uv run mycode --help
 
-# 设置 API Key（任意 OpenAI 兼容接口）
+# 推荐：在项目根目录用 mycode.json 配置模型
+cat > mycode.json <<'EOF'
+{
+  "provider": {
+    "openai-compatible": {
+      "api": "https://your-endpoint.com/v1",
+      "models": {
+        "default": {
+          "id": "gpt-4o",
+          "name": "Default Model",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        }
+      }
+    }
+  },
+  "model": "openai-compatible/default"
+}
+EOF
+
+# API Key 建议用环境变量注入，避免写入仓库
 export OPENAI_API_KEY="your-token"
-export OPENAI_API_BASE="https://your-endpoint.com/v1"  # 可选，默认 OpenAI 官方
 
 # 交互式模式（Rich UI + Markdown 渲染 + 上下文进度条）
 uv run mycode run
 
 # Headless 模式（单次执行，适合脚本/CI）
-uv run mycode run --message "列出当前目录的文件"
+uv run mycode run -p "列出当前目录的文件"
 
 # 启动 API Server
 uv run mycode serve --port 4096
@@ -44,6 +66,18 @@ uv run mycode serve --port 4096      # 打开 http://localhost:4096
 # 运行测试
 uv run pytest tests/ -v
 ```
+
+## Web UI 展示
+
+MyCode 内置 React Web UI，支持聊天、上下文查看、文件变更、Skill/MCP 管理和多 Agent 编排工作台。使用 `uv run mycode dev` 可以同时启动后端 API 与前端开发服务器。
+
+**多 Agent 运行监控**
+
+![多 Agent 运行监控](./docs/images/web-ui-orchestration-monitor.png)
+
+**会话聊天界面**
+
+![会话聊天界面](./docs/images/web-ui-session.png)
 
 ## 架构总览
 
@@ -101,11 +135,11 @@ uv run pytest tests/ -v
 | **`session/memory/`** | **两层记忆系统**。`memory.py` 会话级记忆（JSONL 滚动摘要 + 每轮记录 + LLM 精炼），`memdir.py` 结构化长期记忆（四类：user/feedback/project/reference + frontmatter 格式 + MEMORY.md 索引），`retrieval.py` 相关记忆检索（关键词 + LLM 辅助），`extractor.py` 后台自动记忆提取 + 新鲜度管理 |
 | **`provider/`** | AI 提供商管理。自动发现环境变量/配置/auth 中的 provider，`transform.py` 按模型类型调整参数（temperature/reasoning/max_tokens），通过 litellm 统一调用 14+ 种 LLM |
 | **`agent/`** | Agent 系统。内置 7 个 agent：`build`(默认全权限)、`plan`(只读)、`general`(子任务)、`explore`(搜索)、`compaction`/`title`/`summary`(辅助) |
-| **`tool/`** | **15 个内置工具** + 注册表。所有工具具有能力声明（`is_read_only`/`is_destructive`/`is_concurrency_safe`），路径安全验证（防目录逃逸），原子写入。按名称排序保证 prompt cache 稳定性。新增统一 `subagent` 工具（delegate/parallel/isolated 三模式）和 `create_skill` 工具 |
+| **`tool/`** | **16 个默认内置工具** + 注册表（另有实验性 `batch`）。所有工具具有能力声明（`is_read_only`/`is_destructive`/`is_concurrency_safe`），路径安全验证（防目录逃逸），原子写入。按名称排序保证 prompt cache 稳定性。包含统一 `subagent` 工具（delegate/parallel/isolated 三模式）、`memory` 长期记忆工具、`create_skill` 技能创建工具和 GPT-5 风格 `apply_patch` 工具 |
 
 ### 工具系统
 
-15 个内置工具（含 `subagent` 统一子代理工具与 `create_skill` 技能创建工具）：
+默认注册 16 个内置工具（实验性 `batch` 可通过配置开启）：
 
 | 工具 | 说明 | 特性 |
 |------|------|------|
@@ -116,15 +150,16 @@ uv run pytest tests/ -v
 | `glob` | 文件名匹配搜索 | 忽略 .gitignore 模式 |
 | `grep` | 内容正则搜索 (ripgrep) | 二进制排除 (`--no-binary`)、文件大小限制 |
 | `listdir` | 目录列表 | 树形结构输出 |
-| `task` | 旧版子 Agent 任务 (legacy) | abort 信号支持、独立工具集 |
 | `subagent` | **统一子代理工具** | 三种模式：`delegate`（上下文传递 + 可配置轮次）、`parallel`（asyncio.gather 并行）、`isolated`（git worktree 隔离执行）、每种模式独立默认轮次、权限与 loop guard 贯通 |
 | `webfetch` | URL 内容获取 | JSON/XML content-type 自动格式化 |
 | `websearch` | 网页搜索 | 多引擎支持 |
 | `question` | 向用户提问 | 阻塞等待回复 |
 | `todo` | 任务列表管理 | 会话内 in-memory 状态 |
 | `skill` | 技能文件加载 | 项目 + `~/.mycode/skills/` 搜索、列出可用技能、自动注入 skills 列表到 system-reminder |
+| `memory` | 长期记忆管理 | list/read/write/update/delete 结构化 memdir 记忆，和 `MEMORY.md` 索引联动 |
 | `create_skill` | **新增技能文件** | 支持项目本地 / 全局目录、校验 skill 名称与内容、返回写入路径与使用说明 |
-| `batch` | 并行工具执行 (实验性) | 多工具同时调用 |
+| `apply_patch` | GPT-5 格式补丁应用 | 使用结构化 patch 对文件进行精确更新 |
+| `batch` | 并行工具执行 (实验性，需配置开启) | 多工具同时调用 |
 
 ### 基础设施 (Infrastructure)
 
@@ -151,9 +186,9 @@ uv run pytest tests/ -v
 
 | 模块 | 说明 |
 |------|------|
-| **`server/`** | FastAPI 应用。8 个路由模块（session/provider/config/file/permission/mcp/event/project），26 个 API 端点 + SSE 流式消息 + SSE 全局事件订阅 + Web UI 静态文件服务（SPA） |
-| **`web/`** | **Web UI**。React 18 + TypeScript + Vite + TailwindCSS 构建的聊天界面，支持 SSE 流式消息、Markdown 渲染、代码高亮、工具调用可折叠卡片、权限弹窗、模型/Agent 切换、Token/Cost 统计。构建产物集成到 FastAPI 实现单端口运行 |
-| **`cli/`** | Click CLI + Rich 交互式 REPL。欢迎面板 + Markdown 渲染 + Spinner 动画 + 上下文进度条 + Token/Cost 统计 + Debug 模式（`/debug` dump LLM I/O）。命令：`serve`/`run`/`providers`/`models` + `config show/path/set` + `session list/delete` + `mcp list` + `snapshot track/diff` |
+| **`server/`** | FastAPI 应用。路由覆盖 session/provider/config/file/permission/mcp/event/project/skill/git/orchestration 等模块，提供 SSE 流式消息、全局事件订阅、会话回滚/导出/分叉、Git 变更管理、多 Agent 编排 API，以及 Web UI 静态文件服务（SPA） |
+| **`web/`** | **Web UI**。React 18 + TypeScript + Vite + TailwindCSS 构建的聊天与编排界面，支持 SSE 流式消息、Markdown 渲染、代码高亮、工具调用可折叠卡片、权限弹窗、模型/Agent 切换、Token/Cost 统计、上下文查看器、Git 变更面板和 Orchestration Workbench。构建产物集成到 FastAPI 实现单端口运行 |
+| **`cli/`** | Click CLI + Rich 交互式 REPL。欢迎面板 + Markdown 渲染 + Spinner 动画 + 上下文进度条 + Token/Cost 统计 + Debug 模式（`/debug` dump LLM I/O）。命令覆盖 `serve`/`dev`/`run`、provider/model 查看、配置管理、session 导入导出与分叉、MCP server、snapshot、orchestrate、agent 与数据库迁移 |
 | **`shell/`** | Shell 检测（排除 fish/nu）+ 进程树 kill |
 | **`file/`** | 文件读取/模糊搜索/列目录 + ripgrep 集成 |
 | **`cache/`** | LRU 缓存 + 过期策略 |
@@ -174,13 +209,13 @@ uv run pytest tests/ -v
 ## 项目统计
 
 ```
-Python 文件:      140+
-代码行数:         18,000+
-单元测试:          56
-内置工具:          15 (bash/read/edit/write/glob/grep/listdir/task/subagent/webfetch/websearch/question/todo/skill/create_skill/batch)
-API 路由:         26
+Python 文件:      160+
+代码行数:         20,000+
+单元测试:          90+
+内置工具:          16 默认 + batch 实验性
+API 路由:         50+
 LSP 语言:         26
-CLI 命令:         13
+CLI 命令组:       20+
 Lint 错误:         0
 ```
 
@@ -210,7 +245,7 @@ mycode --help                     # 查看所有命令
 mycode serve [--port 4096]        # 启动 API 服务器
 mycode dev [--port --frontend-port] # 一键启动后端 + 前端开发服务器
 mycode run [DIR]                  # 交互式模式（默认）
-mycode run [DIR] -p "message"     # Headless 模式运行
+mycode run [DIR] -p "message"     # Headless 模式运行（--message 的短参数）
 mycode run [DIR] -a plan          # 指定 agent 模式
 mycode providers                  # 列出可用 AI 提供商
 mycode models                     # 列出可用模型
@@ -219,9 +254,20 @@ mycode config path                # 查看全局配置路径
 mycode config set KEY VALUE       # 设置全局配置项
 mycode session list [-n 20]       # 列出最近会话
 mycode session delete ID          # 删除会话
+mycode session export ID [-o out] # 导出会话
+mycode session import PATH        # 导入会话
+mycode session fork ID --turn N   # 从指定轮次分叉会话
 mycode mcp list                   # 列出 MCP 服务器
+mycode mcp serve                  # 启动内置 MCP Server
 mycode snapshot track [DIR]       # 创建快照
 mycode snapshot diff HASH [DIR]   # 查看快照 diff
+mycode orchestrate list           # 列出多 Agent flow
+mycode orchestrate inspect NAME   # 查看 flow 详情
+mycode orchestrate run NAME -p "task" # 运行编排 flow
+mycode agent list                 # 列出编排 Agent
+mycode agent show NAME            # 查看 Agent 配置
+mycode agent add NAME             # 创建/更新 Agent
+mycode db current                 # 查看数据库迁移版本
 ```
 
 ### 交互式模式特性
@@ -249,7 +295,7 @@ mycode snapshot diff HASH [DIR]   # 查看快照 diff
 | Token 统计 | 每轮显示 input/output/reasoning/cache token 数 |
 | Cost 计算 | 基于 litellm 定价数据自动计算费用 |
 | 上下文进度条 | 颜色编码显示当前消息列表的上下文窗口占用率（绿→黄→橙→红）|
-| 斜杠命令 | `/help` `/clear` `/model` `/history` `/steps` `/debug` `/memory` `/quit` |
+| 斜杠命令 | `/help` `/clear` `/reset` `/model` `/history` `/debug` `/memory` `/reload-plugin` `/quit` |
 | Debug 模式 | `/debug` 将每轮 LLM 输入输出 dump 到 `.mycode/debug/` |
 | 会话记忆 | `/memory` 查看结构化记忆 + 会话笔记 |
 
@@ -267,7 +313,15 @@ DELETE /session/{id}               # 删除会话
 PUT    /session/{id}/title         # 设置标题
 POST   /session/{id}/message       # 发送消息 (SSE)
 GET    /session/{id}/messages      # 获取历史消息
+GET    /session/{id}/context       # 查看本轮上下文快照
+GET    /session/{id}/changes       # 查看会话关联文件变更
+POST   /session/{id}/pause         # 暂停运行
+POST   /session/{id}/resume        # 恢复暂停运行
 POST   /session/{id}/abort         # 中止会话
+POST   /session/{id}/rollback      # 回滚会话消息/快照
+GET    /session/{id}/export        # 导出会话
+POST   /session/import             # 导入会话
+POST   /session/{id}/fork          # 分叉会话
 
 # Provider / Agent
 GET    /provider                   # 列出 provider
@@ -282,15 +336,32 @@ POST   /config                     # 更新全局配置
 GET    /file?path=...              # 读取文件
 GET    /file/list                  # 列出目录
 GET    /file/search?query=...      # 模糊搜索文件
+POST   /file/attachment            # 上传/登记附件
 
 # Permission
 GET    /permission                 # 待处理权限列表
+GET    /permission/rules           # 权限规则列表
 POST   /permission/{id}            # 回复权限请求
 
 # MCP
 GET    /mcp                        # MCP 服务器状态
+POST   /mcp                        # 保存 MCP 配置
+DELETE /mcp/{name}                 # 删除 MCP 配置
 POST   /mcp/{name}/connect         # 连接 MCP
 POST   /mcp/{name}/disconnect      # 断开 MCP
+
+# Skill / Git / Orchestration
+GET    /skill                      # 列出技能
+POST   /skill                      # 创建技能
+DELETE /skill/{name}               # 删除技能
+GET    /git/status                 # Git 状态与文件变更
+GET    /git/diff                   # Git diff
+POST   /git/stage                  # stage 文件
+POST   /git/revert                 # 回退文件
+GET    /orchestration/flow         # 列出编排流程
+GET    /orchestration/agent        # 列出编排 Agent
+POST   /orchestration/run          # 启动编排运行
+GET    /orchestration/events       # 编排事件流
 
 # Event / Project / Log
 GET    /event                      # SSE 全局事件订阅
@@ -301,7 +372,7 @@ POST   /log                        # 写日志
 
 ## 支持的 AI 提供商
 
-通过环境变量自动发现：
+内置提供商可以通过环境变量自动发现 API Key；项目级模型、endpoint 和默认模型建议写入 `mycode.json`，便于团队共享和复现。
 
 | 提供商 | 环境变量 |
 |--------|----------|
@@ -321,11 +392,11 @@ POST   /log                        # 写日志
 | OpenRouter | `OPENROUTER_API_KEY` |
 | Cerebras | `CEREBRAS_API_KEY` |
 
-对于以上内置提供商，**只需设置对应环境变量即可**，litellm 会自动路由到正确的 API endpoint。
+对于以上内置提供商，通常只需设置对应 API Key 环境变量即可；如果需要固定模型、上下文窗口或自定义 endpoint，优先在项目根目录使用 `mycode.json` 配置。
 
 ### 自定义 Provider
 
-如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），在项目根目录创建 `mycode.json`：
+如果使用 OpenAI 兼容的第三方服务（Azure、国内中转、自部署 vLLM/Ollama 等），推荐在项目根目录创建 `mycode.json`：
 
 ```jsonc
 {
@@ -353,12 +424,11 @@ POST   /log                        # 写日志
 
 > **注意**：自定义模型必须手动设置 `limit.context`，否则上下文进度条和自动 compaction 无法工作。内置 provider（Anthropic/OpenAI/Google 等）会从 models.dev 数据库自动获取。
 
-也可以通过环境变量指定 base URL（litellm 原生支持）：
+API Key 仍建议通过环境变量注入，避免写入仓库：
 
 ```bash
-export OPENAI_API_BASE=https://your-proxy.com/v1
 export OPENAI_API_KEY=sk-xxx
-uv run mycode run --message "hello"
+uv run mycode run -p "hello"
 ```
 
 ## Web UI
@@ -377,8 +447,10 @@ uv run mycode run --message "hello"
 | 模型/Agent 切换 | 下拉选择可用的 Provider 模型和 Agent |
 | Token/Cost 统计 | 每条 AI 回复显示 token 用量和费用 |
 | 深色主题 | 全局深色配色(gray-950 背景 + blue-600 用户消息) |
-| 技能与 MCP 侧边栏 | 可视化创建/删除 skill 与查看 MCP 服务器状态 |
-| 文件变更管理 | 暂存 AI 修改的文件 + 批量确认/回退 |
+| 技能与 MCP 侧边栏 | 可视化创建/删除 skill、上传 skill 与查看 MCP 服务器状态 |
+| 文件变更管理 | Git 状态、diff 查看、stage 与 revert |
+| 上下文查看器 | 查看 system prompt、工具定义、消息和 token 使用快照 |
+| Orchestration Workbench | 创建/编辑 Agent 与 Flow，启动多 Agent 运行并查看事件流 |
 | 单端口部署 | 构建后静态文件集成到 FastAPI,API + UI 同一端口 |
 
 ### 界面预览
@@ -395,7 +467,11 @@ uv run mycode run --message "hello"
 
 ![多 Agent 编排设计](./docs/images/web-ui-agent-orchestration.png)
 
-> **注意**：多 Agent 编排功能目前还在进一步完善中，详细使用文档请参考 [`docs/multi-agent-user-guide.md`](./docs/multi-agent-user-guide.md)。
+**多 Agent 运行监控**
+
+![多 Agent 运行监控](./docs/images/web-ui-orchestration-monitor.png)
+
+> 多 Agent 编排已经接入 API 与 Web UI，详细使用文档请参考 [`docs/multi-agent-user-guide.md`](./docs/multi-agent-user-guide.md)。
 
 ### 使用方式
 
@@ -483,12 +559,14 @@ web/
 | 增量式 Reminder（history-aware state extraction，避免重复注入） | ✅ 已完成 |
 | Web UI（React + TypeScript + Vite + TailwindCSS） | ✅ 已完成 |
 | 统一子代理工具 `subagent`（delegate/parallel/isolated 三模式） | ✅ 已完成 |
-| 技能管理（`skill` + `create_skill` 工具 + MCP 侧边栏界面） | ✅ 已完成 |
+| 技能管理（`skill` + `create_skill` 工具 + Skill/MCP 侧边栏界面） | ✅ 已完成 |
 | 会话暂停/恢复（从 DB 加载历史继续对话） | ✅ 已完成 |
 | 文件变更暂存与批量确认/回退 | ✅ 已完成 |
 | Git 集成（代理配置、变更查询） | ✅ 已完成 |
 | Web UI 侧边栏宽度可拖拽调整 | ✅ 已完成 |
-| apply_patch 工具 (GPT-5 格式) | 待实现 |
+| 长期记忆 `memory` 工具 + 相关记忆检索 | ✅ 已完成 |
+| apply_patch 工具 (GPT-5 格式) | ✅ 已完成 |
+| 多 Agent Orchestration Workbench + 运行事件流 | ✅ 已完成 |
 | LSP didChange 通知 | 待实现 |
 | Python SDK (`mycode-sdk`) | 待评估 |
 
@@ -505,7 +583,7 @@ web/
 | Q3 | **三层循环保护** | Hard Limit / Pattern Detection / Intelligence 三层递进机制 |
 | Q4 | **上下文压缩 Compaction** | 滑动窗口 + LLM 摘要的完整 8 步流程，cache 友好设计 |
 | Q5 | **两层记忆系统** | 会话 JSONL + 结构化 memdir 四类别、检索/提取/文件锁 |
-| Q6 | **工具能力声明与读写分离** | 15 工具能力矩阵、mutating-first 执行策略 |
+| Q6 | **工具能力声明与读写分离** | 16 默认工具能力矩阵、mutating-first 执行策略 |
 | Q7 | **子代理三模式** | delegate / parallel / isolated（git worktree 隔离） |
 | Q8 | **Provider 系统** | 16 种环境变量自动发现、参数转换、litellm 统一路由 |
 | Q9 | **权限系统** | Wildcard 规则、ask/reply 阻塞流、CLI vs HTTP 差异 |
@@ -545,7 +623,7 @@ mycode/
 ├── auth/           # 认证持久化 + Token 过期检测 + 环境变量发现
 ├── bus/            # 事件总线 (asyncio pub/sub, 17 种事件)
 ├── cache/          # LRU 缓存 + 过期策略
-├── cli/            # CLI 入口 (Click, 13 命令, Debug 模式)
+├── cli/            # CLI 入口 (Click, Debug 模式)
 ├── config/         # JSONC 配置 + Pydantic 模型
 ├── file/           # 文件操作 + ripgrep
 ├── lsp/            # LSP 集成 (26 语言)
@@ -554,22 +632,23 @@ mycode/
 ├── permission/     # 权限系统 (allow/deny/ask)
 ├── plugin/         # 插件系统 (7 hook 类型)
 ├── project/        # 项目发现 + contextvars
-├── provider/       # AI Provider (14+ provider, litellm)
-├── server/         # FastAPI (8 路由模块, 26 端点)
-│   └── routes/     # session/provider/config/file/permission/mcp/event/project
+├── provider/       # AI Provider (多 provider 自动发现, litellm)
+├── server/         # FastAPI (HTTP API + SSE + Web UI 静态服务)
+│   └── routes/     # session/provider/config/file/permission/mcp/event/project/skill/git/orchestration
+├── orchestration/  # 多 Agent flow/agent 注册、运行时与事件桥接
 ├── session/        # 核心 agentic loop + 消息持久化 + compaction
 │   └── memory/     # 两层记忆 (JSONL会话 + memdir结构化 + 检索 + 提取)
 ├── shell/          # Shell 检测
 ├── snapshot/       # Shadow git (track/diff/restore/history)
 ├── storage/        # SQLite + JSON 存储
-├── tool/           # 14 内置工具 + 注册表 + 能力声明
+├── tool/           # 16 默认内置工具 + 注册表 + 能力声明
 └── util/           # 通用工具 (10 模块)
 
 web/                # Web UI (React + TypeScript + Vite + TailwindCSS)
 ├── src/
 │   ├── api/        # API 客户端 + SSE 流
 │   ├── hooks/      # React Hooks (会话/消息/权限/Provider)
-│   ├── components/ # UI 组件 (11 个)
+│   ├── components/ # UI 组件 (聊天/上下文/Git/编排工作台)
 │   └── types/      # TypeScript 类型定义
 └── dist/           # 构建产物 (集成到 FastAPI)
 ```
