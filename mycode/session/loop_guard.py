@@ -1,18 +1,18 @@
-"""Loop guard — three-layer agentic loop protection with result caching and step state.
+"""循环守卫 — 带结果缓存和步骤状态的三层智能体循环保护。
 
-Architecture inspired by:
-- PraisonAI doom loop detection (generic_repeat / poll_no_progress / ping_pong)
-- reivo-guard (hash match + sliding window + EWMA anomaly)
-- Claude SDK agent loop (hard limit + graceful degradation)
+架构灵感来自：
+- PraisonAI 厄运循环检测（generic_repeat / poll_no_progress / ping_pong）
+- reivo-guard（哈希匹配 + 滑动窗口 + EWMA 异常检测）
+- Claude SDK 智能体循环（硬限制 + 优雅降级）
 
-Three protection layers:
-1. Hard Limit Guard    — absolute max iterations, never exceeded
-2. Pattern Guard       — detect repeated/ping-pong/stalled patterns
-3. Near-Limit Guard    — intelligent early termination as limit approaches
+三层保护：
+1. 硬限制守卫    — 绝对最大迭代次数，永不超出
+2. 模式守卫       — 检测重复/乒乓/停滞模式
+3. 接近限制守卫    — 当接近限制时智能提前终止
 
-Plus:
-- ToolResultCache      — content-addressable cache to skip duplicate tool calls
-- StepState            — per-step state for checkpoint/resume/retry
+额外功能：
+- ToolResultCache      — 内容可寻址缓存，跳过重复工具调用
+- StepState            — 每步状态，用于检查点/恢复/重试
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ logger = logmod.create(service="loop_guard")
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# 配置
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -60,7 +60,7 @@ class LoopGuardConfig:
 
 
 class GuardAction(Enum):
-    """Actions the guard can recommend."""
+    """守卫可建议的操作。"""
     CONTINUE = "continue"      # Proceed normally
     WARN = "warn"              # Continue but emit a warning
     STOP = "stop"              # Stop the loop
@@ -69,19 +69,19 @@ class GuardAction(Enum):
 
 @dataclass
 class GuardVerdict:
-    """Result of a guard check."""
+    """守卫检查的结果。"""
     action: GuardAction
     reason: str = ""
     layer: str = ""            # Which layer triggered this
 
 
 # ---------------------------------------------------------------------------
-# Tool call history entry
+# 工具调用历史条目
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ToolCallRecord:
-    """Record of a single tool call for pattern analysis."""
+    """用于模式分析的单个工具调用记录。"""
     tool_name: str
     input_hash: str           # SHA-256 of canonical JSON input
     output_hash: str = ""     # SHA-256 of output (set after execution)
@@ -100,7 +100,7 @@ class ToolCallRecord:
 
 
 # ---------------------------------------------------------------------------
-# Step state for checkpoint/resume
+# 用于检查点/恢复的步骤状态
 # ---------------------------------------------------------------------------
 
 class StepStatus(Enum):
@@ -114,7 +114,7 @@ class StepStatus(Enum):
 
 @dataclass
 class StepState:
-    """Atomic step state for one iteration of the agentic loop."""
+    """智能体循环单次迭代的原子步骤状态。"""
     iteration: int
     status: StepStatus = StepStatus.PENDING
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -162,32 +162,29 @@ class StepState:
 
 
 # ---------------------------------------------------------------------------
-# Tool result cache
+# 工具结果缓存
 # ---------------------------------------------------------------------------
 
 class ToolResultCache:
-    """Content-addressable cache for tool call results.
+    """工具调用结果的内容可寻址缓存。
 
-    Eliminates redundant tool executions when the same tool is called
-    with identical input (e.g. reading the same file twice).
-    Only caches successful, read-only tool calls.
+    当使用相同输入调用相同工具时（例如读取同一文件两次），消除冗余的工具执行。
+    仅缓存成功的只读工具调用。
 
-    Cache entries are tagged with any file paths they depended on so that
-    when a mutating tool edits a specific file we only evict entries that
-    touched that file — avoiding over-broad `.clear()` storms on large
-    batches while still preventing stale-read issues.
+    缓存条目标记了它们依赖的任何文件路径，以便当变异工具编辑特定文件时，
+    我们只驱逐触及该文件的条目 — 避免在大型批次上进行过于宽泛的 `.clear()` 风暴，
+    同时仍然防止过读取问题。
     """
 
-    # Tools that are safe to cache (read-only, deterministic)
+    # 可以安全缓存的工具（只读、确定性）
     CACHEABLE_TOOLS = frozenset({
         "read", "glob", "grep", "listdir", "webfetch", "websearch", "skill",
     })
 
-    # Keys in tool input that identify files the tool touched.
+    # 工具输入中标识工具触及文件的关键字。
     _FILE_INPUT_KEYS = ("file_path", "path", "filePath", "pathname")
 
-    # LRU-ish eviction uses an OrderedDict; most-recently-used lives at the
-    # end, oldest at the front.
+    # 类似 LRU 的逐出使用 OrderedDict；最近使用的在末尾，最旧的在前面。
     def __init__(self, max_size: int = 200):
         from collections import OrderedDict
 
@@ -210,25 +207,25 @@ class ToolResultCache:
         return frozenset(files)
 
     def get(self, tool_name: str, tool_input: dict[str, Any]) -> str | None:
-        """Look up a cached result. Returns None on miss."""
+        """查找缓存结果。未命中时返回 None。"""
         if tool_name not in self.CACHEABLE_TOOLS:
             return None
         key = ToolCallRecord.hash_input(tool_name, tool_input)
         entry = self._cache.get(key)
         if entry is None:
             return None
-        # LRU touch — move to most-recently-used end.
+        # LRU 更新 — 移到最近使用端。
         self._cache.move_to_end(key)
         return entry[0]
 
     def put(self, tool_name: str, tool_input: dict[str, Any], output: str) -> None:
-        """Cache a successful tool result."""
+        """缓存成功的工具结果。"""
         if tool_name not in self.CACHEABLE_TOOLS:
             return
         if len(self._cache) >= self._max_size:
-            # LRU eviction — drop oldest entry. Race-safe against an empty
-            # dict because the callers above are all synchronous.
-            with contextlib.suppress(KeyError):  # pragma: no cover — defensive
+            # LRU 逐出 — 删除最旧的条目。对空字典是竞态安全的，
+            # 因为上面的调用者都是同步的。
+            with contextlib.suppress(KeyError):  # pragma: no cover — 防御性
                 self._cache.popitem(last=False)
         key = ToolCallRecord.hash_input(tool_name, tool_input)
         files = self._extract_files(tool_name, tool_input)
@@ -236,16 +233,15 @@ class ToolResultCache:
         self._cache.move_to_end(key)
 
     def invalidate(self, tool_name: str | None = None, files: frozenset[str] | set[str] | None = None) -> None:
-        """Invalidate cache entries affected by a mutating tool call.
+        """使受变异工具调用影响的缓存条目失效。
 
-        If `files` are provided, only entries that touched at least one of
-        those paths — exactly, or as a prefix match — are dropped.
-        Otherwise (unknown scope — e.g. a `bash` command with arbitrary
-        side effects) the full cache is cleared.
+        如果提供了 `files`，则仅删除触及至少一条路径的条目 —
+        精确匹配或前缀匹配。
+        否则（未知范围 — 例如具有任意副作用的 `bash` 命令）
+        清除整个缓存。
 
-        Prefix matching exists so that editing ``src/foo.py`` correctly
-        invalidates a cached ``grep`` call whose scope was ``src`` (the
-        grep hit the directory, we just edited one of its files).
+        前缀匹配的存在是为了编辑 ``src/foo.py`` 时能正确使缓存的 ``grep`` 调用失效，
+        该调用的范围是 ``src``（grep 命中了目录，我们刚刚编辑了其中一个文件）。
         """
         if not files:
             self._cache.clear()
@@ -288,20 +284,20 @@ class ToolResultCache:
         return {"size": len(self._cache), "max_size": self._max_size}
 
 
-# Tools that modify state (trigger cache invalidation)
+# 修改状态的工具（触发缓存失效）
 MUTATING_TOOLS = frozenset({"edit", "write", "bash"})
 
 
 # ---------------------------------------------------------------------------
-# Loop Guard — the main three-layer protection engine
+# 循环守卫 — 主三层保护引擎
 # ---------------------------------------------------------------------------
 
 class LoopGuard:
-    """Three-layer loop protection engine.
+    """三层循环保护引擎。
 
-    Layer 1 — Hard Limit: Absolute max iterations, never exceeded.
-    Layer 2 — Pattern Detection: Repeated calls, ping-pong, stall.
-    Layer 3 — Near-Limit Intelligence: Smart termination approaching limit.
+    第 1 层 — 硬限制：绝对最大迭代次数，永不超出。
+    第 2 层 — 模式检测：重复调用、乒乓、停滞。
+    第 3 层 — 接近限制智能：接近限制时智能终止。
     """
 
     def __init__(self, config: LoopGuardConfig | None = None):
@@ -312,17 +308,17 @@ class LoopGuard:
         self._total_text_length = 0
         self.cache = ToolResultCache(max_size=self.config.cache_max_size)
 
-    # --- Step management ---
+    # --- 步骤管理 ---
 
     def begin_step(self, iteration: int) -> StepState:
-        """Create and register a new step."""
+        """创建并注册一个新步骤。"""
         step = StepState(iteration=iteration)
         step.start()
         self._steps.append(step)
         return step
 
     def complete_step(self, step: StepState, text_length: int = 0) -> None:
-        """Mark a step as complete and update streaks."""
+        """标记步骤为完成并更新连续记录。"""
         step.complete(text_length)
         self._total_text_length += text_length
         if text_length > 0:
@@ -336,7 +332,7 @@ class LoopGuard:
 
     @property
     def checkpoint(self) -> dict[str, Any]:
-        """Serializable checkpoint for resume."""
+        """用于恢复的可序列化检查点。"""
         return {
             "steps": [s.to_dict() for s in self._steps],
             "empty_text_streak": self._empty_text_streak,
@@ -345,7 +341,7 @@ class LoopGuard:
             "cache_stats": self.cache.stats,
         }
 
-    # --- Tool call recording ---
+    # --- 工具调用记录 ---
 
     def record_tool_call(
         self,
@@ -364,10 +360,10 @@ class LoopGuard:
         )
         self._history.append(record)
 
-        # Cache invalidation for mutating tools — always invalidate, even on error,
-        # because the tool may have partially modified files before failing.
-        # `edit`/`write` target a specific file so we can do a surgical evict;
-        # `bash` is opaque and we fall back to a full clear.
+        # 变异工具的缓存失效 — 即使在错误时也要失效，
+        # 因为工具可能在失败前已部分修改了文件。
+        # `edit`/`write` 针对特定文件，因此我们可以进行精确驱逐；
+        # `bash` 是不透明的，我们回退到完全清除。
         if tool_name in MUTATING_TOOLS:
             touched = ToolResultCache._extract_files(tool_name, tool_input)
             if tool_name == "bash" or not touched:
@@ -378,12 +374,12 @@ class LoopGuard:
         elif not is_error and output:
             self.cache.put(tool_name, tool_input, output)
 
-    # --- Three-layer guard check ---
+    # --- 三层守卫检查 ---
 
     def check(self, iteration: int) -> GuardVerdict:
-        """Run all three guard layers. Call BEFORE each iteration.
+        """运行所有三层守卫。在每次迭代之前调用。
 
-        Returns the most restrictive verdict from any layer.
+        返回任何层中最严格的裁决。
         """
         # Layer 1: Hard limit (absolute, non-negotiable)
         v1 = self._check_hard_limit(iteration)
@@ -410,7 +406,7 @@ class LoopGuard:
 
         return GuardVerdict(action=GuardAction.CONTINUE, layer="all_clear")
 
-    # --- Layer 1: Hard Limit ---
+    # --- 第 1 层：硬限制 ---
 
     def _check_hard_limit(self, iteration: int) -> GuardVerdict:
         max_iter = self.config.max_iterations
@@ -433,7 +429,7 @@ class LoopGuard:
 
         return GuardVerdict(action=GuardAction.CONTINUE, layer="hard_limit")
 
-    # --- Layer 2: Pattern Detection ---
+    # --- 第 2 层：模式检测 ---
 
     def _check_patterns(self) -> GuardVerdict:
         if len(self._history) < 2:
@@ -441,17 +437,17 @@ class LoopGuard:
 
         history = list(self._history)
 
-        # 2a. Generic repeat: same tool + same input N times
+        # 2a. 通用重复：相同工具 + 相同输入 N 次
         repeat = self._detect_repeat(history)
         if repeat:
             return repeat
 
-        # 2b. Ping-pong: A→B→A→B alternation
+        # 2b. 乒乓：A→B→A→B 交替
         ping_pong = self._detect_ping_pong(history)
         if ping_pong:
             return ping_pong
 
-        # 2c. Stall: same output repeated (poll with no progress)
+        # 2c. 停滞：重复相同输出（无进展的轮询）
         stall = self._detect_stall(history)
         if stall:
             return stall
@@ -459,7 +455,7 @@ class LoopGuard:
         return GuardVerdict(action=GuardAction.CONTINUE, layer="pattern")
 
     def _detect_repeat(self, history: list[ToolCallRecord]) -> GuardVerdict | None:
-        """Detect same tool+input called repeatedly."""
+        """检测重复调用相同工具 + 相同输入。"""
         threshold = self.config.repeat_threshold
         if len(history) < threshold:
             return None
@@ -475,7 +471,7 @@ class LoopGuard:
         return None
 
     def _detect_ping_pong(self, history: list[ToolCallRecord]) -> GuardVerdict | None:
-        """Detect A→B→A→B alternation pattern with same inputs."""
+        """检测相同输入的 A→B→A→B 交替模式。"""
         threshold = self.config.ping_pong_threshold
         needed = threshold * 2  # Need 2N entries for N ping-pong pairs
         if len(history) < needed:
@@ -493,8 +489,8 @@ class LoopGuard:
         if not is_alternating:
             return None
 
-        # Also verify inputs repeat — legitimate work with different inputs is not ping-pong
-        # Group by tool and check that each tool's input_hash is the same across all its calls
+        # 还要验证输入是否重复 — 使用不同输入的合法工作不是乒乓
+        # 按工具分组，检查每个工具的 input_hash 在其所有调用中是否相同
         tool_inputs: dict[str, set[str]] = {}
         for r in recent:
             tool_inputs.setdefault(r.tool_name, set()).add(r.input_hash)
@@ -508,7 +504,7 @@ class LoopGuard:
         return None
 
     def _detect_stall(self, history: list[ToolCallRecord]) -> GuardVerdict | None:
-        """Detect same tool+input+output repeated (no progress)."""
+        """检测重复相同工具 + 输入 + 输出（无进展）。"""
         threshold = self.config.stall_threshold
         if len(history) < threshold:
             return None
@@ -516,8 +512,8 @@ class LoopGuard:
         recent = history[-threshold:]
         first = recent[0]
 
-        # For tools with output: check tool+input+output all match (true stall)
-        # For tools without output (e.g. silent bash): check tool+input match (repeated no-op)
+        # 对于有输出的工具：检查工具 + 输入 + 输出是否全部匹配（真正的停滞）
+        # 对于没有输出的工具（例如静默 bash）：检查工具 + 输入是否匹配（重复的空操作）
         if first.output_hash:
             if all(
                 r.tool_name == first.tool_name
@@ -545,7 +541,7 @@ class LoopGuard:
                 )
         return None
 
-    # --- Layer 3: Near-Limit Intelligence ---
+    # --- 第 3 层：接近限制智能 ---
 
     def _check_near_limit(self, iteration: int) -> GuardVerdict:
         max_iter = self.config.max_iterations
@@ -554,10 +550,10 @@ class LoopGuard:
         if iteration < near_limit:
             return GuardVerdict(action=GuardAction.CONTINUE, layer="near_limit")
 
-        # Near the limit: check if we're making progress
+        # 接近限制：检查我们是否在取得进展
         remaining = max_iter - iteration
 
-        # If we've had N consecutive iterations with no text output, suggest stopping
+        # 如果我们已连续 N 次迭代没有文本输出，建议停止
         if self._empty_text_streak >= self.config.empty_text_streak_limit:
             return GuardVerdict(
                 action=GuardAction.STOP,
@@ -565,7 +561,7 @@ class LoopGuard:
                 layer="near_limit.no_progress",
             )
 
-        # If recent tool calls are all errors, stop early
+        # 如果最近的工具调用都是错误，提前停止
         recent_errors = sum(1 for r in list(self._history)[-3:] if r.is_error)
         if recent_errors >= 3:
             return GuardVerdict(
@@ -580,10 +576,10 @@ class LoopGuard:
             layer="near_limit",
         )
 
-    # --- Retry logic ---
+    # --- 重试逻辑 ---
 
     def should_retry(self, tool_name: str, error: str, retry_count: int) -> bool:
-        """Decide if a failed tool call should be retried."""
+        """决定失败的工具调用是否应该重试。"""
         if retry_count >= self.config.max_retries:
             return False
         # Don't retry validation errors or permission errors

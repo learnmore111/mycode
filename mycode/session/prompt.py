@@ -1,12 +1,12 @@
-"""Session prompt — message sending entry point and agentic loop orchestration.
+"""会话提示词 — 消息发送入口点和智能体循环编排。
 
-Flow: validate → create messages → build system prompt → load tools → run agentic loop
+流程：验证 → 创建消息 → 构建系统提示词 → 加载工具 → 运行智能体循环
 
-Features:
-- Three-layer loop guard (hard limit, pattern detection, near-limit intelligence)
-- Per-step atomic state with checkpoint data
-- Result caching for read-only tool deduplication
-- Guard verdict events for CLI display
+功能：
+- 三层循环守卫（硬限制、模式检测、接近限制智能）
+- 带有检查点数据的每步原子状态
+- 只读工具去重结果缓存
+- 用于 CLI 显示的守卫裁决事件
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 logger = logmod.create(service="session.prompt")
 
-# Track busy sessions — use asyncio.Lock per session for TOCTOU safety
+# 跟踪繁忙会话 — 为每个会话使用 asyncio.Lock 以确保 TOCTOU 安全
 import asyncio as _aio  # noqa: E402  # noqa: E402
 
 _session_locks: dict[str, _aio.Lock] = {}
@@ -66,10 +66,10 @@ def _contains_cjk(text: str) -> bool:
 
 
 def _language_alignment_instruction(user_text: str) -> str | None:
-    """Return a lightweight language instruction derived from the user's text.
+    """返回从用户文本派生的轻量级语言指令。
 
-    We only add this when the user's current turn is clearly Chinese, so
-    the base provider prompt can stay stable for other languages.
+    仅当用户当前回合明显是中文时才添加此指令，
+    以便基础提供商提示词对其他语言保持稳定。
     """
     if not user_text.strip():
         return None
@@ -84,13 +84,13 @@ def _language_alignment_instruction(user_text: str) -> str | None:
 
 
 def is_session_busy(session_id: str) -> bool:
-    """Check if a session is currently being processed."""
+    """检查会话当前是否正在处理中。"""
     lock = _session_locks.get(session_id)
     return lock is not None and lock.locked()
 
 
 def _gc_session_locks_locked() -> None:
-    """Drop idle, unlocked session-lock entries. Must be called with _locks_mutex held."""
+    """删除空闲、未锁定的会话锁条目。必须在持有 _locks_mutex 时调用。"""
     now = time.time()
     stale: list[str] = []
     for sid, last in list(_session_lock_last_used.items()):
@@ -105,12 +105,12 @@ def _gc_session_locks_locked() -> None:
 
 
 async def _acquire_session(session_id: str) -> bool:
-    """Try to acquire a session for processing.
+    """尝试获取会话以进行处理。
 
-    Returns True if acquired, False if already busy.
-    Uses asyncio.Lock to prevent TOCTOU race conditions.
-    The locked() check and acquire() are both inside _locks_mutex
-    to prevent two coroutines from passing the check simultaneously.
+    如果获取成功则返回 True，如果已在忙则返回 False。
+    使用 asyncio.Lock 防止 TOCTOU 竞态条件。
+    locked() 检查和 acquire() 都在 _locks_mutex 内部，
+    以防止两个协程同时通过检查。
     """
     async with _locks_mutex:
         _gc_session_locks_locked()
@@ -127,7 +127,7 @@ async def _acquire_session(session_id: str) -> bool:
 
 
 def _release_session(session_id: str) -> None:
-    """Release a session after processing. Safe to call multiple times."""
+    """处理后释放会话。可以安全地多次调用。"""
     lock = _session_locks.get(session_id)
     if lock is None:
         return
@@ -149,28 +149,27 @@ class PromptInput:
     message_id: str | None = None
     variant: str | None = None
     system: str | None = None
-    # Optional abort signal. When set, both the agentic loop and the
-    # underlying llm.stream() watch it and bail out within one chunk
-    # rather than waiting for the current LLM response to finish.
+    # 可选的中止信号。设置后，智能体循环和底层 llm.stream()
+    # 都会监视它，并在一个块内退出，而不是等待当前 LLM 响应完成。
     abort_event: _aio.Event | None = None
 
 @dataclass
 class PromptEvent:
-    """Event yielded to the CLI layer.
+    """产生给 CLI 层的事件。
 
-    Types:
-      - "started":    Session started. data has model/agent info.
-      - "reasoning_delta": Incremental thinking text from LLM. data["content"] is the delta.
-      - "text_delta": Incremental text from LLM. data["content"] is the delta.
-      - "tool_start": A tool call identified. data["tool"], data["call_id"].
-      - "tool_running": Tool execution started. data["tool"], data["call_id"], data["input"].
-      - "tool_done":  Tool finished. data["tool"], data["status"], data["output"], data["input"].
-      - "error":      Error occurred. data["message"].
-      - "compact":    Context compaction in progress.
-      - "guard_warn": Loop guard warning. data["reason"], data["layer"].
-      - "guard_stop": Loop guard stopped the loop. data["reason"], data["layer"].
-      - "context_snapshot": Full context snapshot before LLM call. data has system/tools/messages/summary.
-      - "done":       All iterations finished. data has tokens/cost/context stats.
+    类型：
+      - "started":    会话已启动。data 包含模型/代理信息。
+      - "reasoning_delta": LLM 的增量思考文本。data["content"] 是增量。
+      - "text_delta": LLM 的增量文本。data["content"] 是增量。
+      - "tool_start": 已识别工具调用。data["tool"]、data["call_id"]。
+      - "tool_running": 工具执行已开始。data["tool"]、data["call_id"]、data["input"]。
+      - "tool_done":  工具已完成。data["tool"]、data["status"]、data["output"]、data["input"]。
+      - "error":      发生错误。data["message"]。
+      - "compact":    上下文压缩进行中。
+      - "guard_warn": 循环守卫警告。data["reason"]、data["layer"]。
+      - "guard_stop": 循环守卫停止了循环。data["reason"]、data["layer"]。
+      - "context_snapshot": LLM 调用前的完整上下文快照。data 包含 system/tools/messages/summary。
+      - "done":       所有迭代已完成。data 包含 tokens/cost/context 统计信息。
     """
     type: str
     data: dict[str, Any] = field(default_factory=dict)
@@ -184,16 +183,15 @@ async def prompt(
     debug: bool = False,
     permission_manager: PermissionManager | None = None,
 ) -> AsyncGenerator[PromptEvent, None]:
-    """Send a message and stream the AI response.
+    """发送消息并流式传输 AI 响应。
 
-    This is the main entry point for the agentic loop.
-    Yields PromptEvent in real-time as the model generates text and executes tools.
+    这是智能体循环的主要入口点。
+    在模型生成文本和执行工具时实时产生 PromptEvent。
 
-    Args:
-        permission_manager: External PermissionManager instance. When provided
-            (e.g. by the HTTP server), permission "ask" requests are published
-            through this manager so the frontend can reply. When None, a local
-            instance is created (suitable for CLI or headless mode).
+    参数:
+        permission_manager: 外部 PermissionManager 实例。提供时
+            （例如由 HTTP 服务器），权限 "ask" 请求通过此管理器发布，
+            以便前端可以回复。为 None 时，创建本地实例（适用于 CLI 或 headless 模式）。
     """
     session_id = prompt_input.session_id
 
@@ -226,30 +224,27 @@ async def prompt(
         if prompt_input.system:
             system.append(prompt_input.system)
 
-        # Memory and skills are now injected as system-reminder messages (not in system prompt)
-        # This keeps the system prompt static for prefix cache reuse across sessions
+        # 内存和技能现在作为系统提醒消息注入（不在系统提示词中）
+        # 这使系统提示词保持静态，以便跨会话复用前缀缓存
 
         # Load tools
         tool_registry.register_builtins()
         tools = tool_registry.to_llm_tools()
 
-        # Pre-compute system + tools token estimates for compaction checks
-        # and the context bar fallback. The cached variant avoids redoing
-        # a ~80KB JSON-to-bytes encode every turn; the payload changes only
-        # when the agent prompt or tool registry changes.
+        # 预计算系统 + 工具 token 估计值，用于压缩检查和上下文栏回退。
+        # 缓存变体避免了每次回合重新执行约 80KB 的 JSON 到字节编码；
+        # 负载仅在代理提示词或工具注册表更改时才会变化。
         system_tokens_est = compaction.estimate_tokens_cached("\n\n".join(system))
         tools_tokens_est = (
             compaction.estimate_tokens_cached(json.dumps(tools, ensure_ascii=False))
             if tools else 0
         )
 
-        # Build user message content.
+        # 构建用户消息内容。
         #
-        # Backward compatible: if all parts are plain text we keep the
-        # legacy string form. If any part is an image / pdf / audio we
-        # emit the OpenAI-compatible content-list used by LLM providers
-        # that accept multimodal input (litellm normalises the shape
-        # downstream for Anthropic/Gemini).
+        # 向后兼容：如果所有部分都是纯文本，我们保留传统字符串形式。
+        # 如果任何部分是图片 / PDF / 音频，我们发出 OpenAI 兼容的内容列表，
+        # 供接受多模态输入的 LLM 提供商使用（litellm 会在下游为 Anthropic/Gemini 规范化形状）。
         user_text = ""
         attachment_parts: list[dict[str, Any]] = []
         for part in prompt_input.parts:
@@ -306,8 +301,8 @@ async def prompt(
         if language_instruction:
             system.append(language_instruction)
 
-        # Persist the exact system prompt used for this turn so history views
-        # can reconstruct the context window without depending on frontend guesses.
+        # 持久化此回合使用的确切系统提示词，以便历史视图可以
+        # 在不依赖前端猜测的情况下重建上下文窗口。
         assistant_system = list(system)
 
         # Build conversation messages
@@ -323,15 +318,14 @@ async def prompt(
                 if freed > 0:
                     logger.info("proactive cache-expiry prune", tokens_freed=freed)
 
-        # Create assistant message
+        # 创建助手消息
         user_msg = create_user_message(session_id, prompt_input.message_id)
         assistant_msg = create_assistant_message(
             session_id, user_msg.id, provider_id, model_id, agent_name,
         )
         assistant_msg.system = assistant_system
-        # Tag this turn so the rollback API can identify truncation points.
-        # ``next_turn_number`` is a DB lookup, not free — but it only runs
-        # once per prompt() call.
+        # 标记此回合，以便回滚 API 可以识别截断点。
+        # ``next_turn_number`` 是数据库查询，不是免费的 — 但它每个 prompt() 调用只运行一次。
         try:
             from mycode.session.message import next_turn_number
             assistant_msg.turn_number = next_turn_number(session_id)  # type: ignore[attr-defined]
@@ -344,12 +338,12 @@ async def prompt(
             "agent": agent_name,
         })
 
-        # Initialize loop guard with three-layer protection
+        # 使用三层保护初始化循环守卫
         max_iterations = agent.steps or 50
         guard_config = LoopGuardConfig(max_iterations=max_iterations)
         guard = LoopGuard(config=guard_config)
 
-        # Build permission manager and agent permission ruleset
+        # 构建权限管理器和代理权限规则集
         perm_manager = permission_manager or PermissionManager(bus, project_id=session_id)
         agent_ruleset: list[Rule] = [
             Rule(
@@ -360,7 +354,7 @@ async def prompt(
             for r in (agent.permission or [])
         ]
 
-        # Agentic loop with loop guard
+        # 带循环守卫的智能体循环
         ctx = proc.ProcessorContext(
             session_id=session_id,
             model=model,
@@ -371,7 +365,7 @@ async def prompt(
             agent_permission=agent_ruleset,
         )
 
-        # Pre-build compaction kwargs so both call sites share the same args
+        # 预构建压缩 kwargs，以便两个调用点共享相同的参数
         compact_kwargs: dict[str, Any] = {
             "system": system,
             "tools": tools if model.capabilities.toolcall else None,
@@ -383,18 +377,17 @@ async def prompt(
         all_parts: list[Part] = []
         iterations_done = 0
         stop_reason = ""
-        prev_iter_usage: dict[str, int | float] | None = None  # Per-iteration usage from previous iteration
-        _reminder_user_messages: list[dict[str, Any]] = []  # system-reminder dicts to persist
+        prev_iter_usage: dict[str, int | float] | None = None  # 来自上一次迭代的每轮使用量
+        _reminder_user_messages: list[dict[str, Any]] = []  # 要持久化的系统提醒字典
 
-        # Initialize incremental reminder state from history so we don't
-        # re-send the full skills/date reminder on every new prompt() call
-        # when the session already contains previous reminders.
+        # 从历史记录初始化增量提醒状态，以便当会话已包含先前提醒时，
+        # 我们不会在每次新的 prompt() 调用时重新发送完整的技能/日期提醒。
         prev_skills, prev_date, prev_memory_index_hash = _extract_reminder_state_from_history(history)
 
         for iteration in range(max_iterations):
             iterations_done = iteration + 1
 
-            # === Loop Guard Check (BEFORE each iteration) ===
+            # === 循环守卫检查（每次迭代之前）===
             verdict = guard.check(iteration)
 
             if verdict.action == GuardAction.FORCE_STOP:
@@ -419,11 +412,11 @@ async def prompt(
                     "reason": verdict.reason, "layer": verdict.layer,
                 })
 
-            # === Step begin (atomic state) ===
+            # === 步骤开始（原子状态）===
             step = guard.begin_step(iteration)
 
-            # Context compaction check
-            # Fallback to 32K if model context limit is not configured (prevents unbounded growth)
+            # 上下文压缩检查
+            # 如果未配置模型上下文限制，则回退到 32K（防止无限制增长）
             context_limit = model.limit.context if model.limit.context > 0 else 32_000
             if context_limit > 0 and compaction.should_compact(
                 messages=messages,
@@ -461,10 +454,10 @@ async def prompt(
                     )
                 await _aio.to_thread(_save_compact_event)
 
-            # Build system-reminder (skills + memory + date) and attach it
-            # to the current user message instead of injecting a separate message.
-            # This keeps ContextViewer clean and avoids visual separation.
-            # Still track the reminder dict for DB persistence as a meta message.
+            # 构建系统提醒（技能 + 记忆 + 日期）并将其附加到当前用户消息，
+            # 而不是注入单独的消息。
+            # 这保持 ContextViewer 清洁并避免视觉分离。
+            # 仍然跟踪提醒字典，作为元消息进行数据库持久化。
             reminder_text, prev_skills, prev_date, prev_memory_index_hash = _build_system_reminders(
                 prompt_input,
                 prev_skills,
@@ -488,17 +481,17 @@ async def prompt(
                 abort_event=prompt_input.abort_event,
             )
 
-            # === Snapshot cumulative tokens BEFORE this iteration ===
-            # After process_stream, the delta = current - snapshot gives per-iteration usage.
+            # === 在此迭代之前快照累积 token ===
+            # process_stream 之后，delta = 当前 - 快照给出每轮使用量。
             tokens_snap_input = assistant_msg.tokens_input
             tokens_snap_output = assistant_msg.tokens_output
             tokens_snap_cache_read = assistant_msg.tokens_cache_read
             tokens_snap_cache_write = assistant_msg.tokens_cache_write
             tokens_snap_reasoning = assistant_msg.tokens_reasoning
 
-            # === Context snapshot for UI context viewer ===
-            # actual_usage shows the PREVIOUS iteration's per-iteration values
-            # (on iteration 0 there is no previous data, so None)
+            # === 用于 UI 上下文查看器的上下文快照 ===
+            # actual_usage 显示上一次迭代的每轮值
+            #（在迭代 0 时没有先前数据，因此为 None）
             snapshot_data = build_context_snapshot(
                 system=system,
                 tools=tools if model.capabilities.toolcall else None,
@@ -511,9 +504,9 @@ async def prompt(
             )
             yield PromptEvent(type="context_snapshot", data=snapshot_data)
 
-            # === Debug: dump input before LLM call ===
+            # === 调试：在 LLM 调用前转储输入 ===
             if debug:
-                # Collect cached tool_call_ids from previous iteration's parts
+                # 从上一轮迭代的片段中收集缓存的 tool_call_ids
                 cached_call_ids = []
                 if iteration > 0 and all_parts:
                     for p in all_parts:
@@ -563,7 +556,7 @@ async def prompt(
                     iteration_parts = event.data.get("parts", [])
                     iter_text_length = event.data.get("text_length", 0)
 
-            # === Step complete ===
+            # === 步骤完成 ===
             if step.status.value != "failed":
                 guard.complete_step(step, text_length=iter_text_length)
                 # Record tool calls for this step
@@ -575,7 +568,7 @@ async def prompt(
                             "cached": p.state.get("metadata", {}).get("cached", False),
                         })
 
-            # === Debug: dump output after LLM call ===
+            # === 调试：在 LLM 调用后转储输出 ===
             if debug:
                 tool_outputs = []
                 for p in iteration_parts:
@@ -599,7 +592,7 @@ async def prompt(
 
             all_parts.extend(iteration_parts)
 
-            # === Compute per-iteration token deltas ===
+            # === 计算每轮 token 增量 ===
             iter_input_tokens = assistant_msg.tokens_input - tokens_snap_input
             prev_iter_usage = {
                 "input_tokens": iter_input_tokens,
@@ -610,7 +603,7 @@ async def prompt(
                 "total_cost": assistant_msg.cost,  # cumulative cost is still useful
             }
 
-            # Token estimation telemetry — compare heuristic vs actual API usage
+            # Token 估计遥测 — 比较启发式与 API 实际使用量
             if iter_input_tokens > 0:
                 est = (
                     compaction.estimate_messages_tokens(iter_messages)
@@ -627,11 +620,11 @@ async def prompt(
                 messages.extend(tool_messages)
                 continue
 
-        # Finalize — persist in background (don't block the done event)
+        # 最终确定 — 在后台持久化（不要阻塞完成事件）
         assistant_msg.time_completed = int(time.time() * 1000)
 
-        # context.used = last iteration's input_tokens (= actual context window occupancy)
-        # Fallback to heuristic estimate including system+tools if no API data available.
+        # context.used = 上一轮迭代的 input_tokens（= 实际上下文窗口占用）
+        # 如果没有 API 数据，则回退到包含 system+tools 的启发式估计。
         last_iter_input = prev_iter_usage["input_tokens"] if prev_iter_usage else 0
         fallback_est = (
             compaction.estimate_messages_tokens(messages) + system_tokens_est + tools_tokens_est
@@ -659,13 +652,13 @@ async def prompt(
             "raw_usage": getattr(assistant_msg, "raw_usage", None),
         })
 
-        # Persist after yielding done (user sees result immediately)
+        # 在产生 done 之后持久化（用户立即看到结果）
 
-        # Save user message + text part + attachment file parts, then assistant turn
+        # 保存用户消息 + 文本片段 + 附件文件片段，然后是助手回合
         user_text_part = create_text_part(session_id, user_msg.id)
         user_text_part.content = user_text
 
-        # Create FileParts for each attachment so they survive rebuild_history
+        # 为每个附件创建 FilePart，以便它们在 rebuild_history 中保留
         user_file_parts: list[Part] = []
         for part in prompt_input.parts:
             ptype = part.get("type")
@@ -682,7 +675,7 @@ async def prompt(
                 )
                 user_file_parts.append(fp)
 
-        # Prepare system-reminder user messages for persistence
+        # 准备用于持久化的系统提醒用户消息
         reminder_persist: list[tuple[Any, Any]] = []
         for rmd in _reminder_user_messages:
             r_msg = create_user_message(session_id, is_meta=True, origin="system")
@@ -711,16 +704,15 @@ async def prompt(
 
 
 def _normalize_image_url(part: dict[str, Any]) -> str | None:
-    """Coerce a client-supplied image part into an ``image_url`` URL.
+    """将客户端提供的图片部分强制转换为 ``image_url`` URL。
 
-    Accepts three input shapes:
-      1) ``{"type": "image", "url": "https://…"}``              — passthrough
-      2) ``{"type": "image", "content": "data:image/…;base64,…"}`` — passthrough
+    接受三种输入形状：
+      1) ``{"type": "image", "url": "https://…"}``              — 直传
+      2) ``{"type": "image", "content": "data:image/…;base64,…"}`` — 直传
       3) ``{"type": "image", "content": "<raw-b64>", "mime": "image/png"}``
-         — wrap as ``data:<mime>;base64,<raw>`` so providers accept it.
-    Returns None if no usable payload is present. We deliberately do not
-    validate the base64 — litellm / the provider will reject bad data
-    with a specific error that is more actionable than ours.
+         — 包装为 ``data:<mime>;base64,<raw>`` 以便提供商接受。
+    如果没有可用的负载，则返回 None。我们故意不验证 base64 —
+    litellm / 提供商会拒绝错误数据，并给出比我们的更可操作的具体错误。
     """
     url = part.get("url")
     if isinstance(url, str) and url:
@@ -735,9 +727,9 @@ def _normalize_image_url(part: dict[str, Any]) -> str | None:
 
 
 def _debug_dump(session_id: str, iteration: int, phase: str, **data: Any) -> str:
-    """Write debug data to .mycode/debug/ as JSON files.
+    """将调试数据作为 JSON 文件写入 .mycode/debug/。
 
-    Returns the file path for display.
+    返回用于显示的文件路径。
     """
     import json
     from pathlib import Path

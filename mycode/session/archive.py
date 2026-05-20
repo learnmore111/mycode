@@ -1,29 +1,27 @@
-"""Session archive (export / import) — round-trip a whole session.
+"""会话归档（导出 / 导入）— 整个会话的往返传输。
 
-The archive format is a single UTF-8 JSON document with three top-level
-sections:
+归档格式是一个包含三个顶级区块的 UTF-8 JSON 文档：
 
     {
       "format": "mycode-session-archive",
       "version": 1,
       "exported_at": <unix-ms>,
-      "session":   { ...SessionTable row, minus project_id which is rebound
-                     on import... },
+      "session":   { ...SessionTable 行，去掉 project_id（导入时会重新绑定）... },
       "messages":  [ {..row, parts: [...] }, ... ],
       "compaction_events": [ ... ],
     }
 
-Design choices:
+设计选择：
 
-- **JSON not JSONL.** Single blob is easier to sign / encrypt / diff;
-  messages are small enough that a typical session stays under a few MB.
-- **No binary attachments yet.** Multimodal file parts (images, PDFs,
-  audio) are included as base64 payloads in the ``content`` field of
-  ``type=file`` parts — no special extraction needed.
-- **No snapshot-git content.** Shadow git commits are referenced by hash
-  (``message.snapshot_ref``) but we do not bundle the blob tree itself;
-  users who want full reproducibility should pair the archive with the
-  snapshot git repo under ``~/.local/share/mycode/snapshot/``.
+- **JSON 而非 JSONL。** 单个数据块更容易签名 / 加密 / 比对；
+  消息足够小，典型会话保持在几 MB 以内。
+- **暂不支持二进制附件。** 多模态文件片段（图片、PDF、
+  音频）以 base64 载荷的形式包含在 ``type=file`` 片段的 ``content`` 字段中 —
+  无需特殊提取。
+- **不包含 snapshot-git 内容。** 影子 git 提交通过哈希引用
+  （``message.snapshot_ref``），但我们不打包 blob 树本身；
+  需要完全可复现性的用户应将归档与
+  ``~/.local/share/mycode/snapshot/`` 下的快照 git 仓库配对使用。
 """
 
 from __future__ import annotations
@@ -88,7 +86,7 @@ def _part_to_dict(row: PartTable) -> dict[str, Any]:
 
 
 def export_session(session_id: str) -> dict[str, Any]:
-    """Serialise a session to an archive dict. Raises KeyError if absent."""
+    """将会话序列化为归档字典。如果不存在则抛出 KeyError。"""
     info = get_session(session_id)
 
     db = get_db_session()
@@ -126,7 +124,7 @@ def export_session(session_id: str) -> dict[str, Any]:
         compaction_events = []
 
     session_payload = _to_row_dict(info)
-    # project_id is rebound on import — drop it to keep the archive portable.
+    # project_id 在导入时重新绑定 — 删除它以保持归档的可移植性。
     session_payload.pop("project_id", None)
 
     return {
@@ -140,7 +138,7 @@ def export_session(session_id: str) -> dict[str, Any]:
 
 
 def export_session_json(session_id: str, *, indent: int | None = 2) -> str:
-    """Convenience: serialise to a JSON string (CLI-friendly)."""
+    """便捷方法：序列化为 JSON 字符串（CLI 友好）。"""
     return json.dumps(export_session(session_id), ensure_ascii=False, indent=indent)
 
 
@@ -163,19 +161,18 @@ def import_session(
     new_id: bool = True,
     title_prefix: str = "",
 ) -> SessionInfo:
-    """Import an archive into the current project context.
+    """将归档导入当前项目上下文。
 
-    Args:
-        archive: Parsed dict produced by ``export_session``.
-        new_id: When True (default) assign a fresh session ID and rewrite
-            every message/part to reference it. Leave False to preserve the
-            original ID — useful only if the caller has already verified
-            the ID is not already present.
-        title_prefix: Optional string prepended to the restored title so
-            imports are easy to spot in the sidebar (e.g. ``"[imported] "``).
+    参数:
+        archive: 由 ``export_session`` 生成的解析后字典。
+        new_id: 为 True 时（默认）分配一个新的会话 ID 并重写
+            每个消息/片段以引用它。设为 False 则保留原始 ID —
+            仅当调用方已确认该 ID 不存在时有用。
+        title_prefix: 可选字符串，添加到恢复的标题前，
+            以便在侧边栏中容易识别导入项（例如 ``"[imported] "``）。
 
-    Returns:
-        The ``SessionInfo`` written to the DB.
+    返回:
+        写入数据库的 ``SessionInfo``。
     """
     _require(archive)
 
@@ -194,21 +191,20 @@ def import_session(
     session_in["time_updated"] = int(time.time() * 1000)
     session_in.setdefault("visible", 1)
 
-    # Map old message IDs → new ones so parent_id / parts stay consistent.
+    # 将旧消息 ID 映射到新 ID，以便 parent_id / 片段保持一致。
     id_map: dict[str, str] = {}
     for m in archive["messages"]:
         old = m.get("id")
         id_map[old] = ids.message_id() if new_id else old
 
-    # Persist everything in a single transaction.
+    # 在单个事务中持久化所有内容。
     db = get_db_session()
     try:
-        # Refresh create_session_row side-effect requires the context, but
-        # we assemble rows directly so the import is one commit.
+        # Refresh create_session_row 副作用需要上下文，但我们直接组装行，
+        # 以便导入是一次性提交。
         row = SessionTable(**{k: v for k, v in session_in.items() if v is not None})
-        # summary columns (additions/deletions/files/diffs) are stored flat
-        # in the DB but we exported via _to_row_dict which split them; the
-        # row already has them.
+        # summary 列（additions/deletions/files/diffs）在数据库中以扁平形式存储，
+        # 但我们通过 _to_row_dict 导出时已拆分它们；行中已包含这些列。
         db.merge(row)
 
         for m in archive["messages"]:
@@ -228,8 +224,8 @@ def import_session(
                 part_cols["id"] = new_part_id
                 part_cols["message_id"] = new_msg_id
                 part_cols["session_id"] = target_id
-                # `state` is a dict — the PartTable property setter expects
-                # dict and writes JSON. Use a row object so the setter fires.
+                # `state` 是一个字典 — PartTable 属性 setter 期望 dict 并写入 JSON。
+                # 使用行对象以便 setter 生效。
                 part_row = PartTable(
                     id=part_cols["id"],
                     message_id=part_cols["message_id"],
@@ -251,13 +247,12 @@ def import_session(
     finally:
         db.close()
 
-    # Re-read so the returned SessionInfo reflects whatever normalisation
-    # SQLAlchemy applied.
+    # 重新读取，以便返回的 SessionInfo 反映 SQLAlchemy 应用的任何规范化。
     return get_session(target_id)
 
 
 def import_session_json(payload: str, **kwargs: Any) -> SessionInfo:
-    """Convenience: parse a JSON string and import it."""
+    """便捷方法：解析 JSON 字符串并导入。"""
     archive = json.loads(payload)
     if not isinstance(archive, dict):
         raise ValueError("Archive must be a JSON object at the top level")
@@ -265,22 +260,20 @@ def import_session_json(payload: str, **kwargs: Any) -> SessionInfo:
 
 
 def fork_session(session_id: str, turn: int, *, title: str | None = None) -> SessionInfo:
-    """Create a new session that branches off after ``turn`` of ``session_id``.
+    """创建一个在 ``session_id`` 的 ``turn`` 之后分叉的新会话。
 
-    The new session shares the ancestor's messages up to and including the
-    given assistant turn, then diverges. This is distinct from a rollback:
-    the source session stays untouched, and the new session records its
-    lineage via ``SessionInfo.parent_id`` + the preserved ``snapshot_ref``
-    on its last assistant message.
+    新会话共享祖先的消息直到并包括给定的助手回合，然后分叉。
+    这与回滚不同：源会话保持不变，新会话通过
+    ``SessionInfo.parent_id`` + 其最后一条助手消息上保留的 ``snapshot_ref``
+    记录其血统。
 
-    Args:
-        session_id: The session to fork.
-        turn: Inclusive upper bound; messages with ``turn_number > turn``
-            are NOT copied.
-        title: Optional new title. Defaults to ``"<original> (fork @turn{N})"``.
+    参数:
+        session_id: 要分叉的会话。
+        turn: 包含性上限；``turn_number > turn`` 的消息不会被复制。
+        title: 可选的新标题。默认为 ``"<original> (fork @turn{N})"``。
 
-    Returns:
-        The newly created ``SessionInfo``.
+    返回:
+        新创建的 ``SessionInfo``。
     """
     if turn < 1:
         raise ValueError(f"turn must be >= 1 (got {turn})")
@@ -288,9 +281,9 @@ def fork_session(session_id: str, turn: int, *, title: str | None = None) -> Ses
     parent = get_session(session_id)
     archive = export_session(session_id)
 
-    # Drop any message (and its parts) past the cutoff turn. User messages
-    # are identified by proximity to assistants — keep everything whose
-    # time_created is <= the cutoff assistant message's time_created.
+    # 删除截止回合之后的任何消息（及其片段）。用户消息
+    # 通过与助手消息的接近程度来识别 — 保留所有
+    # time_created <= 截止助手消息 time_created 的消息。
     messages = archive.get("messages") or []
     cutoff_time: int | None = None
     for m in messages:
@@ -303,11 +296,11 @@ def fork_session(session_id: str, turn: int, *, title: str | None = None) -> Ses
     pruned = [m for m in messages if (m.get("time_created") or 0) <= cutoff_time]
     archive = {**archive, "messages": pruned}
 
-    # Retitle & drop any archived summary so the fork starts fresh.
+    # 重新命名并删除任何归档摘要，以便分叉从头开始。
     sess_payload = dict(archive["session"])
     sess_payload["parent_id"] = parent.id
     sess_payload["title"] = title or f"{parent.title} (fork @turn{turn})"
-    # Reset summary/diff aggregates — those describe the parent's state.
+    # 重置 summary/diff 聚合 — 它们描述的是父会话的状态。
     for key in ("summary_additions", "summary_deletions", "summary_files", "summary_diffs", "revert"):
         sess_payload[key] = None
     archive["session"] = sess_payload

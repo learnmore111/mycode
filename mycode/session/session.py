@@ -198,11 +198,10 @@ def touch(session_id: str) -> None:
 
 
 def remove(session_id: str) -> None:
-    """Soft-delete a session (set visible = 0).
+    """软删除会话（设置 visible = 0）。
 
-    Raises ``KeyError`` if no session with ``session_id`` exists, so callers
-    (CLI / HTTP) can surface an accurate result rather than reporting a
-    non-existent deletion as success.
+    如果不存在 ``session_id`` 对应的会话则抛出 ``KeyError``，
+    以便调用方（CLI / HTTP）可以显示准确结果，而不是将不存在的删除报告为成功。
     """
     db = get_db_session()
     try:
@@ -217,7 +216,7 @@ def remove(session_id: str) -> None:
 
     clear_paused_run(session_id)
 
-    # Clean up per-session in-memory state
+    # 清理每个会话的内存状态
     try:
         from mycode.tool.todo import clear_todos
 
@@ -227,7 +226,7 @@ def remove(session_id: str) -> None:
 
 
 def restore(session_id: str) -> None:
-    """Restore a soft-deleted session (set visible = 1)."""
+    """恢复软删除的会话（设置 visible = 1）。"""
     db = get_db_session()
     try:
         row = db.query(SessionTable).filter(SessionTable.id == session_id).first()
@@ -241,7 +240,7 @@ def restore(session_id: str) -> None:
 
 
 def list_deleted(*, project_id: str | None = None, directory: str | None = None, limit: int = 100) -> list[SessionInfo]:
-    """List soft-deleted sessions."""
+    """列出软删除的会话。"""
     ctx = current_or_none()
     pid = project_id or (ctx.project.id if ctx else None)
     workspace_id = _resolve_directory(directory) or (ctx.directory if ctx else None)

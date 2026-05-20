@@ -1,9 +1,9 @@
-"""Memory extractor — automatic memory extraction from conversations.
+"""记忆提取器 — 从对话中自动提取记忆。
 
-- Analyzes conversation history to extract memorable information
-- Classifies into four memory types (user/feedback/project/reference)
-- Skips extraction when agent has already written memories
-- Falls back to rule-based extraction if LLM unavailable
+- 分析对话历史以提取值得记忆的信息
+- 分类为四种记忆类型（user/feedback/project/reference）
+- 当代理已写入记忆时跳过提取
+- 如果 LLM 不可用，则回退到基于规则的提取
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ logger = logmod.create(service="session.memory.extractor")
 
 @dataclass
 class ExtractionResult:
-    """Result of memory extraction from a conversation."""
+    """从对话中提取记忆的结果。"""
     extracted: list[dict[str, Any]]  # [{name, description, type, content}]
     skipped_reason: str | None = None  # Why extraction was skipped
 
@@ -35,38 +35,38 @@ async def extract_memories(
     api_key: str | None = None,
     has_memory_writes_since: bool = False,
 ) -> ExtractionResult:
-    """Analyze conversation messages and extract memories to save.
+    """分析对话消息并提取要保存的记忆。
 
-    Args:
-        project_path: Project root path
-        messages: Conversation messages (OpenAI format)
-        model_name: LLM model name for extraction
-        api_key: API key for the model
-        has_memory_writes_since: If True, the agent already wrote memories this turn — skip
+    参数:
+        project_path: 项目根路径
+        messages: 对话消息（OpenAI 格式）
+        model_name: 用于提取的 LLM 模型名称
+        api_key: 模型的 API 密钥
+        has_memory_writes_since: 如果为 True，代理在本回合已写入记忆 — 跳过
 
-    Returns:
-        ExtractionResult with extracted memories
+    返回:
+        包含提取记忆的结果
     """
-    # Skip if agent already wrote memories
+    # 如果代理已写入记忆则跳过
     if has_memory_writes_since:
         return ExtractionResult(extracted=[], skipped_reason="agent already wrote memories this turn")
 
-    # Skip very short conversations
+    # 跳过非常短的对话
     user_messages = [m for m in messages if m.get("role") == "user"]
     if len(user_messages) < 2:
         return ExtractionResult(extracted=[], skipped_reason="conversation too short")
 
-    # Load existing memories to avoid duplicates
+    # 加载现有记忆以避免重复
     existing = scan_memory_files(project_path)
     existing_names = {e.name.lower() for e in existing}
 
-    # Try LLM extraction
+    # 尝试 LLM 提取
     if model_name and api_key:
         return await _extract_with_llm(
             project_path, messages, model_name, api_key, existing_names,
         )
 
-    # Fallback: rule-based extraction
+    # 回退：基于规则的提取
     return _extract_with_rules(project_path, messages, existing_names)
 
 
@@ -77,8 +77,8 @@ async def _extract_with_llm(
     api_key: str,
     existing_names: set[str],
 ) -> ExtractionResult:
-    """Extract memories using LLM analysis."""
-    # Build conversation summary for extraction
+    """使用 LLM 分析提取记忆。"""
+    # 构建用于提取的对话摘要
     conversation_text = _format_conversation(messages, max_chars=8000)
     existing_list = ", ".join(sorted(existing_names)[:20]) if existing_names else "(none)"
 
@@ -140,9 +140,9 @@ def _extract_with_rules(
     messages: list[dict[str, Any]],
     existing_names: set[str],
 ) -> ExtractionResult:
-    """Rule-based memory extraction (fallback when LLM unavailable).
+    """基于规则的记忆提取（LLM 不可用时的回退方案）。
 
-    Looks for explicit user instructions about preferences and work style.
+    查找关于偏好和工作风格的明确用户指示。
     """
     extracted: list[dict[str, Any]] = []
 
@@ -153,7 +153,7 @@ def _extract_with_rules(
         if not isinstance(content, str):
             continue
 
-        # Detect explicit preference statements
+        # 检测明确的偏好声明
         preference_patterns = [
             r"(?:always|never|prefer|don'?t|please|make sure|remember)\s+(.{10,100})",
             r"(?:I|we)\s+(?:prefer|like|want|need|use)\s+(.{10,100})",
@@ -172,14 +172,14 @@ def _extract_with_rules(
                     })
                     existing_names.add(name.lower())
 
-    return ExtractionResult(extracted=extracted[:3])  # Cap at 3
+    return ExtractionResult(extracted=extracted[:3])  # 上限为 3
 
 
 def save_extracted_memories(
     project_path: str,
     extraction: ExtractionResult,
 ) -> list[str]:
-    """Save extracted memories to disk. Returns list of saved file paths."""
+    """将提取的记忆保存到磁盘。返回已保存文件路径列表。"""
     saved: list[str] = []
     for mem in extraction.extracted:
         try:
@@ -197,20 +197,20 @@ def save_extracted_memories(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 
 def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 8000) -> str:
-    """Format conversation messages for the extraction prompt."""
+    """格式化对话消息以用于提取提示词。"""
     lines: list[str] = []
     total = 0
-    # Take last N messages to fit in budget
+    # 取最后 N 条消息以适应预算
     for msg in reversed(messages):
         role = msg.get("role", "?")
         content = msg.get("content", "")
         if isinstance(content, list):
-            # Content blocks (e.g., tool_use, text blocks from multimodal APIs)
+            # 内容块（例如 tool_use、来自多模态 API 的文本块）
             text_parts = [
                 b.get("text", "") for b in content
                 if isinstance(b, dict) and b.get("type") == "text"
@@ -227,7 +227,7 @@ def _format_conversation(messages: list[dict[str, Any]], max_chars: int = 8000) 
 
 
 def _parse_extraction_response(raw: str, existing_names: set[str]) -> list[dict[str, Any]]:
-    """Parse the LLM extraction response into memory dicts."""
+    """将 LLM 提取响应解析为记忆字典。"""
     blocks = raw.split("MEMORY_START")
     extracted: list[dict[str, Any]] = []
 
@@ -271,8 +271,8 @@ def _parse_extraction_response(raw: str, existing_names: set[str]) -> list[dict[
 
 
 def _infer_memory_name(text: str) -> str:
-    """Infer a short memory name from a text snippet."""
-    # Take first few meaningful words
+    """从文本片段推断短记忆名称。"""
+    # 取前几个有意义的单词
     words = re.findall(r"[a-zA-Z]+", text)[:4]
     if words:
         return "_".join(w.lower() for w in words)

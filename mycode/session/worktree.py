@@ -1,7 +1,6 @@
-"""Git worktree lifecycle management for isolated sub-agent execution.
+"""Git 工作树生命周期管理，用于隔离的子代理执行。
 
-Provides create/diff/apply/cleanup operations for temporary git worktrees
-used by the isolated sub-agent mode.
+为隔离子代理模式使用的临时 git 工作树提供创建/差异/应用/清理操作。
 """
 from __future__ import annotations
 
@@ -22,38 +21,38 @@ WORKTREE_DIR = ".mycode/worktrees"
 
 @dataclass
 class WorktreeInfo:
-    """Information about a created worktree."""
-    path: str          # Absolute path to the worktree directory
-    branch: str        # Branch name created for this worktree
-    base_commit: str   # The commit this worktree was branched from
-    task_id: str       # Unique identifier for this worktree
-    project_dir: str   # The original project directory (avoids fragile path math)
+    """已创建工作树的信息。"""
+    path: str          # 工作树目录的绝对路径
+    branch: str        # 为此工作树创建的分支名称
+    base_commit: str   # 此工作树基于的分支提交
+    task_id: str       # 此工作树的唯一标识符
+    project_dir: str   # 原始项目目录（避免脆弱的路径计算）
 
 
 async def create_worktree(project_dir: str, task_id: str | None = None) -> WorktreeInfo | None:
-    """Create a temporary git worktree for isolated sub-agent execution.
+    """为隔离的子代理执行创建临时 git 工作树。
 
-    Args:
-        project_dir: The main project directory (must be a git repo).
-        task_id: Optional unique identifier. Auto-generated if not provided.
+    参数:
+        project_dir: 主项目目录（必须是 git 仓库）。
+        task_id: 可选的唯一标识符。如果未提供则自动生成。
 
-    Returns:
-        WorktreeInfo on success, None if git is unavailable or not a git repo.
+    返回:
+        成功时返回 WorktreeInfo，如果 git 不可用或不是 git 仓库则返回 None。
     """
     if not git_available():
         logger.warn("git not available, cannot create worktree")
         return None
 
-    # Verify this is a git repo
+    # 验证这是一个 git 仓库
     code, _, _ = await git(["rev-parse", "--is-inside-work-tree"], cwd=project_dir)
     if code != 0:
         logger.warn("not a git repo, cannot create worktree", path=project_dir)
         return None
 
-    # Get current HEAD commit
+    # 获取当前 HEAD 提交
     code, head_out, _ = await git(["rev-parse", "HEAD"], cwd=project_dir)
     if code != 0:
-        # No commits yet — initialize with an empty commit
+        # 尚无提交 — 使用空提交初始化
         code, _, err = await git(
             ["commit", "--allow-empty", "-m", "initial (subagent worktree base)"],
             cwd=project_dir,
@@ -94,23 +93,23 @@ async def create_worktree(project_dir: str, task_id: str | None = None) -> Workt
 
 
 async def stage_and_collect(worktree: WorktreeInfo) -> tuple[str, list[str]]:
-    """Stage all changes and collect both diff and changed file list in one pass.
+    """暂存所有更改并一次性收集差异和变更文件列表。
 
-    Returns:
-        (diff_text, changed_file_list) — avoids running `git add -A` twice.
+    返回:
+        (diff_text, changed_file_list) — 避免重复运行 `git add -A`。
     """
     code, _, _ = await git(["add", "-A"], cwd=worktree.path)
     if code != 0:
         return "", []
 
-    # Get diff
+    # 获取 diff
     code, diff_out, _ = await git(
         ["diff", "--cached", "--no-ext-diff", worktree.base_commit],
         cwd=worktree.path,
     )
     diff = diff_out.strip() if code == 0 else ""
 
-    # Get changed file names
+    # 获取变更的文件名
     code, names_out, _ = await git(
         ["diff", "--cached", "--name-only", worktree.base_commit],
         cwd=worktree.path,
@@ -121,17 +120,17 @@ async def stage_and_collect(worktree: WorktreeInfo) -> tuple[str, list[str]]:
 
 
 async def apply_diff_text(diff: str, target_dir: str) -> bool:
-    """Apply a diff string to the target directory.
+    """将差异字符串应用到目标目录。
 
-    Accepts the diff text directly (caller already has it) to avoid redundant git ops.
+    直接接受差异文本（调用方已经拥有），以避免冗余的 git 操作。
 
-    Returns:
-        True if the patch was applied successfully, False otherwise.
+    返回:
+        如果补丁应用成功则返回 True，否则返回 False。
     """
     if not diff:
         return True
 
-    # Try with --3way first for better merge handling
+    # 首先尝试使用 --3way 以获得更好的合并处理
     proc = await asyncio.create_subprocess_exec(
         "git", "apply", "--3way",
         stdin=asyncio.subprocess.PIPE,
@@ -143,7 +142,7 @@ async def apply_diff_text(diff: str, target_dir: str) -> bool:
     code = proc.returncode or 0
 
     if code != 0:
-        # Fallback without --3way
+        # 不使用 --3way 的降级方案
         proc = await asyncio.create_subprocess_exec(
             "git", "apply",
             stdin=asyncio.subprocess.PIPE,
@@ -163,18 +162,17 @@ async def apply_diff_text(diff: str, target_dir: str) -> bool:
 
 
 async def cleanup_worktree(worktree: WorktreeInfo) -> None:
-    """Remove a worktree and its associated branch.
+    """移除工作树及其关联分支。
 
-    Safe to call even if the worktree was already removed or git is in an
-    unusual state. Never raises — every step is best-effort because this
-    runs in a `finally` block where raising would mask the real error
-    from the caller (typically an isolated sub-agent run).
+    即使工作树已被移除或 git 处于异常状态，也可以安全调用。从不抛出异常 —
+    每一步都是尽力而为，因为此函数运行在 `finally` 块中，抛出异常会掩盖
+    调用方的真正错误（通常是隔离子代理运行）。
     """
     project_dir = worktree.project_dir
     path = worktree.path
     branch = worktree.branch
 
-    # Step 1 — ask git to detach & remove the worktree metadata.
+    # 步骤 1 — 要求 git 分离并移除工作树元数据。
     try:
         code, _, err = await git(["worktree", "remove", "--force", path], cwd=project_dir)
         if code != 0:
@@ -182,10 +180,10 @@ async def cleanup_worktree(worktree: WorktreeInfo) -> None:
     except Exception as e:
         logger.warn("worktree remove raised, will fall back to rmtree", path=path, error=str(e))
 
-    # Step 2 — directory may still exist (especially after failed `remove`).
-    # Force-delete with `ignore_errors` so a stuck file (open editor, etc.)
-    # does not leak this error upstream. Retry a second time after a brief
-    # backoff because macOS fsevents sometimes hold a handle momentarily.
+    # 步骤 2 — 目录可能仍然存在（尤其是在 `remove` 失败后）。
+    # 使用 `ignore_errors` 强制删除，以便卡住文件（打开编辑器等）
+    # 不会向上泄漏此错误。在短暂退避后重试第二次，
+    # 因为 macOS fsevents 有时会短暂持有句柄。
     if os.path.exists(path):
         shutil.rmtree(path, ignore_errors=True)
         if os.path.exists(path):
@@ -194,7 +192,7 @@ async def cleanup_worktree(worktree: WorktreeInfo) -> None:
             if os.path.exists(path):
                 logger.warn("worktree directory still present after cleanup", path=path)
 
-    # Step 3 — best-effort branch / prune cleanup. Never raise.
+    # 步骤 3 — 尽力清理分支 / 修剪。绝不抛出异常。
     for args in (["branch", "-D", branch], ["worktree", "prune"]):
         try:
             await git(args, cwd=project_dir)

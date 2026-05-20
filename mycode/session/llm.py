@@ -1,6 +1,6 @@
-"""LLM streaming interface using litellm.
+"""使用 litellm 的 LLM 流式接口。
 
-Wraps litellm.acompletion to provide a unified streaming interface.
+包装 litellm.acompletion 以提供统一的流式接口。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 logger = logmod.create(service="llm")
 
-# Suppress litellm's verbose logging
+# 抑制 litellm 的冗长日志记录
 litellm.suppress_debug_info = True
 litellm.set_verbose = False  # type: ignore[attr-defined]
 _logging.getLogger("LiteLLM").setLevel(_logging.WARNING)
@@ -34,7 +34,7 @@ _logging.getLogger("httpx").setLevel(_logging.WARNING)
 
 @dataclass
 class StreamInput:
-    """Input for LLM streaming."""
+    """LLM 流式输入。"""
 
     model: Model
     messages: list[dict[str, Any]]
@@ -47,10 +47,9 @@ class StreamInput:
     stop: list[str] | None = None
     api_key: str | None = None
     api_base: str | None = None
-    # When set, stream() watches this event between chunks and tears the
-    # HTTP response down as soon as it fires — letting the processor
-    # react to user-initiated abort within one chunk rather than having
-    # to wait for the LLM to stop generating on its own.
+    # 设置后，stream() 在块之间监视此事件，并在触发时立即
+    # 终止 HTTP 响应 — 让处理器在一个块内响应用户发起的
+    # 中止，而不是等待 LLM 自行停止生成。
     abort_event: asyncio.Event | None = None
 
 
@@ -71,7 +70,7 @@ class ToolCallDelta:
     type: str = "tool-call"
     tool_call_id: str = ""
     tool_name: str = ""
-    args: str = ""  # JSON string of arguments
+    args: str = ""  # 参数的 JSON 字符串
 
 
 @dataclass
@@ -101,19 +100,18 @@ class FinishEvent:
 class ErrorEvent:
     type: str = "error"
     error: str = ""
-    # Classified code so callers (processor, UI, retry logic) can make
-    # decisions without matching on the error string. Values follow the
-    # familiar HTTP-ish taxonomy:
-    #   "rate_limit"       — 429 / throttled, safe to retry with backoff
-    #   "auth"             — invalid/expired credentials, DO NOT retry
-    #   "bad_request"      — invalid params, prompt too long, etc.
-    #   "context_overflow" — prompt exceeded model context window
-    #   "content_filter"   — provider refused on content policy grounds
-    #   "not_found"        — model / endpoint missing
-    #   "timeout"          — request timed out
-    #   "connection"       — transient network error, retryable
-    #   "server"           — 5xx upstream, retryable
-    #   "unknown"          — everything else
+    # 分类代码，以便调用方（处理器、UI、重试逻辑）可以在
+    # 不匹配错误字符串的情况下做出决策。值遵循常见的 HTTP 风格分类：
+    #   "rate_limit"       — 429 / 限流，可安全退避重试
+    #   "auth"             — 凭据无效/过期，不要重试
+    #   "bad_request"      — 参数无效、提示词过长等
+    #   "context_overflow" — 提示词超出模型上下文窗口
+    #   "content_filter"   — 提供商因内容政策拒绝
+    #   "not_found"        — 模型 / 端点缺失
+    #   "timeout"          — 请求超时
+    #   "connection"       — 临时网络错误，可重试
+    #   "server"           — 5xx 上游错误，可重试
+    #   "unknown"          — 其他所有情况
     error_code: str = "unknown"
     retryable: bool = False
     status_code: int | None = None
@@ -122,18 +120,18 @@ class ErrorEvent:
 async def _with_abort(
     response: Any, abort_event: asyncio.Event | None,
 ) -> AsyncGenerator[Any, None]:
-    """Iterate ``response`` but stop early if ``abort_event`` fires.
+    """迭代 ``response``，但如果 ``abort_event`` 触发则提前停止。
 
-    litellm's streaming response is an async iterator. If we simply
-    ``async for chunk in response`` the only exit point is exhaustion or
-    an upstream error — a user hitting abort could wait tens of seconds
-    for the LLM to stop talking. Here we race each ``__anext__`` call
-    against the abort event and break out cleanly as soon as it's set.
+    litellm 的流式响应是一个异步迭代器。如果我们简单地
+    ``async for chunk in response``，唯一的退出点是耗尽或
+    上游错误 — 用户点击中止可能需要等待数十秒
+    才能让 LLM 停止输出。这里我们将每个 ``__anext__`` 调用
+    与中止事件竞争，并在事件设置后立即干净地中断。
     """
-    if abort_event is None:
-        async for chunk in response:
-            yield chunk
-        return
+        if abort_event is None:
+            async for chunk in response:
+                yield chunk
+            return
 
     it = response.__aiter__()
     while True:
@@ -150,8 +148,8 @@ async def _with_abort(
                 return
             yield chunk
         else:
-            # Abort fired first. Cancel the in-flight chunk read and
-            # close the upstream response so the provider stops sending.
+            # 中止事件先触发。取消正在进行的块读取并
+            # 关闭上游响应，以便提供商停止发送。
             next_task.cancel()
             with contextlib.suppress(BaseException):
                 close = getattr(response, "aclose", None) or getattr(response, "close", None)
@@ -159,18 +157,18 @@ async def _with_abort(
                     maybe = close()
                     if asyncio.iscoroutine(maybe):
                         await maybe
-            logger.info("stream aborted by consumer")
+            logger.info("流被消费者中止")
             return
 
 
 def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
-    """Map a litellm / generic exception to (error_code, retryable, status)."""
-    # Timeouts first — both asyncio.TimeoutError and litellm wrap one.
+    """将 litellm / 通用异常映射为 (error_code, retryable, status)。"""
+    # 超时优先 — asyncio.TimeoutError 和 litellm 都会包装它。
     if isinstance(exc, TimeoutError | asyncio.TimeoutError):
         return "timeout", True, None
 
-    # litellm may not import cleanly on every platform; attribute probe is
-    # safer than isinstance against classes we might fail to resolve.
+    # litellm 可能无法在每个平台上干净地导入；属性探测比
+    # 对我们可能无法解析的类使用 isinstance 更安全。
     name = type(exc).__name__
     status = getattr(exc, "status_code", None)
 
@@ -195,7 +193,7 @@ def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
         "APIError": ("server", True),
     }
     code, retryable = mapping.get(name, ("unknown", False))
-    # Fall back to status_code hints when the class name is unfamiliar.
+    # 当类名不熟悉时，回退到 status_code 提示。
     if code == "unknown" and isinstance(status, int):
         if status == 429:
             return "rate_limit", True, status
@@ -210,7 +208,7 @@ def _classify_exception(exc: BaseException) -> tuple[str, bool, int | None]:
     return code, retryable, status if isinstance(status, int) else None
 
 
-# Union type for stream events
+# 流事件的联合类型
 StreamEvent = ReasoningDelta | TextDelta | ToolCallDelta | ToolCallPartial | ToolCallArgsPartial | FinishEvent | ErrorEvent
 
 
@@ -240,7 +238,7 @@ DASHSCOPE_EXPLICIT_CACHE_PREFIX_MODELS = (
 
 
 def _usage_get(obj: Any, key: str, default: Any = 0) -> Any:
-    """Read a usage field from either an object or dict-like payload."""
+    """从对象或类字典负载中读取使用量字段。"""
     if obj is None:
         return default
     if isinstance(obj, dict):
@@ -249,7 +247,7 @@ def _usage_get(obj: Any, key: str, default: Any = 0) -> Any:
 
 
 def _usage_get_path(obj: Any, *path: str, default: Any = 0) -> Any:
-    """Walk nested usage payloads across object and dict representations."""
+    """遍历对象和字典表示中的嵌套使用量负载。"""
     current = obj
     for key in path:
         current = _usage_get(current, key, None)
@@ -259,7 +257,7 @@ def _usage_get_path(obj: Any, *path: str, default: Any = 0) -> Any:
 
 
 def _dashscope_explicit_cache_content(text: str) -> list[dict[str, Any]]:
-    """Build a DashScope OpenAI-compatible content block with explicit cache."""
+    """构建带有显式缓存的 DashScope OpenAI 兼容内容块。"""
     return [{
         "type": "text",
         "text": text,
@@ -270,13 +268,13 @@ def _dashscope_explicit_cache_content(text: str) -> list[dict[str, Any]]:
 def _add_cache_control_to_content(
     content: str | list[dict[str, Any]] | None,
 ) -> str | list[dict[str, Any]]:
-    """Inject a cache_control marker into a message's content field.
+    """向消息的内容字段注入 cache_control 标记。
 
-    Handles three formats:
-      - ``None`` / falsy → returned as-is (e.g. assistant with only tool_calls)
-      - ``str`` → wrapped into a single content block with the marker
-      - ``list`` (existing content blocks) → marker appended to the last text block,
-        or a new text block is created if none exists.
+    处理三种格式：
+      - ``None`` / 假值 → 原样返回（例如只有 tool_calls 的助手消息）
+      - ``str`` → 包装为带有标记的单个内容块
+      - ``list``（现有内容块）→ 将标记附加到最后一个文本块，
+        如果不存在文本块则创建一个新文本块。
     """
     if not content:
         return content
@@ -284,16 +282,16 @@ def _add_cache_control_to_content(
     if isinstance(content, str):
         return [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
 
-    # list of content blocks — mutate a shallow copy
+    # 内容块列表 — 对浅拷贝进行修改
     blocks = list(content)
-    # Find the last text-type block to attach the marker to
+    # 查找最后一个文本类型块以附加标记
     for idx in range(len(blocks) - 1, -1, -1):
         block = blocks[idx]
         if isinstance(block, dict) and block.get("type") == "text":
             blocks[idx] = {**block, "cache_control": {"type": "ephemeral"}}
             return blocks
 
-    # No text block found; append an empty anchor block
+    # 未找到文本块；附加一个空锚点块
     blocks.append({"type": "text", "text": "", "cache_control": {"type": "ephemeral"}})
     return blocks
 
@@ -304,26 +302,23 @@ _MAX_CACHE_MARKERS = 4  # DashScope per-request limit
 def _inject_dashscope_cache_markers(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Place DashScope explicit-cache markers at the optimal prefix boundary.
+    """在最佳前缀边界处放置 DashScope 显式缓存标记。
 
-    **Strategy**
+    **策略**
 
-    In an agentic loop the *last* message in ``messages`` is always the
-    newest turn (typically a user message carrying a system-reminder or a fresh
-    instruction).  Everything preceding it – system prompt, prior conversation
-    turns, tool results – forms a stable **prefix** that will be re-sent
-    verbatim on the next iteration.
+    在智能体循环中，``messages`` 中的 *最后* 一条消息始终是最新的回合
+    （通常是携带系统提醒或新指令的用户消息）。它之前的所有内容 —
+    系统提示词、先前的对话回合、工具结果 — 形成一个稳定的 **前缀**，
+    将在下一次迭代中原样重新发送。
 
-    We place **one** ``cache_control`` marker on the last message *before* the
-    final one.  DashScope then caches the entire prefix from the beginning of
-    the ``messages`` array up to that marker, so on subsequent requests only
-    the trailing new message incurs full input-token cost.
+    我们在最后一条消息 *之前* 的 *最后一条* 消息上放置 **一个** ``cache_control`` 标记。
+    DashScope 随后缓存从 ``messages`` 数组开头到该标记的整个前缀，
+    因此在后续请求中，只有尾部的新消息会产生完整的输入 token 成本。
 
-    **Fallback** – when there are fewer than 2 messages (e.g. the very first
-    turn), we mark only the system message.
+    **降级方案** – 当消息少于 2 条时（例如非常第一回合），我们只标记系统消息。
 
-    **Constraint** – DashScope allows at most :data:`_MAX_CACHE_MARKERS` markers
-    per request.  This function uses at most 2 (system + boundary).
+    **约束** – DashScope 每个请求最多允许 :data:`_MAX_CACHE_MARKERS` 个标记。
+    此函数最多使用 2 个（系统 + 边界）。
     """
     if not messages:
         return messages
@@ -356,7 +351,7 @@ def _inject_dashscope_cache_markers(
 
 
 def _msg_has_cache_control(msg: dict[str, Any]) -> bool:
-    """Check whether a message contains any cache_control in its content."""
+    """检查消息的内容中是否包含任何 cache_control。"""
     content = msg.get("content")
     if not content:
         return False
@@ -371,7 +366,7 @@ def _msg_has_cache_control(msg: dict[str, Any]) -> bool:
 
 
 def _should_use_dashscope_explicit_cache(stream_input: StreamInput) -> bool:
-    """Whether this request should opt into DashScope explicit prompt caching."""
+    """此请求是否应选择 DashScope 显式提示词缓存。"""
     model = stream_input.model
     if model.provider_id != "dashscope":
         return False
@@ -383,31 +378,31 @@ def _should_use_dashscope_explicit_cache(stream_input: StreamInput) -> bool:
 
 
 def _build_messages(stream_input: StreamInput) -> list[dict[str, Any]]:
-    """Build the messages list with system prompts prepended."""
+    """构建带有前置系统提示词的消息列表。"""
     messages: list[dict[str, Any]] = []
 
-    # Add system prompts (skip whitespace-only)
+    # 添加系统提示词（跳过仅空白字符的）
     if stream_input.system:
         system_content = "\n\n".join(stream_input.system)
         if system_content.strip():
-            # For DashScope explicit-cache models, cache markers are injected
-            # later by _inject_dashscope_cache_markers() so we emit plain text here.
+            # 对于 DashScope 显式缓存模型，缓存标记由 _inject_dashscope_cache_markers()
+            # 稍后注入，因此这里输出纯文本。
             messages.append({"role": "system", "content": system_content})
 
-    # Add conversation messages
+    # 添加对话消息
     messages.extend(stream_input.messages)
     return messages
 
 
 def _build_tools(stream_input: StreamInput) -> list[dict[str, Any]] | None:
-    """Convert tool definitions to litellm format."""
+    """将工具定义转换为 litellm 格式。"""
     if not stream_input.tools:
         return None
     return stream_input.tools
 
 
 async def _openai_stream_with_client(client: Any, response: Any) -> AsyncGenerator[Any, None]:
-    """Yield OpenAI stream chunks and close the client afterward."""
+    """产出 OpenAI 流块，然后关闭客户端。"""
     try:
         async for chunk in response:
             yield chunk
@@ -424,18 +419,17 @@ async def _dashscope_explicit_cache_response(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
 ) -> AsyncGenerator[Any, None]:
-    """Create a DashScope OpenAI-compatible stream that preserves cache_control blocks.
+    """创建一个保留 cache_control 块的 DashScope OpenAI 兼容流。
 
-    Cache-control markers are injected at optimal prefix boundaries by
-    :func:`_inject_dashscope_cache_markers` before the request is sent,
-    so that the stable conversation history (system + prior turns) is
-    cached and only the newest message pays full input-token cost.
+    在请求发送前，缓存控制标记由 :func:`_inject_dashscope_cache_markers`
+    注入到最佳前缀边界，以便稳定的对话历史（系统 + 先前回合）被缓存，
+    只有最新的消息支付完整的输入 token 成本。
     """
     from openai import AsyncOpenAI
 
     from mycode.provider.transform import build_litellm_kwargs
 
-    # Inject cache_control markers at system prompt and history boundary
+    # 在系统提示词和历史边界处注入 cache_control 标记
     marked_messages = _inject_dashscope_cache_markers(messages)
 
     client = AsyncOpenAI(api_key=stream_input.api_key, base_url=stream_input.api_base)
@@ -465,9 +459,9 @@ async def _dashscope_explicit_cache_response(
 
 
 async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]:
-    """Stream LLM responses using litellm.
+    """使用 litellm 流式传输 LLM 响应。
 
-    Yields StreamEvent objects as the model generates tokens.
+    在模型生成 token 时产出 StreamEvent 对象。
     """
     model_name = litellm_model_name(stream_input.model)
     messages = _build_messages(stream_input)
@@ -488,7 +482,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         "stream_options": {"include_usage": True},
     }
 
-    # Apply provider-specific transforms
+    # 应用提供商特定的转换
     from mycode.provider.transform import build_litellm_kwargs
     provider_kwargs = build_litellm_kwargs(stream_input.model)
     kwargs.update(provider_kwargs)
@@ -510,12 +504,12 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
     if stream_input.api_base:
         kwargs["api_base"] = stream_input.api_base
 
-    # Track tool calls being built across chunks
+    # 跟踪跨块构建的工具调用
     tool_calls_in_progress: dict[int, dict[str, Any]] = {}
-    # Accumulate usage across chunks (some providers send usage in a separate final chunk)
+    # 跨块累加使用量（某些提供商在单独的最后一个块中发送使用量）
     accumulated_usage: dict[str, int] = {}
     raw_usage_payload: dict[str, Any] | None = None
-    # Defer FinishEvent until stream ends (usage may arrive after finish_reason)
+    # 延迟 FinishEvent 直到流结束（使用量可能在 finish_reason 之后到达）
     pending_finish_reason: str | None = None
 
     try:
@@ -527,12 +521,11 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
         else:
             response = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=300)
 
-        # Consumer-initiated abort: race the next chunk against the abort
-        # event. Without this the user has to wait out the whole LLM
-        # response before the agent loop can unwind. We still let the
-        # current chunk land to avoid tearing the SSE parser mid-frame.
+        # 消费者发起的中止：将下一块与中止事件竞争。
+        # 没有此功能，用户必须等待整个 LLM 响应完成后，
+        # 代理循环才能退出。我们仍然让当前块落地，以避免在帧中间撕裂 SSE 解析器。
         async for chunk in _with_abort(response, stream_input.abort_event):
-            # Collect usage from any chunk that has it
+            # 从任何包含使用量的块中收集使用量
             if hasattr(chunk, "usage") and chunk.usage:
                 u = chunk.usage
                 raw_usage_payload = _serialize_usage(u)
@@ -554,7 +547,7 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                     "cache_write_tokens": _get_cache_write_tokens(u),
                 }
 
-            # Check for finish_reason (may come with or without delta)
+            # 检查 finish_reason（可能带或不带 delta）
             finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
             if finish_reason:
                 pending_finish_reason = finish_reason
@@ -572,12 +565,12 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             if not delta:
                 continue
 
-            # Provider reasoning / thinking content
+            # 提供商推理 / 思考内容
             for reasoning_text in _extract_reasoning_segments(delta):
                 if reasoning_text:
                     yield ReasoningDelta(text=reasoning_text)
 
-            # User-visible text content
+            # 用户可见的文本内容
             for text in _extract_text_segments(delta):
                 if text:
                     yield TextDelta(text=text)
@@ -610,12 +603,12 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
                             args_delta=tc.function.arguments,
                         )
 
-        # Stream ended — emit FinishEvent with complete usage data
+        # 流结束 — 发出带有完整使用量数据的 FinishEvent
         if pending_finish_reason:
             cost = _calc_cost(model_name, accumulated_usage)
             metrics.counter("llm_request_total", model=model_name, outcome="ok")
-            # Fallback: if provider didn't send raw usage, synthesise from accumulated
-            # so the frontend always has something to display.
+            # 降级方案：如果提供商未发送原始使用量，则从累积量合成，
+            # 以便前端始终有内容可显示。
             final_raw_usage = raw_usage_payload if raw_usage_payload is not None else dict(accumulated_usage)
             yield FinishEvent(
                 reason=_map_finish_reason(pending_finish_reason),
@@ -625,8 +618,8 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             )
 
     except asyncio.CancelledError:
-        # Propagate cancellation — consumers will run their own cleanup.
-        # Ensure we don't swallow the cancel by adding new yields below.
+        # 传播取消 — 消费者将运行自己的清理。
+        # 确保我们不会在下面添加新的 yield 时吞没取消信号。
         raise
     except Exception as e:
         code, retryable, status = _classify_exception(e)
@@ -640,11 +633,9 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             retryable=retryable,
             model=model_name,
         )
-        # Surface any in-flight tool calls as best-effort deltas BEFORE the
-        # error event. Without this, the processor layer would never see
-        # the tool call that was mid-assembly when the provider died, so
-        # subsequent retries could not attribute the failure to a specific
-        # call and would happily re-issue it.
+        # 在错误事件之前，将任何正在进行的工具调用作为尽力而为的 delta 发出。
+        # 没有此功能，处理器层将永远不会看到提供商故障时正在组装中的工具调用，
+        # 因此后续重试无法将失败归因于特定调用，并且会愉快地重新发出它。
         for entry in list(tool_calls_in_progress.values()):
             if entry.get("name"):
                 yield ToolCallDelta(
@@ -659,14 +650,14 @@ async def stream(stream_input: StreamInput) -> AsyncGenerator[StreamEvent, None]
             retryable=retryable,
             status_code=status,
         )
-        # Ensure a FinishEvent is always emitted so consumers don't hang
+        # 确保始终发出 FinishEvent，以便消费者不会挂起
         if not pending_finish_reason:
             cost = _calc_cost(model_name, accumulated_usage)
             yield FinishEvent(reason="error", usage=accumulated_usage, raw_usage=raw_usage_payload, cost=cost)
 
 
 def _get_reasoning_tokens(usage: Any) -> int:
-    """Extract reasoning tokens from various provider formats."""
+    """从各种提供商格式中提取推理 token。"""
     # OpenAI: usage.completion_tokens_details.reasoning_tokens
     val = _usage_get_path(usage, "completion_tokens_details", "reasoning_tokens", default=0)
     if val:
@@ -676,7 +667,7 @@ def _get_reasoning_tokens(usage: Any) -> int:
 
 
 def _get_cache_read_tokens(usage: Any) -> int:
-    """Extract cache read tokens."""
+    """提取缓存读取 token。"""
     # DeepSeek: usage.prompt_cache_hit_tokens
     val = _usage_get(usage, "prompt_cache_hit_tokens", 0)
     if val:
@@ -701,7 +692,7 @@ def _get_cache_read_tokens(usage: Any) -> int:
 
 
 def _get_cache_write_tokens(usage: Any) -> int:
-    """Extract cache write / miss tokens."""
+    """提取缓存写入 / 未命中 token。"""
     # DeepSeek: usage.prompt_cache_miss_tokens
     val = _usage_get(usage, "prompt_cache_miss_tokens", 0)
     if val:
@@ -734,7 +725,7 @@ def _get_cache_write_tokens(usage: Any) -> int:
 
 
 def _calc_cost(model_name: str, usage: dict[str, int]) -> float:
-    """Calculate cost using litellm's pricing data."""
+    """使用 litellm 的定价数据计算成本。"""
     if not usage or not usage.get("input_tokens"):
         return 0.0
     try:
@@ -749,7 +740,7 @@ def _calc_cost(model_name: str, usage: dict[str, int]) -> float:
 
 
 def _map_finish_reason(reason: str) -> str:
-    """Map provider finish reasons to our standard format."""
+    """将提供商的完成原因映射到我们的标准格式。"""
     if reason == "tool_calls":
         return "tool-calls"
     if reason == "length":
@@ -758,7 +749,7 @@ def _map_finish_reason(reason: str) -> str:
 
 
 def _extract_reasoning_segments(delta: Any) -> list[str]:
-    """Extract provider-specific reasoning/thinking text from a delta chunk."""
+    """从 delta 块中提取提供商特定的推理/思考文本。"""
     return _extract_delta_segments(
         delta,
         field_names=("reasoning_content", "reasoning", "thinking"),
@@ -766,7 +757,7 @@ def _extract_reasoning_segments(delta: Any) -> list[str]:
 
 
 def _extract_text_segments(delta: Any) -> list[str]:
-    """Extract normal assistant text from a delta chunk."""
+    """从 delta 块中提取正常的助手文本。"""
     return _extract_delta_segments(delta, field_names=("content",))
 
 
@@ -827,7 +818,7 @@ def _coerce_delta_segments(value: Any) -> list[str]:
 
 
 def _serialize_usage(value: Any) -> dict[str, Any] | None:
-    """Convert provider usage payloads into plain JSON-safe objects."""
+    """将提供商使用量负载转换为纯 JSON 安全对象。"""
     serialized = _serialize_jsonable(value)
     if isinstance(serialized, dict):
         return serialized

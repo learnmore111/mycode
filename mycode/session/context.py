@@ -1,14 +1,12 @@
-"""Context snapshot builder for UI context viewer.
+"""UI 上下文查看器的上下文快照构建器。
 
-Builds a structured snapshot of the full context sent to the LLM on each
-iteration of the agentic loop.  This powers the frontend "context viewer"
-panel, showing system prompt, tools, messages, estimated token usage,
-and **real API usage** when available.
+在智能体循环的每次迭代中，构建发送给 LLM 的完整上下文的结构化快照。
+这驱动了前端 "context viewer" 面板，显示系统提示词、工具、消息、
+预估 token 使用量以及可用时的 **真实 API 使用量**。
 
-Cache status is **never guessed** — it is only reported from actual
-``usage`` fields returned by the LLM provider.  If the provider does not
-return cache metrics, the UI shows an informational hint instead of
-fabricated numbers.
+缓存状态 **绝不猜测** — 仅根据 LLM 提供商返回的实际
+``usage`` 字段报告。如果提供商未返回缓存指标，
+UI 会显示信息提示而非编造数字。
 """
 
 from __future__ import annotations
@@ -41,36 +39,36 @@ def build_context_snapshot(
     actual_usage: dict[str, int | float] | None = None,
     raw_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a context snapshot for the UI context viewer.
+    """为 UI 上下文查看器构建上下文快照。
 
-    Parameters
+    参数
     ----------
     system:
-        System prompt sections (will be joined with ``\\n\\n``).
+        系统提示词部分（将使用 ``\\n\\n`` 连接）。
     tools:
-        LLM tool definitions (OpenAI function-calling format), or *None*.
+        LLM 工具定义（OpenAI 函数调用格式），或 *None*。
     messages:
-        The full message list about to be sent to the LLM.
+        即将发送给 LLM 的完整消息列表。
     model_id:
-        Fully-qualified model identifier (``provider/model``).
+        完全限定的模型标识符（``provider/model``）。
     context_limit:
-        Model context window size in tokens.
+        模型上下文窗口大小（以 token 计）。
     iteration:
-        Current agentic-loop iteration (0-based).
+        当前智能体循环迭代（从 0 开始）。
     has_history:
-        Whether the session was started with pre-existing history.
+        会话是否以预存历史启动。
     actual_usage:
-        Real token usage from the **previous** iteration's LLM API response.
-        Contains ``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
-        ``cache_write_tokens``, etc.  When *None* the frontend should display
-        a placeholder / hint rather than estimated cache numbers.
+        来自 **上一次** 迭代的 LLM API 响应的真实 token 使用量。
+        包含 ``input_tokens``、``output_tokens``、``cache_read_tokens``、
+        ``cache_write_tokens`` 等。为 *None* 时，前端应显示占位符 / 提示
+        而非预估缓存数字。
 
-    Returns
+    返回
     -------
     dict
-        Structured snapshot matching the ``context_snapshot`` event schema.
+        与 ``context_snapshot`` 事件模式匹配的结构化快照。
     """
-    # --- System prompt ---
+    # --- 系统提示词 ---
     system_text = "\n\n".join(system)
     system_tokens = estimate_tokens(system_text)
     system_info: dict[str, Any] = {
@@ -78,7 +76,7 @@ def build_context_snapshot(
         "estimated_tokens": system_tokens,
     }
 
-    # --- Tools ---
+    # --- 工具 ---
     if tools:
         tool_names = [t.get("function", {}).get("name", "?") for t in tools]
         tools_json = json.dumps(tools, ensure_ascii=False)
@@ -93,7 +91,7 @@ def build_context_snapshot(
         "estimated_tokens": tools_tokens,
     }
 
-    # --- Messages (no cache-status guessing) ---
+    # --- 消息（不猜测缓存状态）---
     msg_count = len(messages)
 
     message_infos: list[dict[str, Any]] = []
@@ -143,28 +141,26 @@ def build_context_snapshot(
                     info["estimated_tokens"] += estimate_tokens(fn.get("arguments", ""))
                     info["estimated_tokens"] += estimate_tokens(fn.get("name", ""))
 
-        # --- role=user / role=system / other ---
+        # --- role=user / role=system / 其他 ---
         else:
             info["content"] = content
             info["estimated_tokens"] = estimate_tokens(content)
 
-        # Detect compaction summary
+        # 检测压缩摘要
         if role == "user" and _COMPACTION_MARKER in content.lower():
             info["is_compaction_summary"] = True
             compaction_boundary_index = idx
 
-        # Detect and extract <system-reminder> injection.
-        # The reminder text is appended to user message content by
-        # _attach_reminder_to_last_user_message().  We extract it so the
-        # frontend can render it cleanly (badge + styled block) instead of
-        # showing raw XML tags.
+        # 检测并提取 <system-reminder> 注入。
+        # 提醒文本由 _attach_reminder_to_last_user_message() 附加到用户消息内容中。
+        # 我们提取它，以便前端可以清晰地渲染它（徽章 + 样式块），而不是显示原始 XML 标签。
         reminder_matches = _REMINDER_RE.findall(content)
         if reminder_matches:
             info["is_system_reminder"] = True
             info["system_reminder_content"] = "\n".join(
                 r.strip() for r in reminder_matches if r.strip()
             )
-            # Strip <system-reminder> blocks from displayed content
+            # 从显示内容中移除 <system-reminder> 块
             display_content = _REMINDER_RE.sub("", content).strip()
             info["content"] = display_content or "(系统提醒)"
             info["content_truncated"] = False
@@ -172,13 +168,13 @@ def build_context_snapshot(
 
         message_infos.append(info)
 
-    # --- Compaction info ---
+    # --- 压缩信息 ---
     compaction_info: dict[str, Any] = {
         "has_boundary": compaction_boundary_index is not None,
         "boundary_index": compaction_boundary_index,
     }
 
-    # --- Summary (heuristic total only, no fake cache split) ---
+    # --- 摘要（仅启发式总计，无虚假缓存拆分）---
     total_tokens = system_tokens + tools_tokens
 
     for mi in message_infos:
@@ -192,7 +188,7 @@ def build_context_snapshot(
         "usage_percent": usage_percent,
     }
 
-    # --- Real API usage from previous iteration ---
+    # --- 来自上一次迭代的真实 API 使用量 ---
     if actual_usage:
         actual_info: dict[str, Any] = {
             "input_tokens": actual_usage.get("input_tokens", 0),

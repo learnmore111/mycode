@@ -1,4 +1,4 @@
-"""Session management — the core agentic loop."""
+"""会话管理 — 核心智能体循环。"""
 from mycode.session.message import (
     AssistantMessage,
     MessageOrigin,

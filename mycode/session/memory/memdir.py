@@ -1,11 +1,11 @@
-"""Memory directory management — structured memory system.
+"""记忆目录管理 — 结构化记忆系统。
 
-- Four memory types: user, feedback, project, reference
-- Frontmatter-based memory files (YAML header + markdown body)
-- MEMORY.md index file as entry point
-- Path safety validation (prevents directory traversal)
-- Memory file scanning with frontmatter parsing
-- Memory freshness tracking
+- 四种记忆类型：user、feedback、project、reference
+- 基于 frontmatter 的记忆文件（YAML 头部 + markdown 正文）
+- MEMORY.md 索引文件作为入口点
+- 路径安全验证（防止目录遍历）
+- 带 frontmatter 解析的记忆文件扫描
+- 记忆新鲜度跟踪
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from mycode.util import log as logmod
 logger = logmod.create(service="session.memory.memdir")
 
 # ---------------------------------------------------------------------------
-# Memory types
+# 记忆类型
 # ---------------------------------------------------------------------------
 
 MemoryType = Literal["user", "feedback", "project", "reference"]
@@ -33,7 +33,7 @@ MEMORY_TYPE_DESCRIPTIONS: dict[MemoryType, str] = {
     "reference": "Pointers to information in external systems",
 }
 
-# What NOT to save as memories (can be derived from codebase)
+# 不应保存为记忆的内容（可以从代码库推导）
 MEMORY_EXCLUSIONS = [
     "Code patterns, architecture, file paths (use grep/git/CLAUDE.md)",
     "Git history (git log/blame is authoritative)",
@@ -42,12 +42,12 @@ MEMORY_EXCLUSIONS = [
     "Temporary task details",
 ]
 
-# Limits
+# 限制
 MAX_MEMORY_FILES = 200
 MAX_MEMORY_INDEX_LINES = 200
 MAX_MEMORY_INDEX_SIZE = 25 * 1024  # 25KB
 
-# Frontmatter regex
+# Frontmatter 正则表达式
 _FRONTMATTER_RE = re.compile(
     r"^---\s*\n(.*?)\n---\s*\n(.*)",
     re.DOTALL,
@@ -55,13 +55,13 @@ _FRONTMATTER_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Data models
+# 数据模型
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class MemoryEntry:
-    """A single memory file with parsed frontmatter."""
+    """带有解析 frontmatter 的单个记忆文件。"""
     path: str                  # Absolute path to memory file
     name: str                  # Memory name from frontmatter
     description: str           # One-line description
@@ -76,13 +76,13 @@ class MemoryEntry:
 
     @property
     def relative_path(self) -> str:
-        """Return just the filename without extension for display."""
+        """返回仅用于显示的不带扩展名的文件名。"""
         return Path(self.path).stem
 
 
 @dataclass
 class MemoryIndex:
-    """The MEMORY.md index with all discovered memories."""
+    """包含所有发现记忆的 MEMORY.md 索引。"""
     entries: list[MemoryEntry] = field(default_factory=list)
     base_dir: str = ""
 
@@ -95,15 +95,15 @@ class MemoryIndex:
 
 
 # ---------------------------------------------------------------------------
-# Path management
+# 路径管理
 # ---------------------------------------------------------------------------
 
 
 def memory_base_dir(project_path: str) -> str:
-    """Get the memory base directory for a project.
+    """获取项目的记忆基础目录。
 
-    Priority:
-    1. OPENCODE_MEMORY_DIR env var (full override)
+    优先级：
+    1. OPENCODE_MEMORY_DIR 环境变量（完全覆盖）
     2. <project>/.mycode/memory/
     """
     override = os.environ.get("OPENCODE_MEMORY_DIR")
@@ -113,24 +113,24 @@ def memory_base_dir(project_path: str) -> str:
 
 
 def memdir_path(project_path: str) -> str:
-    """Get the memdir directory (where structured memories live)."""
+    """获取 memdir 目录（结构化记忆所在位置）。"""
     return os.path.join(memory_base_dir(project_path), "memdir")
 
 
 def memory_index_path(project_path: str) -> str:
-    """Get the MEMORY.md index path for structured memories."""
+    """获取结构化记忆的 MEMORY.md 索引路径。"""
     return os.path.join(memdir_path(project_path), "MEMORY.md")
 
 
 def validate_memory_path(path: str) -> str | None:
-    """Validate a memory file path for safety.
+    """验证记忆文件路径的安全性。
 
-    Returns error message if unsafe, None if safe.
-    Rejects:
-    - Relative paths (../)
-    - Root / near-root paths
-    - Null bytes
-    - Non-absolute paths
+    如果不安全则返回错误消息，如果安全则返回 None。
+    拒绝：
+    - 相对路径（../）
+    - 根 / 近根路径
+    - 空字节
+    - 非绝对路径
     """
     if not path:
         return "Empty path"
@@ -143,22 +143,22 @@ def validate_memory_path(path: str) -> str | None:
 
     resolved = os.path.realpath(path)
 
-    # Check for near-root paths (e.g. /a, /b)
+    # 检查近根路径（例如 /a、/b）
     parts = Path(resolved).parts
     if len(parts) <= 2:
-        return f"Path too close to root: {resolved}"
+        return f"路径太接近根目录: {resolved}"
 
-    # Check for directory traversal
+    # 检查目录遍历
     if ".." in Path(path).parts:
-        return f"Path contains directory traversal: {path}"
+        return f"路径包含目录遍历: {path}"
 
     return None
 
 
 def sanitize_memory_name(name: str) -> str:
-    """Sanitize a memory name for use as filename.
+    """清理记忆名称以用作文件名。
 
-    Converts to lowercase, replaces spaces/special chars with underscores.
+    转换为小写，将空格/特殊字符替换为下划线。
     """
     safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", name.strip().lower())
     safe = re.sub(r"_+", "_", safe).strip("_")
@@ -166,15 +166,15 @@ def sanitize_memory_name(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Frontmatter parsing
+# Frontmatter 解析
 # ---------------------------------------------------------------------------
 
 
 def parse_frontmatter(content: str) -> tuple[dict[str, str], str]:
-    """Parse YAML frontmatter from a memory file.
+    """从记忆文件中解析 YAML frontmatter。
 
-    Returns (metadata_dict, body_text).
-    If no frontmatter found, returns ({}, full_content).
+    返回 (metadata_dict, body_text)。
+    如果未找到 frontmatter，则返回 ({}, full_content)。
     """
     match = _FRONTMATTER_RE.match(content)
     if not match:
@@ -183,7 +183,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, str], str]:
     yaml_block = match.group(1)
     body = match.group(2).strip()
 
-    # Simple YAML parser (key: value pairs only)
+    # 简单的 YAML 解析器（仅键值对）
     metadata: dict[str, str] = {}
     for line in yaml_block.split("\n"):
         line = line.strip()
@@ -203,7 +203,7 @@ def format_frontmatter(
     memory_type: MemoryType,
     body: str,
 ) -> str:
-    """Format a memory file with YAML frontmatter."""
+    """使用 YAML frontmatter 格式化记忆文件。"""
     return f"""---
 name: {name}
 description: {description}
@@ -215,15 +215,15 @@ type: {memory_type}
 
 
 # ---------------------------------------------------------------------------
-# Memory file scanning
+# 记忆文件扫描
 # ---------------------------------------------------------------------------
 
 
 def scan_memory_files(project_path: str) -> list[MemoryEntry]:
-    """Scan the memdir directory for all memory files with frontmatter.
+    """扫描 memdir 目录中所有带 frontmatter 的记忆文件。
 
-    Scans markdown memory files, parses frontmatter to extract name,
-    description, and type, then returns the newest MAX_MEMORY_FILES entries.
+    扫描 markdown 记忆文件，解析 frontmatter 以提取名称、
+    描述和类型，然后返回最新的 MAX_MEMORY_FILES 条目。
     """
     base = memdir_path(project_path)
     if not os.path.isdir(base):
@@ -266,7 +266,7 @@ def scan_memory_files(project_path: str) -> list[MemoryEntry]:
 
 
 def scan_memory_index(project_path: str) -> MemoryIndex:
-    """Scan and build a MemoryIndex from the project's memdir."""
+    """扫描并从项目的 memdir 构建 MemoryIndex。"""
     entries = scan_memory_files(project_path)
     return MemoryIndex(
         entries=entries,
@@ -275,14 +275,14 @@ def scan_memory_index(project_path: str) -> MemoryIndex:
 
 
 # ---------------------------------------------------------------------------
-# Memory manifest formatting (for retrieval)
+# 记忆清单格式化（用于检索）
 # ---------------------------------------------------------------------------
 
 
 def format_memory_manifest(entries: list[MemoryEntry]) -> str:
-    """Format memory entries as a manifest for LLM-based retrieval.
+    """将记忆条目格式化为基于 LLM 检索的清单。
 
-    Output format mirrors Claude Code's selector manifest:
+    输出格式镜像 Claude Code 的选择器清单：
     - [type] filename (ISO timestamp): description
     """
     lines: list[str] = []
@@ -294,12 +294,11 @@ def format_memory_manifest(entries: list[MemoryEntry]) -> str:
 
 
 def load_memory_index(project_path: str) -> str:
-    """Load the MEMORY.md index using Claude Code-style startup limits.
+    """使用 Claude Code 风格的启动限制加载 MEMORY.md 索引。
 
-    Claude Code treats the top-level memory file as a lightweight entry point:
-    it is always safe to include the first 200 lines or 25KB, while detailed
-    files are fetched on demand. Keep the same constraints here so the index
-    can guide the model without crowding out task context.
+    Claude Code 将顶级记忆文件视为轻量级入口点：
+    始终安全地包含前 200 行或 25KB，而详细文件按需获取。
+    在此处保持相同的限制，以便索引可以引导模型而不会挤占任务上下文。
     """
     path = memory_index_path(project_path)
     if not os.path.isfile(path):
@@ -332,13 +331,13 @@ def load_memory_index(project_path: str) -> str:
     if was_line_truncated or was_byte_truncated:
         reasons = []
         if was_line_truncated:
-            reasons.append(f"longer than {MAX_MEMORY_INDEX_LINES} lines")
+            reasons.append(f"超过 {MAX_MEMORY_INDEX_LINES} 行")
         if was_byte_truncated:
-            reasons.append(f"larger than {MAX_MEMORY_INDEX_SIZE} bytes")
+            reasons.append(f"超过 {MAX_MEMORY_INDEX_SIZE} 字节")
         reason = " and ".join(reasons)
         warning = (
-            f"> WARNING: MEMORY.md is {reason}. Only part of it was loaded. "
-            "Keep index entries to one line under ~200 chars; move detail into topic files."
+            f"> 警告：MEMORY.md {reason}。仅加载了部分内容。"
+            "将索引条目保持在约 200 字符以内的一行；将详细信息移至主题文件中。"
         )
         truncated = f"{truncated}\n\n{warning}" if truncated else warning
 
@@ -346,12 +345,12 @@ def load_memory_index(project_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# MEMORY.md index management
+# MEMORY.md 索引管理
 # ---------------------------------------------------------------------------
 
 
 def build_memory_index_content(entries: list[MemoryEntry]) -> str:
-    """Build the content for MEMORY.md index file."""
+    """构建 MEMORY.md 索引文件的内容。"""
     lines: list[str] = [
         "# Memory Index",
         "",
@@ -375,7 +374,7 @@ def build_memory_index_content(entries: list[MemoryEntry]) -> str:
 
 
 def update_memory_index(project_path: str) -> str:
-    """Rebuild and write the MEMORY.md index file. Returns the index path."""
+    """重建并写入 MEMORY.md 索引文件。返回索引路径。"""
     entries = scan_memory_files(project_path)
     content = build_memory_index_content(entries)
 
@@ -388,7 +387,7 @@ def update_memory_index(project_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Memory CRUD operations
+# 记忆 CRUD 操作
 # ---------------------------------------------------------------------------
 
 
@@ -399,7 +398,7 @@ def save_memory(
     memory_type: MemoryType,
     content: str,
 ) -> str:
-    """Save a new memory file to the memdir. Returns the file path."""
+    """将新记忆文件保存到 memdir。返回文件路径。"""
     base = memdir_path(project_path)
     os.makedirs(base, exist_ok=True)
 
@@ -416,11 +415,11 @@ def save_memory(
 
 
 def delete_memory(project_path: str, filename: str) -> bool:
-    """Delete a memory file. Returns True if deleted."""
+    """删除记忆文件。如果已删除则返回 True。"""
     base = memdir_path(project_path)
     filepath = os.path.join(base, filename)
 
-    # Safety check
+    # 安全检查
     error = validate_memory_path(filepath)
     if error:
         logger.warn("refused to delete memory", path=filepath, error=error)
@@ -432,7 +431,7 @@ def delete_memory(project_path: str, filename: str) -> bool:
     os.unlink(filepath)
     logger.info("deleted memory", path=filepath)
 
-    # Rebuild index
+    # 重建索引
     update_memory_index(project_path)
     return True
 
@@ -446,18 +445,18 @@ def update_memory(
     memory_type: MemoryType | None = None,
     content: str | None = None,
 ) -> str | None:
-    """Update an existing memory file. Returns path if updated, None if not found."""
+    """更新现有记忆文件。如果已更新则返回路径，如果未找到则返回 None。"""
     base = memdir_path(project_path)
     filepath = os.path.join(base, filename)
 
     if not os.path.isfile(filepath):
         return None
 
-    # Read existing
+    # 读取现有内容
     existing_content = Path(filepath).read_text(encoding="utf-8")
     metadata, body = parse_frontmatter(existing_content)
 
-    # Merge updates
+    # 合并更新
     final_name = name or metadata.get("name", Path(filepath).stem)
     final_desc = description or metadata.get("description", "")
     final_type = memory_type or metadata.get("type", "project")
@@ -475,7 +474,7 @@ def update_memory(
 
 
 # ---------------------------------------------------------------------------
-# Memory context formatting (for agent prompt injection)
+# 记忆上下文格式化（用于代理提示词注入）
 # ---------------------------------------------------------------------------
 
 
@@ -484,9 +483,9 @@ def format_memories_for_context(
     *,
     include_freshness: bool = True,
 ) -> str:
-    """Format selected memories for injection into agent system prompt.
+    """格式化选定的记忆以注入代理系统提示词。
 
-    Wraps each memory in XML tags with type and freshness info.
+    用 XML 标签包装每条记忆，包含类型和新鲜度信息。
     """
     from mycode.session.memory.memory import memory_freshness_note
 
@@ -498,7 +497,7 @@ def format_memories_for_context(
     for entry in entries:
         lines.append(f'<memory name="{entry.name}" type="{entry.memory_type}">')
 
-        # Freshness warning for stale memories
+        # 陈旧记忆的新鲜度警告
         if include_freshness and entry.mtime_ms > 0:
             note = memory_freshness_note(entry.mtime_ms)
             if note:

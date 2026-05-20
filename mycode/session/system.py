@@ -1,6 +1,6 @@
-"""System prompt assembly.
+"""系统提示词组装。
 
-Selects model-specific system prompts and builds environment info.
+选择模型特定的系统提示词并构建环境信息。
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ PROMPT_MAX_STEPS = _load_prompt("max-steps")
 
 
 def provider_prompt(model: Model) -> list[str]:
-    """Select model-specific system prompt based on the model API ID."""
+    """根据模型 API ID 选择模型特定的系统提示词。"""
     api_id = model.api.id.lower()
     if "gpt-4" in api_id or "o1" in api_id or "o3" in api_id:
         return [PROMPT_BEAST] if PROMPT_BEAST else [PROMPT_DEFAULT]
@@ -56,9 +56,9 @@ def provider_prompt(model: Model) -> list[str]:
 
 
 def _load_project_guidance(worktree: str) -> str | None:
-    """Load project guidance file if present.
+    """加载项目指导文件（如果存在）。
 
-    Looks for mycode.md, codebuddy.md or CLAUDE.md in the project root.
+    在项目根目录中查找 mycode.md、codebuddy.md 或 CLAUDE.md。
     """
     for name in ("mycode.md", "codebuddy.md", "CLAUDE.md", "Claude.md"):
         path = Path(worktree) / name
@@ -70,7 +70,7 @@ def _load_project_guidance(worktree: str) -> str | None:
 
 
 def environment(model: Model) -> list[str]:
-    """Build environment info system prompt."""
+    """构建环境信息系统提示词。"""
     ctx = current_or_none()
     cwd = ctx.directory if ctx else os.getcwd()
     worktree = ctx.worktree if ctx else cwd
@@ -99,7 +99,7 @@ def build(
     agent_prompt: str | None = None,
     instructions: list[str] | None = None,
 ) -> list[str]:
-    """Build the complete system prompt list for an LLM call."""
+    """为 LLM 调用构建完整的系统提示词列表。"""
     parts: list[str] = []
     dynamic_parts: list[str] = []
 

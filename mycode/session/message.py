@@ -1,9 +1,9 @@
-"""Message data models.
+"""消息数据模型。
 
-Features:
-- SystemMessage (info/warning/error/compact_boundary subtypes)
-- Message metadata: isMeta (hidden from UI but sent to model), origin tracking
-- Message normalization pipeline (normalizeMessagesForAPI)
+功能：
+- SystemMessage（info/warning/error/compact_boundary 子类型）
+- 消息元数据：isMeta（对 UI 隐藏但发送给模型）、来源跟踪
+- 消息规范化管道（normalizeMessagesForAPI）
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any, Literal
 from mycode.util import ids
 
 # ---------------------------------------------------------------------------
-# Message origin tracking
+# 消息来源跟踪
 # ---------------------------------------------------------------------------
 
 MessageOrigin = Literal[
@@ -30,7 +30,7 @@ MessageOrigin = Literal[
 
 
 # ---------------------------------------------------------------------------
-# Part types
+# 片段类型
 # ---------------------------------------------------------------------------
 
 
@@ -79,7 +79,7 @@ Part = TextPart | ToolPart | ReasoningPart | FilePart
 
 
 # ---------------------------------------------------------------------------
-# Message types
+# 消息类型
 # ---------------------------------------------------------------------------
 
 
@@ -209,11 +209,11 @@ def create_file_part(
     content: str,
     filename: str = "",
 ) -> FilePart:
-    """Create a :class:`FilePart` for an image / pdf / audio attachment.
+    """为图片 / PDF / 音频附件创建 :class:`FilePart`。
 
-    ``content`` is the base64-encoded payload (or a ``data:`` URI).
-    ``mime_type`` is e.g. ``image/png``, ``application/pdf``, ``audio/wav``.
-    ``filename`` is optional and stored in the DB ``tool`` column.
+    ``content`` 是 base64 编码的负载（或 ``data:`` URI）。
+    ``mime_type`` 例如 ``image/png``、``application/pdf``、``audio/wav``。
+    ``filename`` 是可选的，存储在数据库的 ``tool`` 列中。
     """
     return FilePart(
         id=ids.part_id(),
@@ -227,7 +227,7 @@ def create_file_part(
 
 
 # ---------------------------------------------------------------------------
-# Message normalization pipeline
+# 消息规范化管道
 # ---------------------------------------------------------------------------
 
 
@@ -236,27 +236,27 @@ def normalize_messages_for_api(
     *,
     include_system: bool = False,
 ) -> list[dict[str, Any]]:
-    """Normalize messages for sending to LLM API.
+    """规范化消息以发送给 LLM API。
 
-    Performs:
-    1. Filter out SystemMessage with subtype='local_command' (never sent to API)
-    2. Filter out compact_boundary markers (reserved, internal state only)
-    3. Optionally include system messages as user context
-    4. Ensure message format is API-compatible
+    执行：
+    1. 过滤掉 subtype='local_command' 的 SystemMessage（从不发送给 API）
+    2. 过滤掉 compact_boundary 标记（保留，仅供内部状态使用）
+    3. 可选地将系统消息作为用户上下文包含
+    4. 确保消息格式与 API 兼容
     """
     normalized: list[dict[str, Any]] = []
     for msg in messages:
         role = msg.get("role", "")
 
-        # Skip local_command system messages (e.g. /compact output)
+        # 跳过 local_command 系统消息（例如 /compact 输出）
         if role == "system" and msg.get("subtype") == "local_command":
             continue
 
-        # Skip compact_boundary markers (reserved for future use)
+        # 跳过 compact_boundary 标记（保留供将来使用）
         if role == "system" and msg.get("subtype") == "compact_boundary":
             continue
 
-        # Convert system info/warning/error to user-visible context if requested
+        # 如果请求，将系统 info/warning/error 转换为用户可见的上下文
         if role == "system" and not include_system:
             subtype = msg.get("subtype", "info")
             if subtype in ("info", "warning", "error"):
@@ -269,10 +269,10 @@ def normalize_messages_for_api(
     return normalized
 
 
-# --------------- Persistence helpers ---------------
+# --------------- 持久化辅助函数 ---------------
 
 def save_message(msg: MessageInfo) -> None:
-    """Persist a UserMessage or AssistantMessage to the database."""
+    """将 UserMessage 或 AssistantMessage 持久化到数据库。"""
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import MessageTable
 
@@ -308,7 +308,7 @@ def save_message(msg: MessageInfo) -> None:
 
 
 def save_part(part: Part) -> None:
-    """Persist a Part (text/tool/reasoning/file) to the database."""
+    """将 Part（text/tool/reasoning/file）持久化到数据库。"""
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import PartTable
 
@@ -344,7 +344,7 @@ def save_part(part: Part) -> None:
 
 
 def save_parts(parts: list[Part]) -> None:
-    """Persist multiple parts in a single transaction."""
+    """在单个事务中持久化多个片段。"""
     from mycode.storage.database import get_session as get_db_session
 
     if not parts:
@@ -361,7 +361,7 @@ def save_parts(parts: list[Part]) -> None:
 
 
 def _build_part_row(part: Part) -> Any:
-    """Build a PartTable row from a Part object."""
+    """从 Part 对象构建 PartTable 行。"""
     from mycode.storage.models import PartTable
 
     row = PartTable(
@@ -389,7 +389,7 @@ def _build_part_row(part: Part) -> Any:
 
 
 def _build_message_row(msg: MessageInfo) -> Any:
-    """Build a MessageTable row from a MessageInfo object."""
+    """从 MessageInfo 对象构建 MessageTable 行。"""
     from mycode.storage.models import MessageTable
 
     row = MessageTable(
@@ -398,9 +398,9 @@ def _build_message_row(msg: MessageInfo) -> Any:
         role=msg.role,
         time_created=msg.time_created,
     )
-    # Turn number + snapshot ref are optional metadata the rollback API
-    # relies on. They may be attached to the MessageInfo via ``setattr``
-    # from the orchestrator; falling back to None is safe for legacy callers.
+    # 回合号 + 快照引用是回滚 API 依赖的可选元数据。
+    # 它们可能通过 ``setattr`` 从编排器附加到 MessageInfo；
+    # 对旧版调用者回退到 None 是安全的。
     row.turn_number = getattr(msg, "turn_number", None)
     row.snapshot_ref = getattr(msg, "snapshot_ref", None)
     if isinstance(msg, AssistantMessage):
@@ -423,26 +423,26 @@ def _build_message_row(msg: MessageInfo) -> Any:
 
 
 def persist_turn(session_id: str, msg: MessageInfo, parts: list[Part]) -> None:
-    """Atomically persist a complete turn: message + all parts + session touch.
+    """原子性地持久化完整回合：消息 + 所有片段 + 会话更新。
 
-    All writes happen in a single database transaction. Either everything
-    is committed, or nothing is — no partial state in the DB.
+    所有写入发生在单个数据库事务中。要么全部提交，要么什么都不提交 —
+    数据库中没有部分状态。
     """
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import SessionTable
 
     db = get_db_session()
     try:
-        # 1. Message
+        # 1. 消息
         msg_row = _build_message_row(msg)
         db.merge(msg_row)
 
-        # 2. All parts
+        # 2. 所有片段
         for part in parts:
             part_row = _build_part_row(part)
             db.merge(part_row)
 
-        # 3. Touch session timestamp
+        # 3. 更新会话时间戳
         session_row = db.query(SessionTable).filter(
             SessionTable.id == session_id,
         ).first()
@@ -458,10 +458,10 @@ def persist_turn(session_id: str, msg: MessageInfo, parts: list[Part]) -> None:
 
 
 def next_turn_number(session_id: str) -> int:
-    """Return the next turn number for a session.
+    """返回会话的下一个回合号。
 
-    Turn numbers increment by 1 per assistant response. If the session has
-    no prior assistant messages the first turn is ``1``.
+    回合号每次助手响应增加 1。如果会话没有先前的助手消息，
+    第一回合为 ``1``。
     """
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import MessageTable
@@ -486,13 +486,13 @@ def next_turn_number(session_id: str) -> int:
 
 
 def rollback_to_turn(session_id: str, turn_number: int) -> dict[str, Any]:
-    """Delete all messages (and their parts) with ``turn_number > turn``.
+    """删除所有 ``turn_number > turn`` 的消息（及其片段）。
 
-    Also returns the snapshot ref, if any, recorded at the kept turn so
-    callers can restore the filesystem alongside the transcript.
+    同时返回保留回合处记录的快照引用（如果有），以便调用方可以
+    同时恢复文件系统和对话记录。
 
-    Returns ``{"kept": <count>, "removed": <count>, "snapshot_ref": str | None}``.
-    Raises ``KeyError`` if the requested turn does not exist in the session.
+    返回 ``{"kept": <count>, "removed": <count>, "snapshot_ref": str | None}``。
+    如果请求的回合在会话中不存在，则抛出 ``KeyError``。
     """
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import MessageTable, PartTable
@@ -514,11 +514,10 @@ def rollback_to_turn(session_id: str, turn_number: int) -> dict[str, Any]:
         if target is None and turn_number != 0:
             raise KeyError(f"No assistant turn {turn_number} in session {session_id}")
 
-        # Collect message IDs strictly after the target turn so we can
-        # cascade-delete their parts. ``turn_number is None`` for user
-        # messages — we drop those whose time_created is after the kept
-        # assistant turn. When rolling back to turn 0 the kept time is
-        # the session creation (everything user-level is purged).
+        # 收集目标回合之后的消息 ID，以便级联删除它们的片段。
+        # 用户消息的 ``turn_number is None`` — 我们删除那些 time_created
+        # 在保留助手回合之后的消息。回滚到回合 0 时，保留的时间是
+        # 会话创建时间（所有用户级别内容都被清除）。
         kept_time = target.time_created if target else 0
 
         to_delete_ids = [
@@ -559,9 +558,9 @@ def rollback_to_turn(session_id: str, turn_number: int) -> dict[str, Any]:
 
 
 def get_last_assistant_time(session_id: str) -> int | None:
-    """Return the time_completed (epoch ms) of the last assistant message in a session.
+    """返回会话中最后一条助手消息的 time_completed（纪元毫秒）。
 
-    Returns None if no completed assistant message exists.
+    如果不存在已完成的助手消息，则返回 None。
     """
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import MessageTable
@@ -584,14 +583,14 @@ def get_last_assistant_time(session_id: str) -> int | None:
 
 
 def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
-    """Reconstruct OpenAI-format conversation history from the database.
+    """从数据库重建 OpenAI 格式的对话历史。
 
-    Loads all messages and parts for a session and converts them into the
-    ``[{"role": ..., "content": ...}, ...]`` format expected by ``prompt(history=...)``.
+    加载会话的所有消息和片段，并将它们转换为
+    ``prompt(history=...)`` 期望的 ``[{"role": ..., "content": ...}, ...]`` 格式。
 
-    Skips system messages (they are re-injected by prompt.py at runtime).
+    跳过系统消息（它们在运行时被 prompt.py 重新注入）。
 
-    Returns an empty list if the session has no messages yet.
+    如果会话尚无消息，则返回空列表。
     """
     from mycode.storage.database import get_session as get_db_session
     from mycode.storage.models import MessageTable, PartTable
@@ -615,7 +614,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
             .all()
         )
 
-        # Group parts by message_id
+        # 按 message_id 分组片段
         parts_by_msg: dict[str, list[Any]] = {}
         for p in parts_rows:
             parts_by_msg.setdefault(p.message_id, []).append(p)
@@ -625,7 +624,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
         reminder_re = _re.compile(r"<system-reminder>.*?</system-reminder>", _re.DOTALL)
 
         def _append_reminder_to_last_user(reminder_text: str) -> bool:
-            """Merge a persisted pure reminder message back into the previous user turn."""
+            """将持久化的纯提醒消息合并回上一个用户回合。"""
             for entry in reversed(result):
                 if entry.get("role") != "user":
                     continue
@@ -641,7 +640,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
 
         for msg in messages_rows:
-            # Skip system messages — they are re-injected at runtime
+            # 跳过系统消息 — 它们在运行时被重新注入
             if msg.role == "system":
                 continue
 
@@ -652,9 +651,8 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
             if msg.role == "user":
                 text_content = "".join(p.content or "" for p in text_parts)
 
-                # Persisted pure system-reminder meta messages belong to the
-                # preceding user turn. Re-attach them so rebuilt history
-                # matches the runtime context sent to the model.
+                # 持久化的纯系统提醒元消息属于前面的用户回合。
+                # 重新附加它们，以便重建的历史与发送给模型的运行时上下文匹配。
                 stripped = reminder_re.sub("", text_content).strip()
                 if not stripped and "<system-reminder>" in text_content:
                     _append_reminder_to_last_user(text_content)
@@ -662,7 +660,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
 
                 file_parts = [p for p in msg_parts if p.type == "file"]
                 if file_parts:
-                    # Multimodal user message — rebuild OpenAI content-list
+                    # 多模态用户消息 — 重建 OpenAI 内容列表
                     content_list: list[dict[str, Any]] = []
                     if text_content:
                         content_list.append({"type": "text", "text": text_content})
@@ -686,7 +684,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
                 text_content = "".join(p.content or "" for p in text_parts)
 
                 if tool_parts:
-                    # Assistant message with tool calls — match processor.build_tool_results_messages() format
+                    # 带工具调用的助手消息 — 匹配 processor.build_tool_results_messages() 格式
                     tool_calls_list = []
                     for tp in tool_parts:
                         state = tp.state or {}
@@ -720,7 +718,7 @@ def rebuild_history_from_db(session_id: str) -> list[dict[str, Any]]:
                         })
 
                 elif text_content:
-                    # Text-only assistant message
+                    # 纯文本助手消息
                     result.append({"role": "assistant", "content": text_content})
 
         return result
@@ -735,10 +733,10 @@ def save_compaction_event(
     old_messages: list[dict[str, Any]],
     summary: str,
 ) -> None:
-    """Persist a compaction event with pre-compaction context for audit trail.
+    """持久化带有压缩前上下文的压缩事件，用于审计追踪。
 
-    Stores the metrics and old messages so they can be viewed later.
-    This enables users to understand what was lost during compaction.
+    存储指标和旧消息，以便稍后查看。
+    这使用户能够理解压缩期间丢失了什么。
     """
     import time
     import uuid

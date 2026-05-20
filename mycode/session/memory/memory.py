@@ -1,19 +1,18 @@
-"""Session memory — unified memory system for AI agent context.
+"""会话记忆 — AI 代理上下文的统一记忆系统。
 
-Single-file architecture: one JSONL file per session containing both
-the high-level summary and per-turn interaction records.
+单文件架构：每个会话一个 JSONL 文件，包含高级摘要和每轮交互记录。
 
-File layout (JSONL):
-    {"type":"summary", ...}          <- rolling summary (LLM-generated)
-    {"type":"turn", "turn":1, ...}   <- per-turn record
+文件布局（JSONL）：
+    {"type":"summary", ...}          <- 滚动摘要（LLM 生成）
+    {"type":"turn", "turn":1, ...}   <- 每轮记录
     {"type":"turn", "turn":2, ...}
     {"type":"turn", "turn":3, ...}
-    {"type":"summary", ...}          <- updated summary after 3 turns
+    {"type":"summary", ...}          <- 3 轮后更新的摘要
     ...
 
-Every SUMMARY_INTERVAL turns (default 3), the system calls LLM to:
-1. Update the global summary (what_was_done, technical_context, etc.)
-2. Refine recent turns' assistant summaries into concise conclusions
+每 SUMMARY_INTERVAL 轮（默认 3），系统调用 LLM 以：
+1. 更新全局摘要（what_was_done、technical_context 等）
+2. 将最近轮次的助手摘要精炼为简洁结论
 """
 
 from __future__ import annotations
@@ -65,13 +64,13 @@ class SessionSummary:
 
 
 class SessionMemory:
-    """Unified session memory: summary + per-turn log in a single JSONL file.
+    """统一会话记忆：单个 JSONL 文件中的摘要 + 每轮日志。
 
-    Usage:
+    用法：
         memory = SessionMemory(project_path)
-        memory.record_tool_call(...)          # during streaming
-        await memory.record_turn(...)         # after each turn (may trigger LLM)
-        await memory.finalize(...)            # at session end (force LLM)
+        memory.record_tool_call(...)          # 流式传输期间
+        await memory.record_turn(...)         # 每轮之后（可能触发 LLM）
+        await memory.finalize(...)            # 会话结束时（强制 LLM）
     """
 
     def __init__(self, project_path: str, session_id: str | None = None):
@@ -134,7 +133,7 @@ class SessionMemory:
         return bool(self._config.get("enabled", False))
 
     # ------------------------------------------------------------------
-    # File I/O
+    # 文件 I/O
     # ------------------------------------------------------------------
 
     def _ensure_dirs(self) -> None:
@@ -150,10 +149,10 @@ class SessionMemory:
         return self._log_file_path
 
     async def _append_record(self, record: dict[str, Any]) -> None:
-        """Append a record to JSONL file with file-level locking.
+        """使用文件级锁定将记录追加到 JSONL 文件。
 
-        Ensures thread-safe, atomic writes to prevent JSONL corruption.
-        Acquires exclusive lock for duration of write operation.
+        确保线程安全、原子写入以防止 JSONL 损坏。
+        在写入操作期间获取独占锁。
         """
         self._ensure_dirs()
         path = self._get_log_path()
@@ -189,36 +188,36 @@ class SessionMemory:
         return None
 
     async def _rewrite_file(self, refined_turns: dict[int, str]) -> None:
-        """Rewrite JSONL file with append-only merge strategy.
+        """使用仅追加合并策略重写 JSONL 文件。
 
-        Prevents data loss from concurrent appends during rewrite:
-        1. Load records snapshot (start of operation)
-        2. Acquire lock
-        3. Load records again (any new ones are kept)
-        4. Merge: old records (with refinements) + new records
-        5. Write merged result atomically
-        6. Release lock
+        防止重写期间并发追加导致的数据丢失：
+        1. 加载记录快照（操作开始时）
+        2. 获取锁
+        3. 再次加载记录（保留任何新记录）
+        4. 合并：旧记录（带精炼）+ 新记录
+        5. 原子写入合并结果
+        6. 释放锁
 
-        This ensures zero data loss even with concurrent appends.
+        即使存在并发追加，这也确保零数据丢失。
         """
-        # First snapshot - used to detect new records later
+        # 第一个快照 - 用于稍后检测新记录
         records_snapshot = self._load_all_records()
         snapshot_ids = {json.dumps(r, sort_keys=True) for r in records_snapshot}
 
         async with self._write_lock:
             lock = FileLock(self._get_log_path(), timeout_seconds=10.0)
             async with lock:
-                # Second read - gets any records appended since first read
+                # 第二次读取 - 获取自第一次读取以来追加的任何记录
                 records_now = self._load_all_records()
 
-                # Identify new records (those in records_now but not in snapshot)
+                # 识别新记录（在 records_now 中但不在快照中的记录）
                 new_records = []
                 for r in records_now:
                     r_json = json.dumps(r, sort_keys=True)
                     if r_json not in snapshot_ids:
                         new_records.append(r)
 
-                # Process old records with refinements
+                # 处理带有精炼的旧记录
                 processed_records = []
                 for r in records_snapshot:
                     if r.get("type") == "turn" and r.get("turn") in refined_turns:
@@ -228,10 +227,10 @@ class SessionMemory:
                     if r.get("type") != "summary":
                         processed_records.append(r)
 
-                # Append new records (preserves any concurrent appends)
+                # 追加新记录（保留任何并发追加）
                 processed_records.extend(new_records)
 
-                # Append latest summary
+                # 追加最新摘要
                 if self._summary:
                     processed_records.append({
                         "type": "summary",
@@ -248,7 +247,7 @@ class SessionMemory:
                         "turns": self._summary.turn_count,
                     })
 
-                # Write atomically
+                # 原子写入
                 path = self._get_log_path()
                 self._ensure_dirs()
                 tmp = path.with_suffix(".tmp")
@@ -263,7 +262,7 @@ class SessionMemory:
                             refined_turns=len(refined_turns))
 
     # ------------------------------------------------------------------
-    # Tool call buffering
+    # 工具调用缓冲
     # ------------------------------------------------------------------
 
     def record_tool_call(self, tool_name: str, tool_input: dict[str, Any],
@@ -276,7 +275,7 @@ class SessionMemory:
                                           "input": input_summary, "output": output_summary, "file": file_path})
 
     # ------------------------------------------------------------------
-    # Turn recording + LLM trigger
+    # 回合记录 + LLM 触发
     # ------------------------------------------------------------------
 
     async def record_turn(self, user_query: str, assistant_response: str,
@@ -307,7 +306,7 @@ class SessionMemory:
         return self._get_log_path()
 
     # ------------------------------------------------------------------
-    # LLM update logic
+    # LLM 更新逻辑
     # ------------------------------------------------------------------
 
     async def _llm_update(self, messages: list[dict[str, Any]] | None = None,
@@ -378,8 +377,8 @@ class SessionMemory:
                 kwargs["base_url"] = base_url
             logger.debug("calling LLM for memory update", provider=provider, model=model_name)
 
-            # Retry with exponential backoff for transient errors
-            max_retries = 2
+        # 对临时错误使用指数退避重试
+        max_retries = 2
             for attempt in range(max_retries + 1):
                 try:
                     resp = await litellm.acompletion(**kwargs)
@@ -387,7 +386,7 @@ class SessionMemory:
                     return self._parse_llm_response(raw, recent_turns)
                 except Exception as e:
                     if attempt < max_retries and _is_transient_error(e):
-                        delay = 1.0 * (2 ** attempt)  # 1s, 2s
+                        delay = 1.0 * (2 ** attempt)  # 1秒、2秒
                         logger.info("retrying LLM call for memory update",
                                     attempt=attempt + 1, delay=delay, error=str(e))
                         await asyncio.sleep(delay)
@@ -401,7 +400,7 @@ class SessionMemory:
         return self._fallback_combined(all_turns, recent_turns, start_time)
 
     # ------------------------------------------------------------------
-    # Prompt building
+    # 提示词构建
     # ------------------------------------------------------------------
 
     def _build_combined_prompt(self, all_turns: list[dict[str, Any]], recent_turns: list[dict[str, Any]],
@@ -521,18 +520,18 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
         return {"summary": "\n".join(lines), "refined_turns": {}}
 
     # ------------------------------------------------------------------
-    # Context formatting (for injection into agent prompt)
+    # 上下文格式化（用于注入代理提示词）
     # ------------------------------------------------------------------
 
     def format_for_context(self, limit: int = 30) -> str:
-        """Format the unified memory file as agent-consumable context."""
+        """将统一记忆文件格式化为代理可消费的上下文。"""
         records = self._load_all_records()
         if not records:
             return ""
 
         lines = ["<session_memory>"]
 
-        # 1. Summary section (last summary record)
+        # 1. 摘要部分（最后一条摘要记录）
         summary_rec = None
         for r in reversed(records):
             if r.get("type") == "summary":
@@ -543,7 +542,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
             lines.append(summary_rec.get("text", ""))
             lines.append("</summary>")
 
-        # 2. Turn records
+        # 2. 回合记录
         turns = [r for r in records if r.get("type") == "turn"][-limit:]
         if turns:
             lines.append("<turns>")
@@ -572,12 +571,12 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
         return "\n".join(lines)
 
     def load_recent_sessions(self, limit: int = 5) -> list[dict[str, Any]]:
-        """Load summary records from recent session files for context injection."""
+        """加载最近会话文件的摘要记录以进行上下文注入。"""
         sessions_dir = self.memory_dir / "sessions"
         if not sessions_dir.exists():
             return []
         results = []
-        # Walk date dirs in reverse order
+        # 按反向顺序遍历日期目录
         date_dirs = sorted(sessions_dir.iterdir(), reverse=True)
         for dd in date_dirs:
             if not dd.is_dir():
@@ -602,7 +601,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
         return results
 
     def format_history_context(self, recent_sessions: list[dict[str, Any]] | None = None) -> str:
-        """Format previous sessions' summaries + current session log as agent context."""
+        """将先前会话的摘要 + 当前会话日志格式化为代理上下文。"""
         parts = []
         sessions = recent_sessions or self.load_recent_sessions()
         if sessions:
@@ -623,7 +622,7 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
-    # Helpers
+    # 辅助函数
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -686,10 +685,10 @@ Rules: be concise, technical facts only, no filler, no code blocks."""
 
 
 def _is_transient_error(e: Exception) -> bool:
-    """Check if an error is transient and worth retrying.
+    """检查错误是否是临时的并值得重试。
 
-    Matches common transient error patterns from LLM API providers:
-    rate limits (429), server errors (503), timeouts, and connection issues.
+    匹配来自 LLM API 提供商的常见临时错误模式：
+    速率限制（429）、服务器错误（503）、超时和连接问题。
     """
     error_str = str(e).lower()
     transient_indicators = ["rate limit", "timeout", "429", "503", "connection", "temporary", "overloaded"]
@@ -697,7 +696,7 @@ def _is_transient_error(e: Exception) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Convenience functions (backward compatible)
+# 便捷函数（向后兼容）
 # ---------------------------------------------------------------------------
 
 
@@ -713,12 +712,12 @@ def load_recent_notes(project_path: str, limit: int = 5) -> list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
-# Memory freshness management
+# 记忆新鲜度管理
 # ---------------------------------------------------------------------------
 
 
 def memory_age_days(mtime_ms: float) -> int:
-    """Calculate how many days old a memory is. 0=today, 1=yesterday, etc."""
+    """计算记忆已有多少天。0=今天，1=昨天，等等。"""
     import datetime
     now = datetime.datetime.now()
     mem_time = datetime.datetime.fromtimestamp(mtime_ms / 1000)
@@ -727,7 +726,7 @@ def memory_age_days(mtime_ms: float) -> int:
 
 
 def memory_age_text(mtime_ms: float) -> str:
-    """Human-readable age string for a memory."""
+    """记忆的人类可读年龄字符串。"""
     days = memory_age_days(mtime_ms)
     if days == 0:
         return "today"
@@ -737,10 +736,10 @@ def memory_age_text(mtime_ms: float) -> str:
 
 
 def memory_freshness_note(mtime_ms: float) -> str | None:
-    """Generate a freshness warning for memories older than 1 day.
+    """为超过 1 天的记忆生成新鲜度警告。
 
-    Returns None for fresh memories, or a warning string for stale ones.
-    Older memories may reference outdated code state.
+    对于新鲜记忆返回 None，对于陈旧记忆返回警告字符串。
+    较旧的记忆可能引用过时的代码状态。
     """
     days = memory_age_days(mtime_ms)
     if days <= 1:

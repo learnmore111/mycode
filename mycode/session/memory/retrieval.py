@@ -1,9 +1,9 @@
-"""Memory retrieval — find relevant memories for the current context.
+"""记忆检索 — 为当前上下文查找相关记忆。
 
-- Keyword-based fast matching (no LLM needed)
-- LLM-assisted retrieval for complex queries (sideQuery to select from manifest)
-- Configurable max results
-- Freshness-aware (newer memories preferred)
+- 基于关键词的快速匹配（不需要 LLM）
+- 针对复杂查询的 LLM 辅助检索（sideQuery 从清单中选择）
+- 可配置的最大结果数
+- 新鲜度感知（较新的记忆优先）
 """
 from __future__ import annotations
 
@@ -32,18 +32,18 @@ def find_relevant_memories(
     recent_tools: list[str] | None = None,
     already_surfaced: set[str] | None = None,
 ) -> list[MemoryEntry]:
-    """Find memories relevant to the user's query.
+    """查找与用户查询相关的记忆。
 
-    Uses keyword matching on name + description + content.
-    Results are sorted by relevance score (higher = more relevant),
-    with ties broken by freshness (newer preferred).
+    使用名称 + 描述 + 内容上的关键词匹配。
+    结果按相关性分数排序（越高 = 越相关），
+    平局时按新鲜度（较新的优先）。
 
-    Args:
-        project_path: Path to the project root
-        query: User's query text
-        max_results: Maximum number of memories to return
-        recent_tools: List of recently used tool names (for exclusion signals)
-        already_surfaced: Memory paths/filenames already injected in this session
+    参数：
+        project_path: 项目根路径
+        query: 用户查询文本
+        max_results: 返回的最大记忆数
+        recent_tools: 最近使用的工具名称列表（用于排除信号）
+        already_surfaced: 本次会话中已注入的记忆路径/文件名
     """
     entries = scan_memory_files(project_path)
     if not entries:
@@ -51,7 +51,7 @@ def find_relevant_memories(
     surfaced = already_surfaced or set()
     entries = [entry for entry in entries if not _is_already_surfaced(entry, surfaced)]
 
-    # Score each memory against the query
+    # 为每条记忆针对查询评分
     scored: list[tuple[float, MemoryEntry]] = []
     query_lower = query.lower()
     query_words = _query_terms(query_lower)
@@ -61,7 +61,7 @@ def find_relevant_memories(
         if score > 0:
             scored.append((score, entry))
 
-    # Sort by score desc, then by freshness (newer first)
+    # 按分数降序排列，然后按新鲜度（较新的优先）
     scored.sort(key=lambda x: (-x[0], -x[1].mtime_ms))
 
     return [entry for _, entry in scored[:max_results]]
@@ -101,14 +101,14 @@ async def find_relevant_memories_llm(
     recent_tools: list[str] | None = None,
     already_surfaced: set[str] | None = None,
 ) -> list[MemoryEntry]:
-    """Find relevant memories using LLM-assisted retrieval.
+    """使用 LLM 辅助检索查找相关记忆。
 
-    Flow:
-    1. Scan all memory files → build manifest (name + description)
-    2. Ask LLM to select relevant memories from manifest
-    3. Return selected memory entries with full content
+    流程：
+    1. 扫描所有记忆文件 → 构建清单（名称 + 描述）
+    2. 要求 LLM 从清单中选择相关记忆
+    3. 返回包含完整内容的选定记忆条目
 
-    Falls back to keyword matching if LLM is unavailable.
+    如果 LLM 不可用，则回退到关键词匹配。
     """
     entries = scan_memory_files(project_path)
     if not entries:
@@ -118,7 +118,7 @@ async def find_relevant_memories_llm(
     if not entries:
         return []
 
-    # If no model configured, fall back to keyword matching
+    # 如果未配置模型，则回退到关键词匹配
     if not model_name or not api_key:
         return find_relevant_memories(
             project_path,
@@ -128,10 +128,10 @@ async def find_relevant_memories_llm(
             already_surfaced=already_surfaced,
         )
 
-    # Build manifest
+    # 构建清单
     manifest = format_memory_manifest(entries)
 
-    # Ask LLM to select
+    # 要求 LLM 选择
     tools_section = ""
     if recent_tools:
         tools = ", ".join(sorted(set(recent_tools)))
@@ -199,7 +199,7 @@ If no memories are relevant, reply with "NONE".
 
 
 # ---------------------------------------------------------------------------
-# Scoring helpers
+# 评分辅助函数
 # ---------------------------------------------------------------------------
 
 
@@ -208,14 +208,14 @@ def _compute_relevance(
     query_lower: str,
     query_words: set[str],
 ) -> float:
-    """Compute relevance score for a memory entry against a query.
+    """计算记忆条目针对查询的相关性分数。
 
-    Scoring:
-    - Name match: 3.0 per word
-    - Description match: 2.0 per word
-    - Content match: 1.0 per word (capped)
-    - Type boost: user/feedback get +0.5 (more persistent knowledge)
-    - Freshness boost: entries from today get +0.3
+    评分：
+    - 名称匹配：每个词 3.0
+    - 描述匹配：每个词 2.0
+    - 内容匹配：每个词 1.0（上限）
+    - 类型加成：user/feedback 获得 +0.5（更持久的知识）
+    - 新鲜度加成：今天的条目获得 +0.3
     """
     score = 0.0
 
@@ -225,7 +225,7 @@ def _compute_relevance(
     matched = False
 
     for word in query_words:
-        if len(word) < 2:  # Skip single-char words
+        if len(word) < 2:  # 跳过单字符词
             continue
         if word in name_lower:
             score += 3.0
@@ -237,7 +237,7 @@ def _compute_relevance(
             score += 1.0
             matched = True
 
-    # Exact phrase match bonus
+    # 精确短语匹配奖励
     if query_lower in name_lower:
         score += 5.0
         matched = True
@@ -248,11 +248,11 @@ def _compute_relevance(
     if not matched:
         return 0.0
 
-    # Type boost (user/feedback memories tend to be more universally relevant)
+    # 类型加成（user/feedback 记忆往往更普遍相关）
     if entry.memory_type in ("user", "feedback"):
         score += 0.5
 
-    # Freshness boost
+    # 新鲜度加成
     from mycode.session.memory.memory import memory_age_days
     if entry.mtime_ms > 0:
         age = memory_age_days(entry.mtime_ms)

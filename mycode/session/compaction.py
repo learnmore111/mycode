@@ -1,14 +1,13 @@
-"""Session compaction — context compression and pruning.
+"""会话压缩 — 上下文压缩与修剪。
 
-Handles context overflow detection, old tool output pruning, and summary generation.
+处理上下文溢出检测、旧工具输出修剪和摘要生成。
 
-Cache-friendly design:
-- The compaction LLM call reuses the main agent's system prompt + tools so
-  that the API prefix cache is shared (cache hit on system + tools prefix).
-- Tool outputs in old messages are truncated before the compaction call to
-  reduce cost.
-- The compacted result injects the summary as a **user message** (not a system
-  message) so the main agent's next call still has an identical system prefix.
+缓存友好设计：
+- 压缩 LLM 调用复用主代理的系统提示词 + 工具，以便
+  共享 API 前缀缓存（在系统 + 工具前缀上命中缓存）。
+- 旧消息中的工具输出在压缩调用之前被截断，以降低成本。
+- 压缩结果将摘要作为 **用户消息**（而非系统消息）注入，
+  以便主代理的下一次调用仍然具有相同的系统前缀。
 """
 from __future__ import annotations
 
@@ -27,12 +26,12 @@ if TYPE_CHECKING:
 logger = logmod.create(service="session.compaction")
 
 CompactionMetrics = namedtuple('CompactionMetrics', [
-    'old_message_count',     # number of old messages that were summarized
-    'old_message_tokens',    # estimated tokens in old messages
-    'summary_length',        # length of the generated summary
-    'removed_turn_count',    # number of user turns removed
-    'old_messages',          # the original old messages (for audit trail)
-    'summary',               # the generated summary text
+    'old_message_count',     # 被摘要的旧消息数量
+    'old_message_tokens',    # 旧消息的预估 token 数
+    'summary_length',        # 生成摘要的长度
+    'removed_turn_count',    # 被移除的用户回合数
+    'old_messages',          # 原始旧消息（用于审计追踪）
+    'summary',               # 生成的摘要文本
 ])
 
 
@@ -42,13 +41,13 @@ OVERFLOW_RATIO = 0.85  # trigger at 85% of context window
 COMPACT_KEEP_TURNS = 3  # number of recent user turns to preserve verbatim
 SUMMARY_TOOL_OUTPUT_LIMIT = 1000  # chars — default truncate for benign tool outputs
 
-# Error outputs / stack traces usually carry the *most* signal for why the
-# agent diverged, so we keep more of them around the compaction prompt. A
-# generic successful read/grep result compresses well at the default limit.
+# 错误输出 / 堆栈跟踪通常携带代理偏离原因的 *最* 强信号，
+# 因此我们在压缩提示词周围保留更多错误输出。
+# 通用成功的 read/grep 结果在默认限制下压缩良好。
 SUMMARY_TOOL_OUTPUT_ERROR_LIMIT = 2500
 
-# Heuristic for identifying error-style payloads when the tool did not set
-# an explicit `is_error` flag (e.g. raw traces from `bash`).
+# 当工具未设置显式 `is_error` 标志时，用于识别错误样式负载的启发式方法
+#（例如来自 `bash` 的原始跟踪）。
 _ERROR_HINTS = (
     "Traceback",
     "Error:",
@@ -61,9 +60,9 @@ _ERROR_HINTS = (
     "[error]",
 )
 
-# Provider-specific cache TTL (seconds).
-# Used to detect whether the API prefix cache has likely expired between turns.
-# Conservative values — err on the side of assuming expiry.
+# 提供商特定的缓存 TTL（秒）。
+# 用于检测 API 前缀缓存是否可能在回合之间已过期。
+# 保守值 — 倾向于假设已过期。
 _CACHE_TTL: dict[str, int] = {
     "@ai-sdk/anthropic": 300,       # 5 min (default; extended TTL = 1h but not auto)
     "@ai-sdk/openai": 300,          # 5-10 min inactive; use lower bound
@@ -73,46 +72,46 @@ _CACHE_TTL: dict[str, int] = {
 }
 _CACHE_TTL_DEFAULT = 300  # fallback for unknown providers
 
-# Template for wrapping the summary as a user message in the compacted result.
+# 用于将摘要包装为压缩结果中用户消息的模板。
 COMPACT_USER_MSG_TEMPLATE = """This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
 
 {summary}
 
 Recent messages are preserved verbatim. Continue from where we left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened."""
 
-# Fallback prompt if the compaction agent cannot be loaded.
+# 如果压缩代理无法加载时的降级提示词。
 _COMPACTION_PROMPT_FALLBACK = """Provide a detailed summary of the conversation so far.
 Focus on: what was done, what is being worked on, which files are relevant,
 what needs to be done next, and key user requests or constraints."""
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate — intentionally conservative (over-estimates).
+    """粗略 token 估计 — 故意保守（高估）。
 
-    Uses byte length divided by a conservative factor to trigger compaction
-    earlier rather than later, reducing context overflow risk.
+    使用字节长度除以保守因子来更早触发压缩，
+    降低上下文溢出风险。
 
-    - English text: ~1 token per 4 bytes (ASCII)
-    - Code/JSON: ~1 token per 3-4 bytes (varies heavily)
-    - Chinese/Japanese/Korean: ~1 token per 3 bytes (UTF-8, 3 bytes/char)
-    - Mixed: byte-based estimate handles all naturally
+    - 英文文本：约每 4 字节 1 token（ASCII）
+    - 代码/JSON：约每 3-4 字节 1 token（差异很大）
+    - 中文/日文/韩文：约每 3 字节 1 token（UTF-8，3 字节/字符）
+    - 混合：基于字节的估计自然处理所有情况
 
-    We use //3 for the base estimate, then add a 15% safety margin
-    to account for code/JSON under-estimation.
+    我们使用 //3 作为基础估计，然后添加 15% 的安全边距
+    以弥补代码/JSON 的低估。
     """
     byte_len = len(text.encode("utf-8"))
     base_estimate = byte_len // 3
-    # Add 15% safety margin for code-heavy content
+    # 为代码密集型内容添加 15% 安全边距
     return base_estimate + base_estimate // 7
 
 
-# Content-addressable token-estimate cache.
+# 内容可寻址的 token 估计缓存。
 #
-# System prompts and tool schemas change only when the agent/model combination
-# changes, yet ``prompt()`` currently re-estimates them on every turn. The
-# estimate itself is cheap, but it allocates a UTF-8 byte buffer the size of
-# the full tools JSON (often 30-80KB) every iteration. Caching by content
-# fingerprint means we pay that cost once per unique prompt/tool payload.
+# 系统提示词和工具模式仅在代理/模型组合更改时才会变化，
+# 但 ``prompt()`` 目前在每次回合都会重新估计它们。
+# 估计本身开销很小，但它在每次迭代中都会分配一个与完整工具 JSON 大小相当的
+# UTF-8 字节缓冲区（通常 30-80KB）。按内容指纹缓存意味着
+# 我们为每个唯一的提示词/工具负载只支付一次该成本。
 import hashlib as _hashlib  # noqa: E402 — keep module import order readable
 
 _ESTIMATE_CACHE: dict[str, int] = {}
@@ -124,11 +123,10 @@ def _fingerprint(text: str) -> str:
 
 
 def estimate_tokens_cached(text: str) -> int:
-    """Cached variant of :func:`estimate_tokens`.
+    """:func:`estimate_tokens` 的缓存变体。
 
-    Safe to call on hot paths (every turn in ``prompt()``). The cache is
-    keyed on a short blake2 digest of the input, not the string itself,
-    so repeated callers do not retain references to large payloads.
+    可以安全地在热路径上调用（``prompt()`` 的每次回合）。缓存以输入的短 blake2 摘要
+    为键，而非字符串本身，因此重复调用者不会保留对大负载的引用。
     """
     if not text:
         return 0
@@ -138,14 +136,14 @@ def estimate_tokens_cached(text: str) -> int:
         return cached
     value = estimate_tokens(text)
     if len(_ESTIMATE_CACHE) >= _ESTIMATE_CACHE_MAX:
-        # Evict an arbitrary entry — this cache has no recency signal.
+        # 逐出一个任意条目 — 此缓存没有最近性信号。
         _ESTIMATE_CACHE.pop(next(iter(_ESTIMATE_CACHE)), None)
     _ESTIMATE_CACHE[fp] = value
     return value
 
 
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
-    """Estimate total tokens across all messages."""
+    """估计所有消息的总 token 数。"""
     total = 0
     for msg in messages:
         content = msg.get("content") or ""
@@ -166,10 +164,9 @@ def should_compact(
     system_tokens: int = 0,
     tools_tokens: int = 0,
 ) -> bool:
-    """Check if the conversation needs compaction based on total context estimate.
+    """根据总上下文估计检查对话是否需要压缩。
 
-    Includes system prompt and tool definitions in the estimate, since they
-    occupy context window space alongside the messages.
+    在估计中包含系统提示词和工具定义，因为它们与消息一起占用上下文窗口空间。
     """
     if model_context <= 0:
         return False
@@ -179,18 +176,18 @@ def should_compact(
 
 
 def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    """Prune old tool outputs to free context space.
+    """修剪旧工具输出以释放上下文空间。
 
-    Works with OpenAI message format:
-      - {"role": "tool", "tool_call_id": "...", "content": "..."} — tool results
-      - {"role": "assistant", "tool_calls": [...]} — tool call requests
+    适用于 OpenAI 消息格式：
+      - {"role": "tool", "tool_call_id": "...", "content": "..."} — 工具结果
+      - {"role": "assistant", "tool_calls": [...]} — 工具调用请求
 
-    Goes backwards through messages, protecting the most recent PRUNE_PROTECT
-    tokens worth of tool outputs. Older outputs are replaced with a placeholder.
+    反向遍历消息，保护最近 PRUNE_PROTECT token 值的工具输出。
+    较旧的输出被替换为占位符。
 
-    Returns (pruned_messages, tokens_freed).
+    返回 (pruned_messages, tokens_freed)。
     """
-    # Collect indices of tool-result messages with their token estimates
+    # 收集工具结果消息的索引及其 token 估计值
     tool_indices: list[tuple[int, int]] = []  # (msg_idx, estimated_tokens)
     turns = 0
 
@@ -199,7 +196,7 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
         if msg.get("role") == "user":
             turns += 1
         if turns < 2:
-            continue  # Protect last 2 turns
+            continue  # 保护最近 2 个回合
 
         if msg.get("role") == "tool":
             content = msg.get("content", "")
@@ -207,7 +204,7 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
                 est = estimate_tokens(content)
                 tool_indices.append((msg_idx, est))
 
-    # Walk from newest to oldest tool output, protect first PRUNE_PROTECT tokens
+    # 从最新到最旧遍历工具输出，保护前 PRUNE_PROTECT 个 token
     protected_tokens = 0
     prunable: list[tuple[int, int]] = []
     for msg_idx, est in tool_indices:
@@ -215,7 +212,7 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
         if protected_tokens > PRUNE_PROTECT:
             prunable.append((msg_idx, est))
 
-    # Prune
+    # 修剪
     pruned = 0
     for msg_idx, est in prunable:
         messages[msg_idx]["content"] = "[Old tool result content cleared]"
@@ -228,23 +225,23 @@ def prune_tool_outputs(messages: list[dict[str, Any]]) -> tuple[list[dict[str, A
 
 
 def get_cache_ttl(model: Model) -> int:
-    """Return the cache TTL in seconds for a model's provider."""
+    """返回模型提供商的缓存 TTL（秒）。"""
     return _CACHE_TTL.get(model.api.npm, _CACHE_TTL_DEFAULT)
 
 
 def is_cache_likely_expired(model: Model, last_llm_time_ms: int | None) -> bool:
-    """Check whether the API prefix cache has likely expired.
+    """检查 API 前缀缓存是否可能已过期。
 
-    Args:
-        model: The model being used.
-        last_llm_time_ms: Epoch milliseconds of the last LLM completion.
-            None means no prior interaction (first turn) — cache is empty.
+    参数:
+        model: 正在使用的模型。
+        last_llm_time_ms: 上次 LLM 完成的纪元毫秒数。
+            None 表示没有先前的交互（第一回合）— 缓存为空。
 
-    Returns:
-        True if the cache has likely expired and proactive pruning is advisable.
+    返回:
+        如果缓存可能已过期且建议主动修剪，则返回 True。
     """
     if last_llm_time_ms is None:
-        return False  # first turn — nothing cached yet, no benefit from pruning
+        return False  # 第一回合 — 尚无缓存内容，修剪无益
 
     import time
     elapsed_s = (time.time() * 1000 - last_llm_time_ms) / 1000
@@ -264,23 +261,23 @@ def _split_by_turns(
     messages: list[dict[str, Any]],
     keep_turns: int = COMPACT_KEEP_TURNS,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split messages into (old, recent) by user turns.
+    """按用户回合将消息拆分为（旧消息，近期消息）。
 
-    A "turn" starts at each ``role=user`` message and includes the
-    assistant reply plus any tool call / tool result messages that follow.
-    The most recent *keep_turns* turns (and all messages after them) are
-    placed in *recent*; everything before goes into *old*.
+    一个 "回合" 从每条 ``role=user`` 消息开始，包括助手回复
+    以及随后任何工具调用 / 工具结果消息。
+    最近 *keep_turns* 个回合（及其后的所有消息）放入 *recent*；
+    之前的所有内容放入 *old*。
 
-    Returns ``(old_messages, recent_messages)``.
+    返回 ``(old_messages, recent_messages)``。
     """
-    # Find indices where user turns start
+    # 查找用户回合开始的索引
     turn_starts: list[int] = []
     for i, msg in enumerate(messages):
         if msg.get("role") == "user":
             turn_starts.append(i)
 
     if len(turn_starts) <= keep_turns:
-        # Not enough turns to split – keep everything
+        # 回合数不足以拆分 – 保留所有内容
         return [], list(messages)
 
     split_idx = turn_starts[-keep_turns]
@@ -288,16 +285,16 @@ def _split_by_turns(
 
 
 # ---------------------------------------------------------------------------
-# Helpers for the cache-friendly compaction pipeline
+# 缓存友好的压缩流水线辅助函数
 # ---------------------------------------------------------------------------
 
 
 def _tool_output_limit(content: str) -> int:
-    """Pick an appropriate truncation limit for a tool output string.
+    """为工具输出字符串选择合适的截断限制。
 
-    Error-like payloads (stack traces, non-zero exits) get a higher limit
-    because the summary LLM needs enough context to reason about *why*
-    something failed. Benign outputs compress well at the default.
+    错误类负载（堆栈跟踪、非零退出码）获得更高的限制，
+    因为摘要 LLM 需要足够的上下文来推理 *为什么* 某事失败了。
+    良性输出在默认限制下压缩良好。
     """
     if not content:
         return SUMMARY_TOOL_OUTPUT_LIMIT
@@ -311,26 +308,23 @@ def _truncate_tool_outputs_for_summary(
     messages: list[dict[str, Any]],
     limit: int = SUMMARY_TOOL_OUTPUT_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Create a copy of *messages* with large tool outputs truncated.
+    """创建 *messages* 的副本，其中大型工具输出被截断。
 
-    Uses copy-on-write: only messages that actually need truncation are
-    deep-copied.  Messages that fit within *limit* are shared with the
-    original list (no allocation).
+    使用写时复制：只有实际需要截断的消息才会被深拷贝。
+    在 *limit* 范围内的消息与原始列表共享（无分配）。
 
-    The *limit* argument is treated as a floor — individual tool messages
-    whose content looks like an error trace are allowed to keep
-    ``SUMMARY_TOOL_OUTPUT_ERROR_LIMIT`` chars so post-mortem signal is
-    preserved.
+    *limit* 参数被视为下限 — 内容看起来像错误跟踪的单个工具消息
+    可以保留 ``SUMMARY_TOOL_OUTPUT_ERROR_LIMIT`` 个字符，以保留事后分析信号。
 
-    This is used **only** for the compaction LLM call so that it sees less
-    token volume.  The original messages are never modified.
+    这 **仅** 用于压缩 LLM 调用，以便它看到更少的 token 量。
+    原始消息永远不会被修改。
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
         needs_copy = False
         tool_limit = limit
 
-        # Check tool result content
+        # 检查工具结果内容
         if msg.get("role") == "tool":
             content = msg.get("content", "")
             if isinstance(content, str):
@@ -338,7 +332,7 @@ def _truncate_tool_outputs_for_summary(
                 if len(content) > tool_limit:
                     needs_copy = True
 
-        # Check tool_call arguments in assistant messages
+        # 检查助手消息中的 tool_call 参数
         for tc in msg.get("tool_calls", []):
             fn = tc.get("function", {})
             if len(fn.get("arguments", "")) > limit:
@@ -349,7 +343,7 @@ def _truncate_tool_outputs_for_summary(
             result.append(msg)
             continue
 
-        # Only deep-copy messages that need truncation
+        # 仅深拷贝需要截断的消息
         msg_copy = copy.deepcopy(msg)
         if msg_copy.get("role") == "tool":
             content = msg_copy.get("content", "")
@@ -366,16 +360,15 @@ def _truncate_tool_outputs_for_summary(
 
 
 def _extract_summary(text: str, max_length: int = 8000) -> str:
-    """Extract the ``<summary>`` content and strip the ``<analysis>`` scratchpad.
+    """提取 ``<summary>`` 内容并去除 ``<analysis>`` 草稿。
 
-    The compaction prompt asks the model to output ``<analysis>...</analysis>``
-    followed by ``<summary>...</summary>``.  The analysis block is a drafting
-    scratchpad that improves summary quality but should not be kept in the
-    final output (it wastes tokens in subsequent calls).
+    压缩提示词要求模型输出 ``<analysis>...</analysis>``，
+    后跟 ``<summary>...</summary>``。分析块是一个起草草稿，
+    可以提高摘要质量，但不应保留在最终输出中（它会在后续调用中浪费 token）。
 
-    Enforces a max_length on the summary to prevent unbounded growth.
+    对摘要强制执行 max_length 以防止无限制增长。
     """
-    # Try to find <summary>...</summary>
+    # 尝试查找 <summary>...</summary>
     match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
     if match:
         summary = match.group(1).strip()
@@ -383,7 +376,7 @@ def _extract_summary(text: str, max_length: int = 8000) -> str:
             summary = summary[:max_length] + "\n... [summary truncated]"
         return summary
 
-    # Fallback: strip <analysis>...</analysis> and return the rest
+    # 降级方案：去除 <analysis>...</analysis> 并返回其余部分
     stripped = re.sub(r"<analysis>.*?</analysis>", "", text, flags=re.DOTALL)
     stripped = stripped.strip()
     if stripped and len(stripped) < len(text):
@@ -391,7 +384,7 @@ def _extract_summary(text: str, max_length: int = 8000) -> str:
             stripped = stripped[:max_length] + "\n... [summary truncated]"
         return stripped
 
-    # Last resort: strip common reasoning/scratchpad patterns and truncate
+    # 最后手段：去除常见推理/草稿模式并截断
     result = _strip_reasoning_patterns(text)
     if not result:
         return "[Empty summary generated]"
@@ -402,7 +395,7 @@ def _extract_summary(text: str, max_length: int = 8000) -> str:
     return result
 
 
-# Patterns that indicate LLM reasoning/scratchpad (not useful as summary content)
+# 指示 LLM 推理/草稿的模式（作为摘要内容无用）
 _REASONING_TAG_RE = re.compile(r"<(?:thinking|reasoning|scratchpad)>.*?</(?:thinking|reasoning|scratchpad)>", re.DOTALL)
 _REASONING_LINE_RE = re.compile(
     r"^(?:Let me (?:think|analyze|consider|review)|I (?:need to|should|will)|"
@@ -412,14 +405,14 @@ _REASONING_LINE_RE = re.compile(
 
 
 def _strip_reasoning_patterns(text: str) -> str:
-    """Strip common LLM reasoning/scratchpad patterns from raw text.
+    """从原始文本中去除常见的 LLM 推理/草稿模式。
 
-    Used as a last-resort cleanup when the model fails to output proper
-    ``<summary>``/``<analysis>`` tags.
+    当模型未能输出正确的 ``<summary>``/``<analysis>`` 标签时，
+    用作最后的清理手段。
     """
     result = _REASONING_TAG_RE.sub("", text)
     result = _REASONING_LINE_RE.sub("", result)
-    # Collapse multiple blank lines
+    # 折叠多个空行
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
 
@@ -428,10 +421,10 @@ def _build_compact_result(
     summary: str,
     recent: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Assemble the compacted message list.
+    """组装压缩后的消息列表。
 
-    The summary is injected as a **user message** so that the main agent's
-    system prompt prefix remains identical → prefix cache hit.
+    摘要作为 **用户消息** 注入，以便主代理的
+    系统提示词前缀保持不变 → 前缀缓存命中。
     """
     user_summary_msg: dict[str, Any] = {
         "role": "user",
@@ -441,9 +434,9 @@ def _build_compact_result(
 
 
 async def _load_compaction_prompt() -> str:
-    """Load the compaction agent's prompt text.
+    """加载压缩代理的提示词文本。
 
-    Falls back to a built-in default if the agent cannot be loaded.
+    如果无法加载代理，则回退到内置默认值。
     """
     try:
         from mycode.agent import agent as agentmod
@@ -465,45 +458,45 @@ async def compact(
     api_key: str | None = None,
     api_base: str | None = None,
 ) -> tuple[list[dict[str, Any]], CompactionMetrics]:
-    """Compact conversation history using sliding-window + summary strategy.
+    """使用滑动窗口 + 摘要策略压缩对话历史。
 
-    Cache-friendly pipeline:
+    缓存友好流水线：
 
-    1. Prune old tool outputs first — may be enough on its own.
-    2. Split messages into old turns and recent turns (keep last N turns verbatim).
-    3. Truncate tool outputs in old messages (deep copy) to reduce summary cost.
-    4. Call the LLM with the **same system prompt + tools** as the main agent
-       so the API prefix cache is shared.
-    5. Extract the ``<summary>`` block, strip ``<analysis>`` scratchpad.
-    6. Return: ``([user_summary_msg] + recent_turns, metrics)``.
+    1. 首先修剪旧工具输出 — 可能仅此就足够了。
+    2. 将消息拆分为旧回合和近期回合（保留最后 N 个回合原文）。
+    3. 截断旧消息中的工具输出（深拷贝）以降低摘要成本。
+    4. 使用与主代理 **相同的系统提示词 + 工具** 调用 LLM，
+       以便共享 API 前缀缓存。
+    5. 提取 ``<summary>`` 块，去除 ``<analysis>`` 草稿。
+    6. 返回：``([user_summary_msg] + recent_turns, metrics)``。
     """
     _empty_metrics = CompactionMetrics(
         old_message_count=0, old_message_tokens=0, summary_length=0,
         removed_turn_count=0, old_messages=[], summary="",
     )
 
-    # Step 1: prune tool outputs (in-place on the original messages)
+    # 步骤 1：修剪工具输出（在原始消息上就地操作）
     messages, freed = prune_tool_outputs(messages)
     if freed > PRUNE_MINIMUM:
-        logger.info("pruning freed enough tokens, skipping full compaction", freed=freed)
+        logger.info("修剪释放了足够的 token，跳过完整压缩", freed=freed)
         return messages, _empty_metrics
 
-    # Step 2: split into old / recent
+    # 步骤 2：拆分为旧 / 近期
     old, recent = _split_by_turns(messages, keep_turns=COMPACT_KEEP_TURNS)
 
     if not old:
-        # Nothing old enough to summarise — try pruning harder
+        # 没有足够旧的内容可摘要 — 尝试更积极地修剪
         pruned_again, freed_again = prune_tool_outputs(messages)
         if freed_again > 0:
-            logger.info("no old turns to compact, but pruned more tool outputs", freed=freed_again)
+            logger.info("没有旧回合可压缩，但修剪了更多工具输出", freed=freed_again)
             return pruned_again, _empty_metrics
-        logger.info("no old turns to compact, returning as-is")
+        logger.info("没有旧回合可压缩，按原样返回")
         return messages, _empty_metrics
 
-    # Step 3: truncate tool outputs in old messages for the summary call
+    # 步骤 3：截断旧消息中的工具输出以供摘要调用
     truncated_old = _truncate_tool_outputs_for_summary(old)
 
-    # Step 4: build the compaction request
+    # 步骤 4：构建压缩请求
     compaction_prompt = await _load_compaction_prompt()
 
     summary_messages: list[dict[str, Any]] = list(truncated_old)
@@ -512,18 +505,18 @@ async def compact(
     stream_input = llmmod.StreamInput(
         model=model,
         messages=summary_messages,
-        system=system,  # same system prompt as main agent → cache hit
-        tools=tools,  # same tools as main agent → cache key match
-        tool_choice="none",  # prevent tool calls at API level
+        system=system,  # 与主代理相同的系统提示词 → 缓存命中
+        tools=tools,  # 与主代理相同的工具 → 缓存键匹配
+        tool_choice="none",  # 在 API 层面阻止工具调用
         temperature=0.0,
         max_tokens=8196,
         api_key=api_key,
         api_base=api_base,
     )
 
-    # Step 5: consume stream and collect summary text (with retry, up to 3 attempts)
+    # 步骤 5：消费流并收集摘要文本（带重试，最多 3 次尝试）
     MAX_COMPACT_RETRIES = 3
-    COMPACT_RETRY_DELAY = 1.0  # seconds between retries
+    COMPACT_RETRY_DELAY = 1.0  # 重试之间的秒数
 
     summary_text = ""
     last_error: str | None = None
@@ -536,47 +529,47 @@ async def compact(
                 elif isinstance(event, llmmod.ErrorEvent):
                     last_error = event.error
                     logger.error(
-                        "compaction LLM stream error", attempt=attempt, max_retries=MAX_COMPACT_RETRIES,
+                        "压缩 LLM 流错误", attempt=attempt, max_retries=MAX_COMPACT_RETRIES,
                         error=last_error,
                     )
-                    break  # break inner loop, will retry or fall through
+                    break  # 中断内层循环，将重试或继续执行
             else:
-                # Stream completed without ErrorEvent → success (or empty)
-                break  # break outer retry loop
+                # 流完成且没有 ErrorEvent → 成功（或为空）
+                break  # 中断外层重试循环
 
-            # If we got an ErrorEvent and have retries left, wait and retry
+            # 如果收到 ErrorEvent 且还有重试次数，等待并重试
             if attempt < MAX_COMPACT_RETRIES:
                 await asyncio.sleep(COMPACT_RETRY_DELAY)
                 continue
-            # No more retries, fall through to fallback below
+            # 没有更多重试次数，继续执行下面的降级方案
         except Exception as e:
             last_error = str(e)
             logger.error(
-                "compaction LLM call failed", attempt=attempt, max_retries=MAX_COMPACT_RETRIES,
+                "压缩 LLM 调用失败", attempt=attempt, max_retries=MAX_COMPACT_RETRIES,
                 error=last_error,
             )
             if attempt < MAX_COMPACT_RETRIES:
                 await asyncio.sleep(COMPACT_RETRY_DELAY)
                 continue
     else:
-        # All retries exhausted — loop completed without break via successful stream
-        logger.warn("compaction LLM call failed after all retries", max_retries=MAX_COMPACT_RETRIES, error=last_error)
-        return messages, _empty_metrics  # fallback: return pruned but unsummarised
+        # 所有重试已耗尽 — 循环完成，未通过成功流中断
+        logger.warn("压缩 LLM 调用在所有重试后失败", max_retries=MAX_COMPACT_RETRIES, error=last_error)
+        return messages, _empty_metrics  # 降级方案：返回已修剪但未摘要的消息
 
     if not summary_text.strip():
-        logger.warn("compaction produced empty summary")
+        logger.warn("压缩产生了空摘要")
         return messages, _empty_metrics
 
-    # Step 6: extract <summary> block, strip <analysis> scratchpad
+    # 步骤 6：提取 <summary> 块，去除 <analysis> 草稿
     summary = _extract_summary(summary_text)
     logger.info(
-        "compaction complete",
+        "压缩完成",
         summary_len=len(summary),
         old_msgs=len(old),
         kept_msgs=len(recent),
     )
 
-    # Step 7: assemble compacted conversation
+    # 步骤 7：组装压缩后的对话
     metrics = CompactionMetrics(
         old_message_count=len(old),
         old_message_tokens=estimate_messages_tokens(old),
@@ -587,7 +580,7 @@ async def compact(
     )
     result = _build_compact_result(summary, recent)
 
-    # Step 8: post-compaction validation — warn if result still overflows
+    # 步骤 8：压缩后验证 — 如果结果仍然溢出则警告
     system_tokens_est = estimate_tokens("\n\n".join(system)) if system else 0
     tools_tokens_est = estimate_tokens(str(tools)) if tools else 0
     result_tokens = estimate_messages_tokens(result)
@@ -596,7 +589,7 @@ async def compact(
     threshold = int(context_limit * OVERFLOW_RATIO)
     if total_est > threshold:
         logger.warn(
-            "compacted result still exceeds threshold — next iteration will re-compact",
+            "压缩后的结果仍然超出阈值 — 下一次迭代将重新压缩",
             result_tokens=result_tokens,
             total_est=total_est,
             threshold=threshold,
@@ -606,16 +599,15 @@ async def compact(
 
 
 def log_token_accuracy(estimated: int, actual: int, model_id: str) -> None:
-    """Log token estimation accuracy for tuning.
+    """记录 token 估计精度以进行调优。
 
-    Compares the heuristic estimate against the actual input token count
-    reported by the API.  Only logs when divergence is significant (>2× or <0.5×)
-    so that normal operation produces no noise.
+    将启发式估计与 API 报告的实际输入 token 数进行比较。
+    仅在偏差显著时（>2× 或 <0.5×）记录，以便正常操作不会产生噪音。
 
-    Args:
-        estimated: Heuristic estimate (from ``estimate_messages_tokens``).
-        actual: Real input_tokens from API usage metadata.
-        model_id: Model identifier (e.g. ``"anthropic/claude-sonnet"``).
+    参数:
+        estimated: 启发式估计（来自 ``estimate_messages_tokens``）。
+        actual: API 使用量元数据中的实际 input_tokens。
+        model_id: 模型标识符（例如 ``"anthropic/claude-sonnet"``）。
     """
     if actual <= 0 or estimated <= 0:
         return

@@ -1,15 +1,14 @@
-"""Session processor — the core agentic loop.
+"""会话处理器 — 核心智能体循环。
 
-Streaming architecture: process_stream() is an async generator that yields
-ProcessorEvent objects in real-time as the LLM generates text and tools execute.
-This enables the CLI to render text and tool output interleaved, just like
-Claude Code / Cursor / aider.
+流式架构：process_stream() 是一个异步生成器，在 LLM 生成文本和工具执行时
+实时产出 ProcessorEvent 对象。这使得 CLI 可以交错渲染文本和工具输出，
+就像 Claude Code / Cursor / aider 一样。
 
-Enhanced with:
-- Result caching for read-only tools (skip duplicate calls)
-- Retry logic for transient failures
-- Read/write separation: read-only tools run in parallel, mutating tools run sequentially
-- Step-level state recording for the loop guard
+增强功能：
+- 只读工具的结果缓存（跳过重复调用）
+- 临时故障的重试逻辑
+- 读/写分离：只读工具并行运行，变异工具顺序运行
+- 用于循环守卫的步骤级状态记录
 """
 from __future__ import annotations
 
@@ -58,17 +57,17 @@ Result = Literal["compact", "stop", "continue"]
 
 @dataclass
 class ProcessorEvent:
-    """Event yielded during streaming processing.
+    """流式处理期间产生的事件。
 
-    Types:
-      - "text_delta":  Incremental text from the LLM. data["content"] is the delta string.
-      - "tool_start":  A tool call has been identified. data["tool"], data["call_id"].
-      - "tool_running": Tool execution has started. data["tool"], data["call_id"].
-      - "tool_done":   Tool execution completed. data["tool"], data["call_id"], data["status"],
-                       data["output"], data["input"].
-      - "error":       An LLM or processing error. data["message"].
-      - "finish":      Processing of one iteration is done. data["result"] is the Result string,
-                       data["parts"] is the list of Part objects produced.
+    类型：
+      - "text_delta":  来自 LLM 的增量文本。data["content"] 是增量字符串。
+      - "tool_start":  已识别工具调用。data["tool"]、data["call_id"]。
+      - "tool_running": 工具执行已开始。data["tool"]、data["call_id"]。
+      - "tool_done":   工具执行完成。data["tool"]、data["call_id"]、data["status"]、
+                       data["output"]、data["input"]。
+      - "error":       LLM 或处理错误。data["message"]。
+      - "finish":      单次迭代处理完成。data["result"] 是 Result 字符串，
+                       data["parts"] 是产生的 Part 对象列表。
     """
     type: str
     data: dict[str, Any] = field(default_factory=dict)
@@ -86,7 +85,7 @@ class ProcessorContext:
     doom_count: int = 0
     permission_manager: PermissionManager | None = None
     agent_permission: list[Rule] = field(default_factory=list)
-    loop_guard: LoopGuard | None = None  # Injected by prompt.py
+    loop_guard: LoopGuard | None = None  # 由 prompt.py 注入
 
 
 def _surface_llm_error(
@@ -95,7 +94,7 @@ def _surface_llm_error(
     tool_calls_pending: list[ToolPart],
     parts: list[Part],
 ) -> None:
-    """Surface an LLM error to context after all retries are exhausted."""
+    """在所有重试耗尽后将 LLM 错误呈现到上下文。"""
     logger.error(
         "LLM error (all retries exhausted)",
         error=error_event.error,
@@ -110,8 +109,8 @@ def _surface_llm_error(
         "status_code": error_event.status_code,
     }
     ctx.should_break = True
-    # Any tool calls that were partially streamed before the error
-    # must be surfaced as failed so the doom-loop guard & UI see them.
+    # 错误前已部分流式传输的任何工具调用必须作为失败呈现，
+    # 以便厄运循环守卫和 UI 能看到它们。
     for partial_tp in list(ctx.toolcalls.values()):
         if partial_tp.state.get("status") in (None, "pending"):
             partial_tp.state["status"] = "error"
@@ -120,7 +119,7 @@ def _surface_llm_error(
             partial_tp.time_completed = int(time.time() * 1000)
             if partial_tp not in ctx.parts:
                 ctx.parts.append(partial_tp)
-    # Drop the pending list so the executor phase does not try to run a partially-formed call.
+    # 清空待处理列表，以便执行阶段不会尝试运行部分形成的调用。
     tool_calls_pending.clear()
 
 
@@ -129,7 +128,7 @@ async def process_stream(
     stream_input: llmmod.StreamInput,
     messages_for_tools: list[Any] | None = None,
 ) -> AsyncGenerator[ProcessorEvent, None]:
-    """Run one iteration of the agentic loop, yielding events in real time."""
+    """运行智能体循环的一次迭代，实时产生事件。"""
     MAX_LLM_RETRIES = 3
     LLM_RETRY_DELAY = 1.0  # seconds between retries
 
@@ -143,9 +142,9 @@ async def process_stream(
     last_exception: str | None = None
 
     for attempt in range(1, MAX_LLM_RETRIES + 1):
-        # Reset per-attempt state on retry (attempt > 1)
+        # 在重试时重置每次尝试的状态（attempt > 1）
         if attempt > 1:
-            logger.info("retrying LLM stream", attempt=attempt, max_retries=MAX_LLM_RETRIES)
+            logger.info("重试 LLM 流", attempt=attempt, max_retries=MAX_LLM_RETRIES)
             await asyncio.sleep(LLM_RETRY_DELAY)
             current_reasoning = None
             current_text = None
@@ -154,7 +153,7 @@ async def process_stream(
             text_length = 0
             last_error_event = None
             last_exception = None
-            # Clear partial tool calls from previous failed attempt in ctx
+            # 从上下文中清除先前失败尝试的部分工具调用
             ctx.toolcalls.clear()
 
         try:
@@ -246,9 +245,9 @@ async def process_stream(
                     # Break inner stream loop — will decide whether to retry below
                     break
             else:
-                # Stream completed without ErrorEvent → success
-                # Fall through to tool execution phase
-                break  # break outer retry loop
+                # 流完成且没有 ErrorEvent → 成功
+                # 进入工具执行阶段
+                break  # 中断外层重试循环
 
             # If we got here via ErrorEvent break (not else), handle retry decision
             if last_error_event is not None:
@@ -287,14 +286,14 @@ async def process_stream(
         # All retries exhausted without success — already handled above, but safety net
         return
 
-    # === Execute tool calls ===
+    # === 执行工具调用 ===
     if tool_calls_pending:
         has_failure = False
         blocked = False
         doom_detected = False
         cache = ctx.loop_guard.cache if ctx.loop_guard else None
 
-        # Phase 1: Pre-flight — permission, doom loop, cache check
+        # 阶段 1：预检 — 权限、厄运循环、缓存检查
         executable: list[tuple[ToolPart, Any, ToolContext]] = []
         cached_results: list[tuple[ToolPart, str]] = []
 
@@ -321,7 +320,7 @@ async def process_stream(
                 call_id=tp.tool_call_id,
             )
 
-            # Permission check
+            # 权限检查
             if ctx.permission_manager:
                 try:
                     from mycode.permission.schema import DeniedError, RejectedError
@@ -346,7 +345,7 @@ async def process_stream(
                     })
                     continue
                 except Exception as e:
-                    # Fail-safe: block tool execution on unexpected permission errors
+                    # 故障安全：在意外权限错误时阻止工具执行
                     logger.error(
                         "permission check failed unexpectedly",
                         tool=tp.tool,
@@ -366,7 +365,7 @@ async def process_stream(
                     })
                     continue
 
-            # Doom loop detection (legacy, loop_guard has more advanced detection)
+            # 厄运循环检测（传统方法，loop_guard 有更高级的检测）
             recent_tool_parts = [p for p in ctx.parts if isinstance(p, ToolPart) and p.tool == tp.tool]
             if len(recent_tool_parts) >= DOOM_LOOP_THRESHOLD:
                 last_inputs = [json.dumps(p.state.get("input", {}), sort_keys=True) for p in recent_tool_parts[-DOOM_LOOP_THRESHOLD:]]
@@ -386,7 +385,7 @@ async def process_stream(
                     })
                     break
 
-            # Cache check — skip execution if we have a cached result
+            # 缓存检查 — 如果有缓存结果则跳过执行
             if cache:
                 cached = cache.get(tp.tool, tp.state.get("input", {}))
                 if cached is not None:
@@ -400,7 +399,7 @@ async def process_stream(
             yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
             return
 
-        # Phase 1.5: Serve cached results immediately
+        # 阶段 1.5：立即提供缓存结果
         for tp, cached_output in cached_results:
             tp.state["status"] = "completed"
             tp.state["output"] = cached_output
@@ -414,13 +413,13 @@ async def process_stream(
                 "input": tp.state.get("input", {}),
             })
 
-        # Phase 2: Execute tools with read/write separation
+        # 阶段 2：使用读/写分离执行工具
         if executable:
-            # Separate read-only tools from mutating tools using capability declarations
+            # 使用能力声明将只读工具与变异工具分开
             readonly_tasks: list[tuple[ToolPart, Any, ToolContext]] = []
             mutating_tasks: list[tuple[ToolPart, Any, ToolContext]] = []
             for tp, tool_impl, tool_ctx in executable:
-                # Use capability declaration if available, fallback to hardcoded set
+                # 如果可用则使用能力声明，否则回退到硬编码集合
                 if hasattr(tool_impl, "is_concurrency_safe") and hasattr(tool_impl, "is_read_only"):
                     tool_input = tp.state.get("input", {})
                     if tool_impl.is_read_only(tool_input) and tool_impl.is_concurrency_safe(tool_input):
@@ -432,15 +431,14 @@ async def process_stream(
                 else:
                     readonly_tasks.append((tp, tool_impl, tool_ctx))
 
-            # Safety: if a batch mixes readonly and mutating calls, run the
-            # mutating ones FIRST so any cached readonly result produced in
-            # the same iteration observes the post-mutation filesystem.
-            # Previously readonly ran before mutating, which allowed a mixed
-            # batch like [read(foo.py), edit(foo.py)] to cache a pre-edit
-            # snapshot of foo.py and hand it back to the next iteration.
+            # 安全：如果批次混合了只读和变异调用，先运行
+            # 变异调用，以便同一次迭代中产生的任何缓存只读结果
+            # 观察变异后的文件系统。
+            # 以前只读在变异之前运行，这允许像 [read(foo.py), edit(foo.py)] 这样的混合批次
+            # 缓存 foo.py 的编辑前快照并将其交给下一次迭代。
             mutating_first = bool(mutating_tasks) and bool(readonly_tasks)
 
-            # Yield running events
+            # 产生运行事件
             for tp, _, _ in executable:
                 tp.state["status"] = "running"
                 yield ProcessorEvent(type="tool_running", data={
@@ -491,7 +489,7 @@ async def process_stream(
                 await _run_readonly()
                 await _run_mutating()
 
-            # Yield results and track failures
+            # 产生结果并跟踪失败
             all_success = True
             for success, tool_event in all_results:
                 yield tool_event
@@ -502,7 +500,7 @@ async def process_stream(
                 has_failure = True
 
         if blocked:
-            # Reset doom_count to avoid stale state polluting next iteration
+            # 重置 doom_count 以避免陈旧状态污染下一次迭代
             ctx.doom_count = 0
             yield ProcessorEvent(type="finish", data={"result": "stop", "parts": parts})
             return
@@ -532,7 +530,7 @@ async def process_stream(
 async def _run_tool_with_retry(
     tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext, ctx: ProcessorContext,
 ) -> tuple[bool, ProcessorEvent]:
-    """Execute a tool with retry logic for transient failures."""
+    """使用临时故障重试逻辑执行工具。"""
     guard = ctx.loop_guard
     max_retries = guard.config.max_retries if guard else 0
     last_error = ""
@@ -551,14 +549,14 @@ async def _run_tool_with_retry(
 
         last_error = tp.state.get("output", "")
 
-        # Check if should retry
+        # 检查是否应该重试
         if guard and attempt < max_retries and guard.should_retry(tp.tool, last_error, attempt):
-            logger.info("retrying tool", tool=tp.tool, attempt=attempt + 1, error=last_error[:100])
-            # Reset tool state for retry
+            logger.info("重试工具", tool=tp.tool, attempt=attempt + 1, error=last_error[:100])
+            # 为重试重置工具状态
             tp.state["status"] = "running"
             tp.state.pop("output", None)
             tp.state.pop("is_error", None)
-            await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+            await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
             continue
 
         # No retry — record failure and return
@@ -569,8 +567,8 @@ async def _run_tool_with_retry(
             )
         return success, event
 
-    # Defensive fallback: should be unreachable since every loop iteration returns,
-    # but guards against future refactors that might break the invariant.
+    # 防御性回退：应该是不可达的，因为每次循环迭代都会返回，
+    # 但防止将来可能破坏不变量的重构。
     if guard:
         guard.record_tool_call(tp.tool, tp.state.get("input", {}), output=last_error, is_error=True)
     return False, ProcessorEvent(type="tool_done", data={
@@ -583,7 +581,7 @@ async def _run_tool_with_retry(
 async def _run_tool(
     tp: ToolPart, tool_impl: Any, tool_ctx: ToolContext, ctx: ProcessorContext,
 ) -> tuple[bool, ProcessorEvent]:
-    """Execute a single tool. Returns (success, event)."""
+    """执行单个工具。返回 (success, event)。"""
     from mycode.util import metrics as _metrics
 
     try:
@@ -635,7 +633,7 @@ async def _run_tool(
 
 
 def _tool_error(tp: ToolPart, error_msg: str, log_msg: str) -> tuple[bool, ProcessorEvent]:
-    """Helper to handle tool errors uniformly."""
+    """统一处理工具错误的辅助函数。"""
     tp.state["status"] = "error"
     tp.state["output"] = error_msg
     tp.state["is_error"] = True
@@ -649,7 +647,7 @@ def _tool_error(tp: ToolPart, error_msg: str, log_msg: str) -> tuple[bool, Proce
     return False, event
 
 
-# Backward-compatible wrapper
+# 向后兼容的包装器
 async def process(
     ctx: ProcessorContext,
     stream_input: llmmod.StreamInput,

@@ -1,9 +1,9 @@
-"""Session memory module — unified memory system for AI agent context.
+"""会话记忆模块 — AI 代理上下文的统一记忆系统。
 
-Two-layer architecture:
-1. SessionMemory — per-session JSONL (rolling summary + per-turn records)
-2. memdir — structured long-term memories (user/feedback/project/reference)
-   with frontmatter, MEMORY.md index, retrieval, and auto-extraction
+两层架构：
+1. SessionMemory — 每个会话的 JSONL（滚动摘要 + 每轮记录）
+2. memdir — 结构化长期记忆（user/feedback/project/reference）
+   包含 frontmatter、MEMORY.md 索引、检索和自动提取
 """
 
 from mycode.session.memory.extractor import (
