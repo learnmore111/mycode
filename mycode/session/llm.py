@@ -128,10 +128,10 @@ async def _with_abort(
     才能让 LLM 停止输出。这里我们将每个 ``__anext__`` 调用
     与中止事件竞争，并在事件设置后立即干净地中断。
     """
-        if abort_event is None:
-            async for chunk in response:
-                yield chunk
-            return
+    if abort_event is None:
+        async for chunk in response:
+            yield chunk
+        return
 
     it = response.__aiter__()
     while True:
