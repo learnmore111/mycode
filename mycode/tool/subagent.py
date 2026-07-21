@@ -430,11 +430,20 @@ class SubAgentTool(CallableTool[SubAgentParams]):
         )
         guard = LoopGuard(config=guard_config)
 
-        system = build_system(agent_prompt=agent.prompt)
+        system = build_system(
+            agent_prompt=agent.prompt,
+            omit_project_guidance=getattr(agent, "omit_project_guidance", getattr(agent, "omit_claudemd", False)),
+        )
 
         user_content = description
         if context:
             user_content = f"Context:\n{context}\n\nTask:\n{description}"
+
+        from mycode.session.memory.service import recall_for_current_project
+
+        memory_evidence = await asyncio.to_thread(recall_for_current_project, description, agent=agent.name)
+        if memory_evidence:
+            user_content = f"{user_content}\n\n{memory_evidence}"
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
 

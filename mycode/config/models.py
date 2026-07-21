@@ -179,6 +179,21 @@ class SessionMemoryConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class MemoryConfig(BaseModel):
+    """Versioned long-term memory and background candidate policy."""
+
+    enabled: bool = True
+    use_memories: bool = Field(True, alias="useMemories")
+    generate_memories: bool = Field(False, alias="generateMemories")
+    disable_on_external_context: bool = Field(True, alias="disableOnExternalContext")
+    idle_minutes: int = Field(180, alias="idleMinutes", ge=0)
+    min_user_prompts: int = Field(10, alias="minUserPrompts", ge=1)
+    max_results: int = Field(5, alias="maxResults", ge=1, le=10)
+    project_ttl_days: int = Field(90, alias="projectTtlDays", ge=1)
+
+    model_config = {"populate_by_name": True}
+
+
 # --- Experimental Config ---
 
 
@@ -260,6 +275,7 @@ class Config(BaseModel):
     permission: PermissionConfig | None = None
     compaction: CompactionConfig | None = None
     session_memory: SessionMemoryConfig | None = Field(None, alias="sessionMemory")
+    memory: MemoryConfig | None = None
     experimental: ExperimentalConfig | None = None
     enterprise: EnterpriseConfig | None = None
 

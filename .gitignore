@@ -21,6 +21,18 @@ kimi-cli
 agent-mem-note
 node_modules/
 web/dist/
+*.tsbuildinfo
 analysis-docs/
 frontend-design/
 agent-mem-note/
+
+# Local OS metadata
+.DS_Store
+
+# Temporary artifacts from frontend-generation skill experiments
+studio/
+api_call_logged.py
+call_logs/
+openapi.json
+scripts/generate_openapi.py
+docs/generate-frontend-from-backend-skill-v5-redesign.md

@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from mycode.session.memory.memdir import (
-    save_memory,
     scan_memory_files,
 )
 from mycode.util import log as logmod
@@ -179,18 +178,31 @@ def save_extracted_memories(
     project_path: str,
     extraction: ExtractionResult,
 ) -> list[str]:
-    """将提取的记忆保存到磁盘。返回已保存文件路径列表。"""
+    """将兼容提取结果写入 SQLite pending inbox。返回 memory ID。"""
+    from mycode.session.memory.service import MemoryService
+    from mycode.session.memory.service import MemoryType as LifecycleMemoryType
+
+    service = MemoryService(project_path)
     saved: list[str] = []
     for mem in extraction.extracted:
         try:
-            path = save_memory(
-                project_path,
-                name=mem["name"],
-                description=mem["description"],
-                memory_type=mem["type"],
+            type_map: dict[str, LifecycleMemoryType] = {
+                "user": "user_preference",
+                "feedback": "feedback",
+                "project": "project_fact",
+                "reference": "reference",
+            }
+            record = service.create(
+                subject=mem["name"],
+                trigger_description=mem["description"],
+                memory_type=type_map.get(mem["type"], "project_fact"),
                 content=mem["content"],
+                source_kind="agent_inference",
+                status="pending",
+                extractor_version="legacy-extractor-v1",
+                created_by="legacy_extractor",
             )
-            saved.append(path)
+            saved.append(record.id)
         except Exception as e:
             logger.error("failed to save extracted memory", name=mem.get("name"), error=str(e))
     return saved

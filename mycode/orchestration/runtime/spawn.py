@@ -20,6 +20,7 @@ override semantics intact.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -158,7 +159,15 @@ class LiteLLMAgentRunner:
             max_retries=1,
         ))
 
-        system_prompt = build_system(agent_prompt=agent.prompt)
+        system_prompt = build_system(
+            agent_prompt=agent.prompt,
+            omit_project_guidance=getattr(agent, "omit_project_guidance", getattr(agent, "omit_claudemd", False)),
+        )
+        from mycode.session.memory.service import recall_for_current_project
+
+        memory_evidence = await asyncio.to_thread(recall_for_current_project, user_msg, agent=agent.name)
+        if memory_evidence:
+            user_msg = f"{user_msg}\n\n{memory_evidence}"
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_msg}]
 
         # Orchestration runners may execute without going through the normal

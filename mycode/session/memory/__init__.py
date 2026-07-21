@@ -48,6 +48,12 @@ from mycode.session.memory.retrieval import (
     find_relevant_memories,
     find_relevant_memories_llm,
 )
+from mycode.session.memory.service import (
+    MemoryRecord,
+    MemoryRejectedError,
+    MemoryService,
+    MemoryServiceError,
+)
 
 __all__ = [
     # SessionMemory (per-session JSONL)
@@ -84,6 +90,11 @@ __all__ = [
     "build_memory_context",
     "find_relevant_memories",
     "find_relevant_memories_llm",
+    # Versioned long-term memory authority
+    "MemoryRecord",
+    "MemoryRejectedError",
+    "MemoryService",
+    "MemoryServiceError",
     # Extraction
     "ExtractionResult",
     "extract_memories",

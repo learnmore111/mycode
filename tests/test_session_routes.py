@@ -87,13 +87,51 @@ def test_changes_route_returns_recent_files(client: TestClient, tmp_path):
     assert changes[0]["filePath"] == "src/demo.py"
 
 
+def test_context_route_builds_snapshot(client: TestClient, tmp_path, monkeypatch):
+    from mycode.session.session import create
+
+    async def fake_default_model():
+        return "test-provider", "test-model"
+
+    async def fake_get_model(provider_id, model_id):
+        return SimpleNamespace(
+            provider_id=provider_id,
+            api=SimpleNamespace(id=model_id),
+            capabilities=SimpleNamespace(toolcall=True),
+            limit=SimpleNamespace(context=32_000),
+        )
+
+    async def fake_default_agent():
+        return "build"
+
+    async def fake_get_agent(_name):
+        return SimpleNamespace(prompt="")
+
+    monkeypatch.setattr("mycode.provider.provider.default_model", fake_default_model)
+    monkeypatch.setattr("mycode.provider.provider.get_model", fake_get_model)
+    monkeypatch.setattr("mycode.agent.agent.default_agent", fake_default_agent)
+    monkeypatch.setattr("mycode.agent.agent.get", fake_get_agent)
+
+    session = create(title="context-route")
+    resp = client.get(f"/session/{session.id}/context", params={"directory": str(tmp_path)})
+
+    assert resp.status_code == 200
+    snapshot = resp.json()
+    assert snapshot["model"] == "test-provider/test-model"
+    assert snapshot["summary"]["context_limit"] == 32_000
+    assert snapshot["tools"]["count"] > 0
+
+
 def test_resume_route_streams_and_clears_pause_state(client: TestClient, tmp_path, monkeypatch):
     from mycode.session.session import create, get_paused_run, set_paused_run
 
     session = create(title="resume-route")
     set_paused_run(session.id, last_user_text="继续处理未完成任务", partial_text="已输出部分内容")
 
+    seen = {}
+
     async def fake_prompt(prompt_input, bus, history=None):
+        seen["permission_manager"] = prompt_input.permission_manager
         yield SimpleNamespace(type="started", data={"session_id": prompt_input.session_id})
         yield SimpleNamespace(type="done", data={"ok": True})
 
@@ -104,6 +142,7 @@ def test_resume_route_streams_and_clears_pause_state(client: TestClient, tmp_pat
     assert "event: started" in resp.text
     assert "event: done" in resp.text
     assert get_paused_run(session.id) is None
+    assert seen["permission_manager"] is not None
 
 
 def test_messages_route_returns_reasoning_parts(client: TestClient, tmp_path):

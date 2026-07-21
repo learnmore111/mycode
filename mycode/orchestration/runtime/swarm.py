@@ -327,7 +327,10 @@ class LiteLLMSwarmRunner:
                 is_error=True,
             )
 
-        system_prompt = build_system(agent_prompt=agent.prompt)
+        system_prompt = build_system(
+            agent_prompt=agent.prompt,
+            omit_project_guidance=getattr(agent, "omit_project_guidance", getattr(agent, "omit_claudemd", False)),
+        )
         agent_ruleset = build_agent_ruleset(agent)
 
         # Swarm peers can be launched outside the normal session prompt path,
@@ -352,6 +355,11 @@ class LiteLLMSwarmRunner:
             message_id=self._message_id,
             agent=agent.name,
         )
+
+        async def _memory_evidence(content: str) -> str:
+            from mycode.session.memory.service import recall_for_current_project
+
+            return await asyncio.to_thread(recall_for_current_project, content, agent=agent.name)
 
         messages: list[dict[str, Any]] = []
         if sctx.initial_task:
@@ -420,9 +428,12 @@ class LiteLLMSwarmRunner:
             # 1) Drain the inbox; shutdown requests short-circuit the loop.
             envs = await sctx.system.inboxes[sctx.sender_name].drain()
             received_shutdown = False
+            fresh_memory_queries: list[str] = []
             for env in envs:
                 has_seen_work = True
-                messages.append({"role": "user", "content": env.format_for_llm()})
+                envelope_content = env.format_for_llm()
+                fresh_memory_queries.append(envelope_content)
+                messages.append({"role": "user", "content": envelope_content})
                 if env.kind == "shutdown_request":
                     received_shutdown = True
                 if sctx.events is not None:
@@ -462,9 +473,20 @@ class LiteLLMSwarmRunner:
 
             # 2) Take one LLM turn.
             llm_turns += 1
+            memory_query = "\n".join(fresh_memory_queries)
+            if has_seed_input:
+                memory_query = "\n".join(filter(None, (sctx.initial_task, memory_query)))
+            stream_messages = [dict(message) for message in messages]
+            if memory_query:
+                evidence = await _memory_evidence(memory_query)
+                if evidence:
+                    for message in reversed(stream_messages):
+                        if message.get("role") == "user" and isinstance(message.get("content"), str):
+                            message["content"] = f"{message['content']}\n\n{evidence}"
+                            break
             stream_input = llmmod.StreamInput(
                 model=model,
-                messages=messages,
+                messages=stream_messages,
                 system=system_prompt,
                 tools=llm_tools if model.capabilities.toolcall else None,
                 temperature=agent.temperature,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import platform
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,35 @@ PROMPT_PLAN = _load_prompt("plan")
 PROMPT_BUILD_SWITCH = _load_prompt("build-switch")
 PROMPT_MAX_STEPS = _load_prompt("max-steps")
 
+PROJECT_GUIDANCE_FILENAMES = ("mycode.md", "codebuddy.md", "CLAUDE.md", "Claude.md")
+
+
+@dataclass(frozen=True)
+class ProjectGuidance:
+    """Resolved deterministic project guidance and its compatibility source."""
+
+    path: Path
+    content: str
+
+    @property
+    def source_name(self) -> str:
+        return self.path.name
+
+
+def find_project_guidance(worktree: str) -> ProjectGuidance | None:
+    """Return the first non-empty guidance file in compatibility order."""
+    for name in PROJECT_GUIDANCE_FILENAMES:
+        path = Path(worktree) / name
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if content:
+            return ProjectGuidance(path=path, content=content)
+    return None
+
 
 def provider_prompt(model: Model) -> list[str]:
     """根据模型 API ID 选择模型特定的系统提示词。"""
@@ -58,15 +88,10 @@ def provider_prompt(model: Model) -> list[str]:
 def _load_project_guidance(worktree: str) -> str | None:
     """加载项目指导文件（如果存在）。
 
-    在项目根目录中查找 mycode.md、codebuddy.md 或 CLAUDE.md。
+    在项目根目录中按兼容顺序查找项目指导文件。
     """
-    for name in ("mycode.md", "codebuddy.md", "CLAUDE.md", "Claude.md"):
-        path = Path(worktree) / name
-        if path.exists():
-            content = path.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-    return None
+    guidance = find_project_guidance(worktree)
+    return guidance.content if guidance else None
 
 
 def environment(model: Model) -> list[str]:
@@ -98,6 +123,7 @@ def build(
     model: Model | None = None,
     agent_prompt: str | None = None,
     instructions: list[str] | None = None,
+    omit_project_guidance: bool = False,
 ) -> list[str]:
     """为 LLM 调用构建完整的系统提示词列表。"""
     parts: list[str] = []
@@ -121,10 +147,10 @@ def build(
     if agent_prompt:
         parts.append(agent_prompt)
 
-    # Project guidance (e.g. mycode.md / codebuddy.md / CLAUDE.md)
+    # Project guidance (canonical file plus compatibility aliases)
     ctx = current_or_none()
     worktree = ctx.worktree if ctx else os.getcwd()
-    guidance = _load_project_guidance(worktree)
+    guidance = None if omit_project_guidance else _load_project_guidance(worktree)
     if guidance:
         dynamic_parts.append(f"<project_guidance>\n{guidance}\n</project_guidance>")
 

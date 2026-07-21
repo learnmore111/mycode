@@ -1,27 +1,39 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 3000,
-    proxy: {
-      '/session': 'http://localhost:4096',
-      '/provider': 'http://localhost:4096',
-      '/agent': 'http://localhost:4096',
-      '/event': 'http://localhost:4096',
-      '/permission': 'http://localhost:4096',
-      '/health': 'http://localhost:4096',
-      '/file': 'http://localhost:4096',
-      '/config': 'http://localhost:4096',
-      '/git': 'http://localhost:4096',
-      '/skill': 'http://localhost:4096',
-      '/mcp': 'http://localhost:4096',
-      '/orchestration': 'http://localhost:4096',
+export default defineConfig(() => {
+  const target = process.env.MYCODE_API_TARGET || 'http://127.0.0.1:4096'
+  const routes = [
+    '/health',
+    '/api',
+    '/metrics',
+    '/agent',
+    '/log',
+    '/config',
+    '/event',
+    '/file',
+    '/git',
+    '/mcp',
+    '/orchestration',
+    '/permission',
+    '/project',
+    '/provider',
+    '/session',
+    '/skill',
+  ]
+
+  return {
+    plugins: [react()],
+    server: {
+      port: 3000,
+      strictPort: true,
+      proxy: Object.fromEntries(
+        routes.map((route) => [route, { target, changeOrigin: true }]),
+      ),
     },
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: true,
-  },
+    build: {
+      outDir: 'dist',
+      sourcemap: true,
+    },
+  }
 })

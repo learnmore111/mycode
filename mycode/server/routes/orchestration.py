@@ -531,6 +531,7 @@ class _AgentBody(BaseModel):
     max_turns: int | None = None
     isolation: str = "none"
     omit_claudemd: bool = False
+    omit_project_guidance: bool | None = None
     permission: list[dict[str, str]] | None = None
     scope: str = "project"  # "project" or "global"
 
@@ -570,8 +571,9 @@ def _agent_to_md(body: _AgentBody) -> str:
         fm["max_turns"] = body.max_turns
     if body.isolation and body.isolation != "none":
         fm["isolation"] = body.isolation
-    if body.omit_claudemd:
-        fm["omit_claudemd"] = True
+    omit_guidance = body.omit_project_guidance if body.omit_project_guidance is not None else body.omit_claudemd
+    if omit_guidance:
+        fm["omit_project_guidance"] = True
     if body.permission:
         fm["permission"] = body.permission
 

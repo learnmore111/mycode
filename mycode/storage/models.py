@@ -237,6 +237,111 @@ class CompactionEventTable(Base):
 
 
 # ---------------------------------------------------------------------------
+# Versioned long-term memory
+# ---------------------------------------------------------------------------
+
+
+class MemoryRecordTable(Base):
+    """One immutable version in the long-term memory lifecycle."""
+
+    __tablename__ = "memory_record"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    root_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    memory_type: Mapped[str] = mapped_column(String, nullable=False)
+    scope_type: Mapped[str] = mapped_column(String, nullable=False)
+    scope_id: Mapped[str] = mapped_column(String, nullable=False)
+    subject: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    _source_message_ids: Mapped[str] = mapped_column("source_message_ids", Text, nullable=False, default="[]")
+    source_kind: Mapped[str] = mapped_column(String, nullable=False)
+    _evidence_refs: Mapped[str] = mapped_column("evidence_refs", Text, nullable=False, default="[]")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    observed_at: Mapped[int] = mapped_column(nullable=False)
+    valid_from: Mapped[int | None] = mapped_column(nullable=True)
+    valid_to: Mapped[int | None] = mapped_column(nullable=True)
+    last_verified_at: Mapped[int | None] = mapped_column(nullable=True)
+    expires_at: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    supersedes_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    sensitivity: Mapped[str] = mapped_column(String, nullable=False, default="normal")
+    extractor_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    last_used_at: Mapped[int | None] = mapped_column(nullable=True)
+    use_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    time_created: Mapped[int] = mapped_column(nullable=False)
+    time_updated: Mapped[int] = mapped_column(nullable=False)
+
+    __table_args__ = (
+        Index("ix_memory_scope_status", "scope_type", "scope_id", "status"),
+        Index("ix_memory_scope_hash", "scope_type", "scope_id", "content_hash"),
+        Index("ix_memory_subject", "scope_type", "scope_id", "subject"),
+    )
+
+    @property
+    def source_message_ids(self) -> list[str]:
+        return _json_list(self._source_message_ids)
+
+    @source_message_ids.setter
+    def source_message_ids(self, value: list[str]) -> None:
+        self._source_message_ids = json.dumps(value, ensure_ascii=False)
+
+    @property
+    def evidence_refs(self) -> list[Any]:
+        return _json_list(self._evidence_refs)
+
+    @evidence_refs.setter
+    def evidence_refs(self, value: list[Any]) -> None:
+        self._evidence_refs = json.dumps(value, ensure_ascii=False)
+
+
+class MemoryAuditTable(Base):
+    __tablename__ = "memory_audit"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    memory_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    _details: Mapped[str] = mapped_column("details", Text, nullable=False, default="{}")
+    time_created: Mapped[int] = mapped_column(nullable=False, index=True)
+
+    @property
+    def details(self) -> dict[str, Any]:
+        try:
+            value = json.loads(self._details or "{}")
+            return value if isinstance(value, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @details.setter
+    def details(self, value: dict[str, Any]) -> None:
+        self._details = json.dumps(value, ensure_ascii=False)
+
+
+class MemoryExtractionStateTable(Base):
+    __tablename__ = "memory_extraction_state"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    processed_version: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    candidate_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    time_started: Mapped[int] = mapped_column(nullable=False)
+    time_completed: Mapped[int | None] = mapped_column(nullable=True)
+
+
+def _json_list(value: str | None) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Orchestration Run
 # ---------------------------------------------------------------------------
 

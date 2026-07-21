@@ -57,11 +57,16 @@ class AgentInfo:
     max_turns: int | None = None
     # Execution isolation hint: "none" / "worktree" / "container".
     isolation: Literal["none", "worktree", "container"] = "none"
-    # If True, the agent will not receive the project CLAUDE.md / CODEBUDDY.md context.
+    # Legacy field name: if True, omit deterministic project guidance.
     omit_claudemd: bool = False
     # Origin tracking — where this agent came from (for CLI/debug only).
     source: Literal["builtin", "config", "global", "project"] = "builtin"
     source_path: str | None = None
+
+    @property
+    def omit_project_guidance(self) -> bool:
+        """Preferred semantic alias for the legacy ``omit_claudemd`` field."""
+        return self.omit_claudemd
 
 
 def _default_permission() -> list[dict[str, Any]]:

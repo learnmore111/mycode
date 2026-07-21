@@ -17,6 +17,7 @@ from mycode.server.routes import (
     file,
     git,
     mcp,
+    memory,
     orchestration,
     permission,
     project,
@@ -39,7 +40,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o.strip() for o in allowed_origins if o.strip()],
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -107,17 +108,18 @@ def create_app() -> FastAPI:
     app.include_router(git.router)
     app.include_router(permission.router)
     app.include_router(mcp.router)
+    app.include_router(memory.router)
     app.include_router(skills.router)
     app.include_router(event.router)
     app.include_router(project.router)
     app.include_router(orchestration.router)
 
-    # --- Static files: serve Web UI from web/dist if it exists ---
-    # Try multiple locations: next to the mycode package, or in the project root
+    # --- Static files: serve the bundled Web UI if it exists ---
     _web_dist = None
-    for candidate in [
-        Path(__file__).resolve().parent.parent.parent / "web" / "dist",  # repo root / web / dist
-    ]:
+    frontend_root = Path(
+        os.environ.get("MYCODE_FRONTEND_DIR", Path(__file__).resolve().parent.parent.parent / "web"),
+    )
+    for candidate in [frontend_root / "dist"]:
         if (candidate / "index.html").is_file():
             _web_dist = candidate
             break

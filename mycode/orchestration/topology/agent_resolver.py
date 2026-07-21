@@ -90,7 +90,7 @@ def _spec_to_child_info(spec: AgentSpec) -> AgentInfo:
         extends=spec.extends,
         max_turns=spec.max_turns,
         isolation=spec.isolation if spec.isolation in ("none", "worktree", "container") else "none",  # type: ignore[arg-type]
-        omit_claudemd=spec.omit_claudemd,
+        omit_claudemd=spec.omit_project_guidance if spec.omit_project_guidance is not None else spec.omit_claudemd,
         source="project",  # flow specs are treated as project-layer overrides
     )
 
@@ -109,6 +109,7 @@ _SPEC_TO_INFO_FIELDS: dict[str, str] = {
     "isolation": "isolation",
     "max_turns": "max_turns",
     "omit_claudemd": "omit_claudemd",
+    "omit_project_guidance": "omit_claudemd",
 }
 
 

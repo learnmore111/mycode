@@ -81,12 +81,12 @@ def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None
 
     logger = logmod.create(service="cli.dev")
 
-    # Resolve the web/ directory relative to this project (always use mycode's web/)
+    # Resolve the bundled Web UI independently from the agent worktree.
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    web_dir = os.path.join(project_root, "web")
+    frontend_dir = os.environ.get("MYCODE_FRONTEND_DIR") or os.path.join(project_root, "web")
 
-    if not os.path.isdir(web_dir):
-        click.echo(f"Error: web directory not found at {web_dir}", err=True)
+    if not os.path.isdir(frontend_dir):
+        click.echo(f"Error: frontend directory not found at {frontend_dir}", err=True)
         sys.exit(1)
 
     # Resolve working directory (where the agent will operate on files)
@@ -129,10 +129,12 @@ def dev(port: int, host: str, frontend_port: int, directory: str | None) -> None
         procs.append(backend_proc)
         logger.info("backend started", pid=backend_proc.pid, port=port)
 
-        # Start frontend Vite dev server
-        # Try npx first, fall back to npm run dev
-        frontend_cmd = ["npx", "vite", "--port", str(frontend_port)]
-        frontend_proc = subprocess.Popen(frontend_cmd, cwd=web_dir)
+        # Start the lockfile-pinned Vite server and route API calls to the
+        # actual backend port selected above.
+        frontend_cmd = ["npm", "run", "dev", "--", "--port", str(frontend_port), "--strictPort"]
+        frontend_env = os.environ.copy()
+        frontend_env["MYCODE_API_TARGET"] = f"http://127.0.0.1:{port}"
+        frontend_proc = subprocess.Popen(frontend_cmd, cwd=frontend_dir, env=frontend_env)
         procs.append(frontend_proc)
         logger.info("frontend started", pid=frontend_proc.pid, port=frontend_port)
 
@@ -231,7 +233,7 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
         "/model": "Switch model (/model <provider/model>)",
         "/history": "Show conversation turns",
         "/debug": "Toggle debug mode (dump LLM input/output to file)",
-        "/memory": "Show recent session notes",
+        "/memory": "Show long-term memory, inbox, and session notes",
         "/reload-plugin": "Reload a plugin: /reload-plugin <name>",
         "/quit": "Exit",
         "/exit": "Exit",
@@ -852,23 +854,12 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
 
             # --- Per-turn memory updates (non-blocking) ---
             if session_memory.is_enabled:
-                import asyncio as _mem_aio
-                _text = text
-                _full_text = full_text
-                _history = list(conversation_history)
-                async def _bg_record(
-                    _q: str = _text,
-                    _a: str = _full_text,
-                    _msgs: list[dict[str, Any]] = _history,
-                ) -> None:
-                    with contextlib.suppress(Exception):
-                        await session_memory.record_turn(
-                            user_query=_q,
-                            assistant_response=_a,
-                            messages=_msgs,
-                            start_time=session_start_time,
-                        )
-                _mem_aio.ensure_future(_bg_record())
+                session_memory.schedule_record_turn(
+                    user_query=text,
+                    assistant_response=full_text,
+                    messages=list(conversation_history),
+                    start_time=session_start_time,
+                )
 
         # --- Session end: save memory note if enabled (with timeout) ---
         if session_memory.is_enabled and conversation_history:
@@ -888,26 +879,6 @@ async def _interactive(directory: str, model: str | None, agent: str | None) -> 
                 console.print(Text("  ⚠ Save timed out (skipped LLM summary)", style="yellow dim"))
             except Exception as e:
                 console.print(Text(f"  ✗ Save failed: {e}", style="red dim"))
-
-        # --- Session end: extract long-term memories (best-effort) ---
-        if conversation_history and len(conversation_history) >= 4:
-            try:
-                import asyncio as _ext_aio
-
-                from mycode.session.memory.extractor import extract_memories, save_extracted_memories
-
-                result = await _ext_aio.wait_for(
-                    extract_memories(abs_directory, conversation_history),
-                    timeout=3.0,
-                )
-                if result.extracted:
-                    saved = save_extracted_memories(abs_directory, result)
-                    if saved:
-                        console.print(Text(f"  ✓ Extracted {len(saved)} memories", style="green dim"))
-            except TimeoutError:
-                pass  # Don't block exit
-            except Exception:
-                pass  # Best effort
 
         await bus.close()
 
@@ -1021,7 +992,7 @@ def _handle_command(text: str, history: list[dict[str, Any]], console: Any = Non
             ("/help", "Show this help"),
             ("/clear", "Clear conversation history"),
             ("/model", "List models or switch: /model <provider/model>"),
-            ("/memory", "Show recent session notes"),
+            ("/memory", "Show long-term memory, inbox, and session notes"),
             ("/quit", "Exit"),
             ("!<cmd>", "Execute a shell command (shell escape)"),
         ]))
@@ -1152,20 +1123,28 @@ def _handle_command(text: str, history: list[dict[str, Any]], console: Any = Non
 
     if cmd == "/memory":
         from mycode.session.memory import SessionMemory
-        from mycode.session.memory.memdir import scan_memory_files
-        from mycode.session.memory.memory import memory_age_text
+        from mycode.session.memory.service import MemoryService
         if not project_path:
             console.print("  [dim](no project path)[/dim]")
             return ""
 
-        # Section 1: Structured memories (memdir)
-        memories = scan_memory_files(project_path)
+        # Section 1: Authoritative versioned long-term memories
+        service = MemoryService(project_path)
+        service.import_legacy_memdir()
+        memories = service.list_memories(status="active")
         if memories:
-            console.print(f"  [bold]Structured memories ({len(memories)}):[/bold]")
+            console.print(f"  [bold]Long-term memories ({len(memories)}):[/bold]")
             for mem in memories:
-                age = memory_age_text(mem.mtime_ms) if mem.mtime_ms > 0 else "?"
-                desc = mem.description[:60] if mem.description else "(no description)"
-                console.print(f"    [{mem.memory_type}] {mem.name} — {desc} [dim]({age})[/dim]")
+                desc = mem.trigger_description[:60] if mem.trigger_description else "(no trigger)"
+                console.print(f"    [{mem.memory_type}] {mem.subject} — {desc} [dim]({mem.id})[/dim]")
+            console.print()
+
+        pending = service.list_memories(status="pending")
+        if pending:
+            console.print(f"  [bold yellow]Memory inbox ({len(pending)} pending):[/bold yellow]")
+            for mem in pending[:10]:
+                console.print(f"    {mem.id} [{mem.memory_type}] {mem.subject}")
+            console.print("  [dim]Approve or reject candidates through the memory tool or /memory API.[/dim]")
             console.print()
 
         # Section 2: Session notes

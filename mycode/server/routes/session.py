@@ -28,6 +28,8 @@ from mycode.session.session import get as get_session
 if TYPE_CHECKING:
     import asyncio
 
+    from mycode.permission.permission import PermissionManager
+
 from mycode.util import log as logmod
 
 logger = logmod.create(service="routes.session")
@@ -274,7 +276,12 @@ async def _build_session_context_snapshot(session_id: str) -> dict[str, Any]:
     if not agent:
         raise RuntimeError(f"Agent not found: {agent_name}")
 
-    system = build_system(model=model, agent_prompt=agent.prompt, instructions=None)
+    system = build_system(
+        model=model,
+        agent_prompt=agent.prompt,
+        instructions=None,
+        omit_project_guidance=getattr(agent, "omit_project_guidance", getattr(agent, "omit_claudemd", False)),
+    )
     if last_assistant and last_assistant.system:
         try:
             stored_system = json.loads(last_assistant.system)
@@ -332,6 +339,7 @@ def _stream_session_prompt(
     model: str | None = None,
     agent: str | None = None,
     clear_pause_before_start: bool = False,
+    permission_manager: PermissionManager | None = None,
 ) -> EventSourceResponse:
     from mycode.bus.bus import Bus
     from mycode.project.instance import InstanceContext, ProjectInfo, set_context
@@ -375,6 +383,7 @@ def _stream_session_prompt(
                 model=model,
                 agent=agent,
                 abort_event=abort_event,
+                permission_manager=permission_manager,
             )
             async for event in prompt(inp, bus, history=history):
                 yield {"event": event.type, "data": json.dumps(event.data)}
@@ -691,12 +700,19 @@ async def session_message(session_id: str, request: Request, directory: str = Qu
         model=model,
         agent=agent,
     )
-    return _stream_session_prompt(session_id, directory, parts=parts, model=model, agent=agent)
+    return _stream_session_prompt(
+        session_id,
+        directory,
+        parts=parts,
+        model=model,
+        agent=agent,
+        permission_manager=getattr(request.app.state, "permission_manager", None),
+    )
 
 
 
 @router.post("/{session_id}/resume")
-async def session_resume(session_id: str, directory: str = Query(default=".")) -> Any:
+async def session_resume(session_id: str, request: Request, directory: str = Query(default=".")) -> Any:
     """Resume a previously paused session by replaying the stored continuation prompt."""
     async def _fn() -> Any:
         _get_session_or_404(session_id)
@@ -715,6 +731,7 @@ async def session_resume(session_id: str, directory: str = Query(default=".")) -
         model=paused.model,
         agent=paused.agent,
         clear_pause_before_start=True,
+        permission_manager=getattr(request.app.state, "permission_manager", None),
     )
 
 

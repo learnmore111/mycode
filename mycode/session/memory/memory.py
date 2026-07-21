@@ -75,7 +75,7 @@ class SessionMemory:
 
     def __init__(self, project_path: str, session_id: str | None = None):
         self.project_path = project_path
-        self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.memory_dir = Path(project_path) / ".mycode" / "memory"
         self._config = self._load_config()
         self._turn_counter = 0
@@ -84,6 +84,24 @@ class SessionMemory:
         self._summary: SessionSummary | None = None
         self._log_file_path: Path | None = None
         self._write_lock = asyncio.Lock()
+        self._turn_lock = asyncio.Lock()
+        self._summary_lock = asyncio.Lock()
+        self._background_tasks: set[asyncio.Task[InteractionEntry]] = set()
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        """Switch sessions without accidentally retaining the old log path."""
+        if value == self._session_id:
+            return
+        self._session_id = value
+        self._log_file_path = None
+        self._turn_counter = 0
+        self._pending_turns = []
+        self._summary = None
 
     def _load_config(self) -> dict[str, Any]:
         cfg = configmod.get()
@@ -144,8 +162,8 @@ class SessionMemory:
         if self._log_file_path:
             return self._log_file_path
         date_str = datetime.now().strftime("%Y-%m-%d")
-        prefix = self.session_id[:8] if len(self.session_id) > 8 else self.session_id
-        self._log_file_path = self.memory_dir / "sessions" / date_str / f"{prefix}.jsonl"
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in self.session_id)
+        self._log_file_path = self.memory_dir / "sessions" / date_str / f"{safe_id}.jsonl"
         return self._log_file_path
 
     async def _append_record(self, record: dict[str, Any]) -> None:
@@ -168,12 +186,19 @@ class SessionMemory:
         path = self._get_log_path()
         if not path.exists():
             return []
-        records = []
+        records: list[dict[str, Any]] = []
         try:
-            for line in path.read_text(encoding="utf-8").strip().split("\n"):
-                if line:
-                    records.append(json.loads(line))
-        except (OSError, json.JSONDecodeError):
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    logger.warn("skipping malformed JSONL record", path=str(path), line=line_number, error=str(exc))
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+        except OSError:
             return []
         return records
 
@@ -281,25 +306,66 @@ class SessionMemory:
     async def record_turn(self, user_query: str, assistant_response: str,
                           messages: list[dict[str, Any]] | None = None,
                           start_time: datetime | None = None) -> InteractionEntry:
-        self._turn_counter += 1
-        entry = InteractionEntry(
-            turn=self._turn_counter, timestamp=datetime.now().isoformat(),
-            user_query=user_query[:500], tool_calls=list(self._current_tool_calls),
-            assistant_summary=assistant_response[:200].strip())
-        self._current_tool_calls = []
-        turn_record = {"type": "turn", "turn": entry.turn, "ts": entry.timestamp,
-                       "q": entry.user_query, "tools": entry.tool_calls, "a": entry.assistant_summary}
-        await self._append_record(turn_record)
-        self._pending_turns.append(turn_record)
+        async with self._turn_lock:
+            self._turn_counter += 1
+            entry = InteractionEntry(
+                turn=self._turn_counter, timestamp=datetime.now().isoformat(),
+                user_query=user_query[:500], tool_calls=list(self._current_tool_calls),
+                assistant_summary=assistant_response[:200].strip())
+            self._current_tool_calls = []
+            turn_record = {"type": "turn", "turn": entry.turn, "ts": entry.timestamp,
+                           "q": entry.user_query, "tools": entry.tool_calls, "a": entry.assistant_summary}
+            await self._append_record(turn_record)
+            self._pending_turns.append(turn_record)
 
-        if self._turn_counter % SUMMARY_INTERVAL == 0 and self.is_enabled:
-            await self._llm_update(messages=messages, start_time=start_time)
+            if self._turn_counter % SUMMARY_INTERVAL == 0 and self.is_enabled:
+                await self._llm_update(messages=messages, start_time=start_time)
 
         logger.debug("recorded turn", turn=entry.turn, tools=len(entry.tool_calls))
         return entry
 
+    def schedule_record_turn(
+        self,
+        user_query: str,
+        assistant_response: str,
+        messages: list[dict[str, Any]] | None = None,
+        start_time: datetime | None = None,
+    ) -> asyncio.Task[InteractionEntry]:
+        """Schedule a turn record while retaining ownership of the task."""
+        task = asyncio.create_task(self.record_turn(user_query, assistant_response, messages, start_time))
+        self._background_tasks.add(task)
+
+        def _done(completed: asyncio.Task[InteractionEntry]) -> None:
+            self._background_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                completed.result()
+            except Exception as exc:
+                logger.warn("background memory write failed", error=str(exc))
+
+        task.add_done_callback(_done)
+        return task
+
+    async def flush_pending_tasks(self, timeout: float = 5.0) -> None:
+        """Wait for tracked background writes before shutdown/finalization."""
+        tasks = list(self._background_tasks)
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in done:
+            try:
+                task.result()
+            except Exception as exc:
+                logger.warn("background memory write failed", error=str(exc))
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def finalize(self, messages: list[dict[str, Any]] | None = None,
                        start_time: datetime | None = None) -> Path | None:
+        await self.flush_pending_tasks()
         if not self.is_enabled or self._turn_counter == 0:
             return None
         await self._llm_update(messages=messages, start_time=start_time, force=True)
@@ -311,30 +377,31 @@ class SessionMemory:
 
     async def _llm_update(self, messages: list[dict[str, Any]] | None = None,
                           start_time: datetime | None = None, force: bool = False) -> None:
-        try:
-            all_turns = self._load_all_turns()
-            recent_turns = list(self._pending_turns)
-            result = await self._call_llm_combined(all_turns, recent_turns, messages, start_time)
-            if result:
-                summary_text = result.get("summary", "")
-                refined_turns = result.get("refined_turns", {})
-                if summary_text:
-                    now = datetime.now()
-                    self._summary = SessionSummary(
-                        session_id=self.session_id, project_path=self.project_path,
-                        start_time=(start_time or now).isoformat(), end_time=now.isoformat(),
-                        duration_minutes=max(int((now - (start_time or now)).total_seconds() / 60), 1),
-                        summary_text=summary_text,
-                        files_modified=self._extract_files(all_turns, "write"),
-                        files_read=self._extract_files(all_turns, "read"),
-                        tool_uses=self._count_tools(all_turns),
-                        key_topics=self._infer_topics(set(self._extract_files(all_turns, "write"))),
-                        turn_count=self._turn_counter)
-                await self._rewrite_file(refined_turns)
-            self._pending_turns = []
-        except Exception as e:
-            logger.error("LLM update failed", error=str(e))
-            self._pending_turns = []
+        async with self._summary_lock:
+            try:
+                all_turns = self._load_all_turns()
+                recent_turns = list(self._pending_turns)
+                result = await self._call_llm_combined(all_turns, recent_turns, messages, start_time)
+                if result:
+                    summary_text = result.get("summary", "")
+                    refined_turns = result.get("refined_turns", {})
+                    if summary_text:
+                        now = datetime.now()
+                        self._summary = SessionSummary(
+                            session_id=self.session_id, project_path=self.project_path,
+                            start_time=(start_time or now).isoformat(), end_time=now.isoformat(),
+                            duration_minutes=max(int((now - (start_time or now)).total_seconds() / 60), 1),
+                            summary_text=summary_text,
+                            files_modified=self._extract_files(all_turns, "write"),
+                            files_read=self._extract_files(all_turns, "read"),
+                            tool_uses=self._count_tools(all_turns),
+                            key_topics=self._infer_topics(set(self._extract_files(all_turns, "write"))),
+                            turn_count=self._turn_counter)
+                    await self._rewrite_file(refined_turns)
+                self._pending_turns = []
+            except Exception as e:
+                logger.error("LLM update failed", error=str(e))
+                self._pending_turns = []
 
     async def _call_llm_combined(self, all_turns: list[dict[str, Any]], recent_turns: list[dict[str, Any]],
                                   messages: list[dict[str, Any]] | None, start_time: datetime | None) -> dict[str, Any] | None:
@@ -377,8 +444,8 @@ class SessionMemory:
                 kwargs["base_url"] = base_url
             logger.debug("calling LLM for memory update", provider=provider, model=model_name)
 
-        # 对临时错误使用指数退避重试
-        max_retries = 2
+            # 对临时错误使用指数退避重试
+            max_retries = 2
             for attempt in range(max_retries + 1):
                 try:
                     resp = await litellm.acompletion(**kwargs)

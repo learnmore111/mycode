@@ -70,6 +70,7 @@ class AgentSpec(BaseModel):
     max_turns: int | None = None
     background: bool = False
     omit_claudemd: bool = False
+    omit_project_guidance: bool | None = None
 
     @field_validator("name")
     @classmethod

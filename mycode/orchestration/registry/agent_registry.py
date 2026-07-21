@@ -129,7 +129,7 @@ def agentinfo_from_frontmatter(
     allowed_keys = {
         "description", "mode", "hidden", "prompt", "temperature", "top_p",
         "color", "model", "variant", "permission", "options", "steps",
-        "role", "tools", "extends", "max_turns", "isolation", "omit_claudemd",
+        "role", "tools", "extends", "max_turns", "isolation", "omit_claudemd", "omit_project_guidance",
     }
     unknown = set(data.keys()) - allowed_keys
     if unknown:
@@ -177,7 +177,7 @@ def agentinfo_from_frontmatter(
         extends=data.get("extends"),
         max_turns=data.get("max_turns"),
         isolation=isolation,
-        omit_claudemd=bool(data.get("omit_claudemd") or False),
+        omit_claudemd=bool(data.get("omit_project_guidance", data.get("omit_claudemd", False))),
         source=source,  # type: ignore[arg-type]
         source_path=source_path,
     )
@@ -186,6 +186,8 @@ def agentinfo_from_frontmatter(
 def _explicit_keys_for(data: dict[str, Any], body: str) -> set[str]:
     """Return the set of frontmatter keys that were explicitly written."""
     keys = set(data.keys())
+    if "omit_project_guidance" in keys:
+        keys.add("omit_claudemd")
     if body and "prompt" not in keys:
         keys.add("prompt")
     return keys

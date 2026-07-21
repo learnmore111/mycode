@@ -53,3 +53,19 @@ def test_mcp_status(client):
 def test_project_current(client):
     resp = client.get("/project/current")
     assert resp.status_code == 200
+
+
+def test_serves_web_build_from_configured_directory(tmp_path, monkeypatch):
+    web = tmp_path / "web"
+    assets = web / "dist" / "assets"
+    assets.mkdir(parents=True)
+    (web / "dist" / "index.html").write_text("<main>Web shell</main>", encoding="utf-8")
+    (assets / "app.js").write_text("globalThis.web = true", encoding="utf-8")
+    monkeypatch.setenv("MYCODE_FRONTEND_DIR", str(web))
+
+    from mycode.server.app import create_app
+
+    standalone = TestClient(create_app())
+    assert standalone.get("/").text == "<main>Web shell</main>"
+    assert standalone.get("/workspace/example").text == "<main>Web shell</main>"
+    assert "globalThis.web" in standalone.get("/assets/app.js").text
